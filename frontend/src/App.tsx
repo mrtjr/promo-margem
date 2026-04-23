@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react'
+import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus } from 'lucide-react'
 import axios from 'axios'
 
 // API base URL
@@ -96,6 +96,13 @@ function App() {
             icon={<History size={20} />}
             label="Histórico"
           />
+          <div className="pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40">Financeiro</div>
+          <NavItem
+            isActive={currentPage === 'dre'}
+            onClick={() => setCurrentPage('dre')}
+            icon={<PieChart size={20} />}
+            label="DRE"
+          />
         </nav>
 
         <div className="p-4 border-t border-white/5">
@@ -130,6 +137,7 @@ function App() {
             {currentPage === 'projecao' && <ProjecaoPage />}
             {currentPage === 'simulador' && <SimuladorPage />}
             {currentPage === 'historico' && <HistoricoPage />}
+            {currentPage === 'dre' && <DREPage />}
           </div>
         )}
       </main>
@@ -2503,6 +2511,730 @@ function HistoricoPage() {
           {toast.tipo === 'ok' ? <Check size={16} className="text-[color:var(--claude-sage)]" /> : <AlertCircle size={16} className="text-[color:var(--claude-coral)]" />}
           <p className="text-sm text-[color:var(--claude-ink)]">{toast.msg}</p>
         </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// DRE — Demonstração do Resultado do Exercício
+// ============================================================================
+
+type DRELinha = {
+  codigo: string
+  label: string
+  valor: number
+  pct_receita: number
+  tipo: string // receita | subtotal | deducao | despesa | resultado
+  nivel: number
+}
+
+type DREMensal = {
+  mes: string
+  regime: string | null
+  receita_bruta: number
+  impostos_venda: number
+  devolucoes: number
+  receita_liquida: number
+  cmv: number
+  lucro_bruto: number
+  margem_bruta_pct: number
+  despesas_vendas: number
+  despesas_admin: number
+  ebitda: number
+  ebitda_pct: number
+  depreciacao: number
+  ebit: number
+  resultado_financeiro: number
+  lair: number
+  ir_csll: number
+  lucro_liquido: number
+  margem_liquida_pct: number
+  linhas: DRELinha[]
+}
+
+type DRECompPonto = {
+  mes: string
+  receita_bruta: number
+  receita_liquida: number
+  lucro_bruto: number
+  ebitda: number
+  lucro_liquido: number
+  margem_bruta_pct: number
+  ebitda_pct: number
+  margem_liquida_pct: number
+}
+
+type ContaContabil = {
+  id: number
+  codigo: string
+  nome: string
+  tipo: string
+  natureza: string
+  ativa: boolean
+}
+
+type Lancamento = {
+  id: number
+  data: string
+  mes_competencia: string
+  conta_id: number
+  conta_codigo: string
+  conta_nome: string
+  conta_tipo: string
+  valor: number
+  descricao: string | null
+  fornecedor: string | null
+  documento: string | null
+  recorrente: boolean
+}
+
+type ConfigTributaria = {
+  id?: number
+  regime: string
+  aliquota_simples: number
+  aliquota_icms: number
+  aliquota_pis: number
+  aliquota_cofins: number
+  aliquota_irpj: number
+  aliquota_csll: number
+  presuncao_lucro_pct: number
+  vigencia_inicio: string
+  vigencia_fim?: string | null
+}
+
+function formatBRL(v: number): string {
+  const sig = v < 0 ? '-' : ''
+  return sig + 'R$ ' + Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function formatPct(v: number): string {
+  return (v * 100).toFixed(2) + '%'
+}
+
+function mesHojeString(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function DREPage() {
+  const [tab, setTab] = useState<'cascata' | 'despesas' | 'tributario'>('cascata')
+  const [mes, setMes] = useState(mesHojeString())
+  const [dre, setDre] = useState<DREMensal | null>(null)
+  const [comparativo, setComparativo] = useState<DRECompPonto[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (tab !== 'cascata') return
+    const fetch = async () => {
+      setLoading(true)
+      try {
+        const [a, b] = await Promise.all([
+          axios.get(`${API_URL}/dre?mes=${mes}`),
+          axios.get(`${API_URL}/dre/comparativo?ate=${mes}&meses=6`),
+        ])
+        setDre(a.data)
+        setComparativo(b.data)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetch()
+  }, [tab, mes])
+
+  return (
+    <div className="p-8 max-w-[1400px] mx-auto">
+      <div className="flex items-baseline justify-between mb-6">
+        <div>
+          <h1 className="headline text-[40px] leading-none tracking-editorial">DRE</h1>
+          <p className="text-sm text-[color:var(--claude-ink)]/60 mt-2">
+            Demonstração do Resultado do Exercício. Receita → CMV → Despesas → Lucro Líquido.
+          </p>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-[color:var(--claude-ink)]/10 mb-6">
+        <DRETab active={tab === 'cascata'} onClick={() => setTab('cascata')} icon={<PieChart size={16} />} label="Cascata" />
+        <DRETab active={tab === 'despesas'} onClick={() => setTab('despesas')} icon={<Receipt size={16} />} label="Lançamentos" />
+        <DRETab active={tab === 'tributario'} onClick={() => setTab('tributario')} icon={<Percent size={16} />} label="Tributário" />
+      </div>
+
+      {tab === 'cascata' && (
+        <DRECascataView
+          dre={dre}
+          comparativo={comparativo}
+          loading={loading}
+          mes={mes}
+          onMesChange={setMes}
+          onFechamento={async () => {
+            try {
+              await axios.post(`${API_URL}/dre/fechar?mes=${mes}`)
+              alert('Mês fechado.')
+            } catch (e) {
+              alert('Falha ao fechar: ' + (e as any).message)
+            }
+          }}
+        />
+      )}
+      {tab === 'despesas' && <DREDespesasView mes={mes} onMesChange={setMes} />}
+      {tab === 'tributario' && <DRETributarioView />}
+    </div>
+  )
+}
+
+function DRETab({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-all border-b-2 -mb-px ${
+        active
+          ? 'border-[color:var(--claude-coral)] text-[color:var(--claude-ink)]'
+          : 'border-transparent text-[color:var(--claude-ink)]/50 hover:text-[color:var(--claude-ink)]/80'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
+
+function DRECascataView({ dre, comparativo, loading, mes, onMesChange, onFechamento }: {
+  dre: DREMensal | null
+  comparativo: DRECompPonto[]
+  loading: boolean
+  mes: string
+  onMesChange: (m: string) => void
+  onFechamento: () => void
+}) {
+  if (loading || !dre) {
+    return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Calculando…</div>
+  }
+
+  // Sparkline data (6 meses)
+  const sparkReceita = comparativo.map(p => p.receita_bruta)
+  const sparkLiquido = comparativo.map(p => p.lucro_liquido)
+  const margemBrutaHist = comparativo.map(p => p.margem_bruta_pct * 100)
+  const ebitdaPctHist = comparativo.map(p => p.ebitda_pct * 100)
+
+  // Delta: mês atual vs média dos 5 anteriores
+  const prevReceita = comparativo.slice(0, -1).map(p => p.receita_bruta)
+  const mediaPrevReceita = prevReceita.length > 0 ? prevReceita.reduce((a, b) => a + b, 0) / prevReceita.length : 0
+  const deltaReceitaPct = mediaPrevReceita > 0 ? ((dre.receita_bruta - mediaPrevReceita) / mediaPrevReceita) * 100 : 0
+
+  const prevMargemBruta = comparativo.slice(0, -1).map(p => p.margem_bruta_pct * 100)
+  const mediaPrevMB = prevMargemBruta.length > 0 ? prevMargemBruta.reduce((a, b) => a + b, 0) / prevMargemBruta.length : 0
+  const deltaMB = (dre.margem_bruta_pct * 100) - mediaPrevMB
+
+  const prevEbitda = comparativo.slice(0, -1).map(p => p.ebitda_pct * 100)
+  const mediaPrevEb = prevEbitda.length > 0 ? prevEbitda.reduce((a, b) => a + b, 0) / prevEbitda.length : 0
+  const deltaEb = (dre.ebitda_pct * 100) - mediaPrevEb
+
+  return (
+    <div className="space-y-6">
+      {/* Controles */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50">Mês</label>
+          <input
+            type="month"
+            value={mes}
+            onChange={e => onMesChange(e.target.value)}
+            className="px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm"
+          />
+          {dre.regime && (
+            <span className="text-xs px-2 py-1 rounded-full bg-[color:var(--claude-sage)]/15 text-[color:var(--claude-sage)] font-medium">
+              {dre.regime.replace('_', ' ')}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={onFechamento}
+          className="px-4 py-2 rounded-lg bg-[color:var(--claude-ink)] text-[color:var(--claude-cream)] text-sm font-medium hover:opacity-90"
+        >
+          Fechar mês
+        </button>
+      </div>
+
+      {/* KPIs de resultado */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KPICard
+          title="Receita Bruta"
+          value={formatBRL(dre.receita_bruta)}
+          subValue={`${comparativo.length} meses no gráfico`}
+          status="neutral"
+          delta={deltaReceitaPct}
+          deltaFormat="pct"
+          deltaLabel={mediaPrevReceita > 0 ? `vs média (${formatBRL(mediaPrevReceita)})` : 'Sem histórico'}
+          sparklineData={sparkReceita}
+          sparklineTone="sage"
+        />
+        <KPICard
+          title="Margem Bruta"
+          value={formatPct(dre.margem_bruta_pct)}
+          subValue={formatBRL(dre.lucro_bruto)}
+          status={dre.margem_bruta_pct >= 0.2 ? 'up' : dre.margem_bruta_pct >= 0.15 ? 'ok' : 'warn'}
+          delta={deltaMB}
+          deltaFormat="pp"
+          deltaLabel={mediaPrevMB > 0 ? `vs média (${mediaPrevMB.toFixed(1)}%)` : 'Sem histórico'}
+          sparklineData={margemBrutaHist}
+          sparklineTone="coral"
+        />
+        <KPICard
+          title="EBITDA"
+          value={formatBRL(dre.ebitda)}
+          subValue={`${formatPct(dre.ebitda_pct)} da receita`}
+          status={dre.ebitda_pct >= 0.1 ? 'up' : dre.ebitda_pct >= 0.05 ? 'ok' : dre.ebitda >= 0 ? 'warn' : 'alert'}
+          delta={deltaEb}
+          deltaFormat="pp"
+          deltaLabel={mediaPrevEb !== 0 ? `vs média (${mediaPrevEb.toFixed(1)}%)` : 'Sem histórico'}
+          sparklineData={ebitdaPctHist}
+          sparklineTone="amber"
+        />
+        <KPICard
+          title="Lucro Líquido"
+          value={formatBRL(dre.lucro_liquido)}
+          subValue={formatPct(dre.margem_liquida_pct)}
+          status={dre.lucro_liquido > 0 ? 'up' : dre.lucro_liquido === 0 ? 'ok' : 'alert'}
+          sparklineData={sparkLiquido}
+          sparklineTone={dre.lucro_liquido >= 0 ? 'sage' : 'coral'}
+        />
+      </div>
+
+      {/* Tabela cascata */}
+      <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
+        <div className="px-6 py-4 border-b border-[color:var(--claude-ink)]/8">
+          <h3 className="headline text-[20px] tracking-editorial">Cascata do resultado</h3>
+          <p className="text-xs text-[color:var(--claude-ink)]/50 mt-1">Todos os valores em R$. % sobre receita bruta.</p>
+        </div>
+        <table className="w-full">
+          <thead>
+            <tr className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 border-b border-[color:var(--claude-ink)]/5">
+              <th className="text-left px-6 py-3 font-medium">Linha</th>
+              <th className="text-right px-6 py-3 font-medium">Valor</th>
+              <th className="text-right px-6 py-3 font-medium w-24">% Rec.</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dre.linhas.map((linha, i) => (
+              <DRELinhaRow key={i} linha={linha} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Série 6 meses em barra */}
+      {comparativo.length > 1 && (
+        <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 p-6">
+          <h3 className="headline text-[20px] tracking-editorial mb-4">Tendência 6 meses</h3>
+          <div className="space-y-2">
+            {comparativo.map((p, i) => {
+              const maxRec = Math.max(...comparativo.map(x => x.receita_bruta), 1)
+              const wRec = (p.receita_bruta / maxRec) * 100
+              const wEbi = Math.max(0, (p.ebitda / maxRec)) * 100
+              const isNeg = p.ebitda < 0
+              return (
+                <div key={i} className="flex items-center gap-4 text-xs">
+                  <span className="w-16 font-mono text-[color:var(--claude-ink)]/60">{p.mes}</span>
+                  <div className="flex-1 h-6 bg-[color:var(--claude-ink)]/5 rounded relative overflow-hidden">
+                    <div className="h-full bg-[color:var(--claude-sage)]/30" style={{ width: `${wRec}%` }} />
+                    {!isNeg && (
+                      <div className="h-full bg-[color:var(--claude-sage)] absolute top-0 left-0" style={{ width: `${wEbi}%` }} />
+                    )}
+                    {isNeg && <div className="absolute top-0 left-0 h-full bg-[color:var(--claude-coral)]/40" style={{ width: `${wRec}%` }} />}
+                  </div>
+                  <span className="w-24 text-right font-mono">{formatBRL(p.receita_bruta)}</span>
+                  <span className={`w-20 text-right font-mono text-xs ${p.lucro_liquido >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
+                    {formatBRL(p.lucro_liquido)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex gap-4 text-[10px] uppercase tracking-wider mt-4 text-[color:var(--claude-ink)]/50">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded bg-[color:var(--claude-sage)]/30" />Receita</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded bg-[color:var(--claude-sage)]" />EBITDA</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded bg-[color:var(--claude-coral)]/40" />Prejuízo</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DRELinhaRow({ linha }: { linha: DRELinha }) {
+  const isSubtotal = linha.tipo === 'subtotal' || linha.tipo === 'resultado'
+  const isResultado = linha.tipo === 'resultado'
+  const positivo = linha.valor >= 0
+  const indent = linha.nivel === 1 ? 'pl-10' : 'pl-6'
+
+  return (
+    <tr
+      className={`border-b border-[color:var(--claude-ink)]/5 ${
+        isResultado ? 'bg-[color:var(--claude-sage)]/5' : isSubtotal ? 'bg-[color:var(--claude-ink)]/[0.02]' : ''
+      }`}
+    >
+      <td className={`${indent} pr-6 py-2 text-sm ${isSubtotal ? 'font-semibold' : 'text-[color:var(--claude-ink)]/85'}`}>
+        <span className="font-mono text-xs text-[color:var(--claude-ink)]/40 mr-3">{linha.codigo}</span>
+        {linha.label}
+      </td>
+      <td className={`px-6 py-2 text-sm text-right font-mono tabular-nums ${
+        isResultado ? 'font-bold text-base' : isSubtotal ? 'font-semibold' : ''
+      } ${positivo ? 'text-[color:var(--claude-ink)]' : 'text-[color:var(--claude-coral)]'}`}>
+        {formatBRL(linha.valor)}
+      </td>
+      <td className="px-6 py-2 text-sm text-right font-mono tabular-nums text-[color:var(--claude-ink)]/50">
+        {linha.pct_receita.toFixed(1)}%
+      </td>
+    </tr>
+  )
+}
+
+function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: string) => void }) {
+  const [lancamentos, setLancamentos] = useState<Lancamento[]>([])
+  const [contas, setContas] = useState<ContaContabil[]>([])
+  const [loading, setLoading] = useState(false)
+  const [mostrarForm, setMostrarForm] = useState(false)
+  const [form, setForm] = useState({
+    data: `${mes}-01`,
+    conta_id: 0,
+    valor: 0,
+    descricao: '',
+    fornecedor: '',
+    recorrente: false,
+  })
+
+  const fetchData = async () => {
+    setLoading(true)
+    try {
+      const [a, b] = await Promise.all([
+        axios.get(`${API_URL}/despesas?mes=${mes}`),
+        axios.get(`${API_URL}/contas`),
+      ])
+      setLancamentos(a.data)
+      setContas(b.data)
+      if (form.conta_id === 0 && b.data.length > 0) {
+        // default: primeira conta de despesa
+        const despConta = b.data.find((c: ContaContabil) => c.tipo === 'DESP_ADMIN') || b.data[0]
+        setForm(f => ({ ...f, conta_id: despConta.id }))
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchData() }, [mes])
+
+  const handleCriar = async () => {
+    if (!form.conta_id || form.valor <= 0) {
+      alert('Preencha conta e valor.')
+      return
+    }
+    try {
+      await axios.post(`${API_URL}/despesas`, {
+        data: form.data,
+        mes_competencia: `${mes}-01`,
+        conta_id: form.conta_id,
+        valor: form.valor,
+        descricao: form.descricao || null,
+        fornecedor: form.fornecedor || null,
+        recorrente: form.recorrente,
+      })
+      setMostrarForm(false)
+      setForm(f => ({ ...f, valor: 0, descricao: '', fornecedor: '' }))
+      fetchData()
+    } catch (e) {
+      alert('Falha: ' + (e as any).message)
+    }
+  }
+
+  const handleExcluir = async (id: number) => {
+    if (!confirm('Excluir lançamento?')) return
+    await axios.delete(`${API_URL}/despesas/${id}`)
+    fetchData()
+  }
+
+  const totalPorTipo = lancamentos.reduce<Record<string, number>>((acc, l) => {
+    acc[l.conta_tipo] = (acc[l.conta_tipo] || 0) + l.valor
+    return acc
+  }, {})
+
+  const contasAgrupadas = contas.reduce<Record<string, ContaContabil[]>>((acc, c) => {
+    if (c.tipo === 'RECEITA' || c.tipo === 'CMV') return acc // essas não lançam manualmente
+    acc[c.tipo] = acc[c.tipo] || []
+    acc[c.tipo].push(c)
+    return acc
+  }, {})
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50">Mês</label>
+          <input
+            type="month"
+            value={mes}
+            onChange={e => onMesChange(e.target.value)}
+            className="px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm"
+          />
+        </div>
+        <button
+          onClick={() => setMostrarForm(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[color:var(--claude-coral)] text-white text-sm font-medium hover:opacity-90"
+        >
+          <Plus size={16} />
+          Novo lançamento
+        </button>
+      </div>
+
+      {/* Resumo por tipo */}
+      {Object.keys(totalPorTipo).length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {Object.entries(totalPorTipo).map(([tipo, total]) => (
+            <div key={tipo} className="bg-white rounded-lg border border-[color:var(--claude-ink)]/8 p-4">
+              <p className="text-[10px] uppercase tracking-wider text-[color:var(--claude-ink)]/50">{tipo.replace('_', ' ')}</p>
+              <p className="text-lg font-semibold mt-1 font-mono tabular-nums">{formatBRL(total)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Form modal */}
+      {mostrarForm && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setMostrarForm(false)}>
+          <div className="bg-white rounded-xl p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="headline text-xl tracking-editorial">Novo lançamento</h3>
+              <button onClick={() => setMostrarForm(false)} className="p-1 hover:bg-[color:var(--claude-ink)]/5 rounded"><X size={18} /></button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 mb-1 block">Conta</label>
+                <select
+                  value={form.conta_id}
+                  onChange={e => setForm(f => ({ ...f, conta_id: Number(e.target.value) }))}
+                  className="w-full px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm"
+                >
+                  {Object.entries(contasAgrupadas).map(([tipo, lista]) => (
+                    <optgroup key={tipo} label={tipo.replace('_', ' ')}>
+                      {lista.map(c => (
+                        <option key={c.id} value={c.id}>{c.codigo} — {c.nome}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 mb-1 block">Data</label>
+                  <input type="date" value={form.data} onChange={e => setForm(f => ({ ...f, data: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 mb-1 block">Valor</label>
+                  <input type="number" step="0.01" value={form.valor || ''} onChange={e => setForm(f => ({ ...f, valor: Number(e.target.value) }))}
+                    className="w-full px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm font-mono" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 mb-1 block">Descrição</label>
+                <input type="text" value={form.descricao} onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))}
+                  placeholder="Ex: Aluguel abril/26"
+                  className="w-full px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm" />
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 mb-1 block">Fornecedor</label>
+                <input type="text" value={form.fornecedor} onChange={e => setForm(f => ({ ...f, fornecedor: e.target.value }))}
+                  placeholder="Opcional"
+                  className="w-full px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm" />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.recorrente} onChange={e => setForm(f => ({ ...f, recorrente: e.target.checked }))} />
+                Recorrente (mensal fixo)
+              </label>
+              <div className="flex gap-2 justify-end pt-2">
+                <button onClick={() => setMostrarForm(false)} className="px-4 py-2 rounded-lg text-sm hover:bg-[color:var(--claude-ink)]/5">Cancelar</button>
+                <button onClick={handleCriar} className="px-4 py-2 rounded-lg bg-[color:var(--claude-ink)] text-[color:var(--claude-cream)] text-sm font-medium">Salvar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Lista */}
+      <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
+        ) : lancamentos.length === 0 ? (
+          <div className="p-8 text-center text-[color:var(--claude-ink)]/50">
+            Nenhum lançamento em {mes}. Clique em "Novo lançamento" pra começar.
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead>
+              <tr className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 border-b border-[color:var(--claude-ink)]/5">
+                <th className="text-left px-6 py-3 font-medium">Data</th>
+                <th className="text-left px-6 py-3 font-medium">Conta</th>
+                <th className="text-left px-6 py-3 font-medium">Descrição</th>
+                <th className="text-right px-6 py-3 font-medium">Valor</th>
+                <th className="text-center px-6 py-3 font-medium w-12"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {lancamentos.map(l => (
+                <tr key={l.id} className="border-b border-[color:var(--claude-ink)]/5 hover:bg-[color:var(--claude-ink)]/[0.02]">
+                  <td className="px-6 py-3 text-sm font-mono text-[color:var(--claude-ink)]/70">{l.data}</td>
+                  <td className="px-6 py-3 text-sm">
+                    <span className="font-mono text-xs text-[color:var(--claude-ink)]/40 mr-2">{l.conta_codigo}</span>
+                    {l.conta_nome}
+                  </td>
+                  <td className="px-6 py-3 text-sm text-[color:var(--claude-ink)]/70">{l.descricao || '—'}</td>
+                  <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(l.valor)}</td>
+                  <td className="px-6 py-3 text-center">
+                    <button onClick={() => handleExcluir(l.id)} className="p-1 hover:bg-[color:var(--claude-coral)]/10 rounded text-[color:var(--claude-ink)]/40 hover:text-[color:var(--claude-coral)]">
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DRETributarioView() {
+  const [config, setConfig] = useState<ConfigTributaria | null>(null)
+  const [editando, setEditando] = useState(false)
+  const [form, setForm] = useState<ConfigTributaria | null>(null)
+
+  useEffect(() => {
+    axios.get(`${API_URL}/tributario`).then(r => setConfig(r.data)).catch(console.error)
+  }, [])
+
+  const handleEditar = () => {
+    if (config) {
+      setForm({ ...config })
+      setEditando(true)
+    }
+  }
+
+  const handleSalvar = async () => {
+    if (!form) return
+    try {
+      await axios.put(`${API_URL}/tributario`, {
+        regime: form.regime,
+        aliquota_simples: form.aliquota_simples,
+        aliquota_icms: form.aliquota_icms,
+        aliquota_pis: form.aliquota_pis,
+        aliquota_cofins: form.aliquota_cofins,
+        aliquota_irpj: form.aliquota_irpj,
+        aliquota_csll: form.aliquota_csll,
+        presuncao_lucro_pct: form.presuncao_lucro_pct,
+        vigencia_inicio: form.vigencia_inicio,
+      })
+      const r = await axios.get(`${API_URL}/tributario`)
+      setConfig(r.data)
+      setEditando(false)
+    } catch (e) {
+      alert('Falha: ' + (e as any).message)
+    }
+  }
+
+  if (!config) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
+
+  const display = editando && form ? form : config
+  const isSimples = display.regime === 'SIMPLES_NACIONAL'
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="headline text-xl tracking-editorial">Regime tributário</h3>
+          {!editando && (
+            <button onClick={handleEditar} className="text-sm px-3 py-1.5 rounded-lg border border-[color:var(--claude-ink)]/15 hover:bg-[color:var(--claude-ink)]/5">
+              Editar
+            </button>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 mb-1 block">Regime</label>
+            {editando && form ? (
+              <select
+                value={form.regime}
+                onChange={e => setForm({ ...form, regime: e.target.value })}
+                className="w-full px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm"
+              >
+                <option value="SIMPLES_NACIONAL">Simples Nacional</option>
+                <option value="LUCRO_PRESUMIDO">Lucro Presumido</option>
+                <option value="LUCRO_REAL">Lucro Real</option>
+              </select>
+            ) : (
+              <p className="text-base font-medium">{display.regime.replace('_', ' ')}</p>
+            )}
+          </div>
+
+          {isSimples ? (
+            <AliquotaRow label="Alíquota Simples" valor={display.aliquota_simples} editando={editando} onChange={v => form && setForm({ ...form, aliquota_simples: v })} />
+          ) : (
+            <>
+              <AliquotaRow label="ICMS" valor={display.aliquota_icms} editando={editando} onChange={v => form && setForm({ ...form, aliquota_icms: v })} />
+              <AliquotaRow label="PIS" valor={display.aliquota_pis} editando={editando} onChange={v => form && setForm({ ...form, aliquota_pis: v })} />
+              <AliquotaRow label="COFINS" valor={display.aliquota_cofins} editando={editando} onChange={v => form && setForm({ ...form, aliquota_cofins: v })} />
+              <AliquotaRow label="IRPJ" valor={display.aliquota_irpj} editando={editando} onChange={v => form && setForm({ ...form, aliquota_irpj: v })} />
+              <AliquotaRow label="CSLL" valor={display.aliquota_csll} editando={editando} onChange={v => form && setForm({ ...form, aliquota_csll: v })} />
+              {display.regime === 'LUCRO_PRESUMIDO' && (
+                <AliquotaRow label="Presunção Lucro" valor={display.presuncao_lucro_pct} editando={editando} onChange={v => form && setForm({ ...form, presuncao_lucro_pct: v })} />
+              )}
+            </>
+          )}
+
+          <div>
+            <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 mb-1 block">Vigência início</label>
+            {editando && form ? (
+              <input type="date" value={form.vigencia_inicio} onChange={e => setForm({ ...form, vigencia_inicio: e.target.value })}
+                className="w-full px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm" />
+            ) : (
+              <p className="text-sm font-mono">{display.vigencia_inicio}</p>
+            )}
+          </div>
+
+          {editando && (
+            <div className="flex gap-2 justify-end pt-2">
+              <button onClick={() => setEditando(false)} className="px-4 py-2 rounded-lg text-sm hover:bg-[color:var(--claude-ink)]/5">Cancelar</button>
+              <button onClick={handleSalvar} className="px-4 py-2 rounded-lg bg-[color:var(--claude-ink)] text-[color:var(--claude-cream)] text-sm font-medium">Salvar nova vigência</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <p className="text-xs text-[color:var(--claude-ink)]/50 leading-relaxed">
+        <strong>Nota:</strong> alíquotas em decimal (ex: 0.08 = 8%). Simples Nacional consolida todos os impostos em uma alíquota única sobre a receita bruta. Presumido/Real separa ICMS+PIS+COFINS (sobre receita) de IRPJ+CSLL (sobre lucro presumido ou real).
+      </p>
+    </div>
+  )
+}
+
+function AliquotaRow({ label, valor, editando, onChange }: { label: string; valor: number; editando: boolean; onChange: (v: number) => void }) {
+  return (
+    <div className="grid grid-cols-3 items-center gap-3">
+      <label className="text-sm text-[color:var(--claude-ink)]/70">{label}</label>
+      {editando ? (
+        <input
+          type="number"
+          step="0.001"
+          value={valor}
+          onChange={e => onChange(Number(e.target.value))}
+          className="col-span-2 px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm font-mono"
+        />
+      ) : (
+        <p className="col-span-2 text-sm font-mono tabular-nums">{(valor * 100).toFixed(2)}% <span className="text-[color:var(--claude-ink)]/40">({valor.toFixed(4)})</span></p>
       )}
     </div>
   )

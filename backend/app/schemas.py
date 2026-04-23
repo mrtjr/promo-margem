@@ -238,3 +238,117 @@ class MovimentacaoHistoricoItem(BaseModel):
 class ExclusaoResponse(BaseModel):
     ok: bool
     detalhe: Dict[str, Any]
+
+
+# ============================================================================
+# DRE
+# ============================================================================
+
+class ContaContabilOut(BaseModel):
+    id: int
+    codigo: str
+    nome: str
+    tipo: str
+    natureza: str
+    ativa: bool
+
+    class Config:
+        from_attributes = True
+
+
+class LancamentoCreate(BaseModel):
+    data: date
+    mes_competencia: Optional[date] = None  # default = 1º dia do mês de `data`
+    conta_id: int
+    valor: float
+    descricao: Optional[str] = None
+    fornecedor: Optional[str] = None
+    documento: Optional[str] = None
+    recorrente: bool = False
+
+
+class LancamentoOut(BaseModel):
+    id: int
+    data: date
+    mes_competencia: date
+    conta_id: int
+    conta_codigo: str
+    conta_nome: str
+    conta_tipo: str
+    valor: float
+    descricao: Optional[str] = None
+    fornecedor: Optional[str] = None
+    documento: Optional[str] = None
+    recorrente: bool
+
+
+class ConfigTributariaIn(BaseModel):
+    regime: str  # SIMPLES_NACIONAL | LUCRO_PRESUMIDO | LUCRO_REAL
+    aliquota_simples: float = 0.0
+    aliquota_icms: float = 0.0
+    aliquota_pis: float = 0.0
+    aliquota_cofins: float = 0.0
+    aliquota_irpj: float = 0.0
+    aliquota_csll: float = 0.0
+    presuncao_lucro_pct: float = 0.08
+    vigencia_inicio: date
+
+
+class ConfigTributariaOut(ConfigTributariaIn):
+    id: int
+    vigencia_fim: Optional[date] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DRELinhaOut(BaseModel):
+    codigo: str
+    label: str
+    valor: float
+    pct_receita: float
+    tipo: str   # receita | subtotal | deducao | despesa | resultado
+    nivel: int
+
+
+class DREMensalOut(BaseModel):
+    mes: str  # YYYY-MM
+    regime: Optional[str]
+
+    receita_bruta: float
+    impostos_venda: float
+    devolucoes: float
+    receita_liquida: float
+
+    cmv: float
+    lucro_bruto: float
+    margem_bruta_pct: float
+
+    despesas_vendas: float
+    despesas_admin: float
+    ebitda: float
+    ebitda_pct: float
+
+    depreciacao: float
+    ebit: float
+
+    resultado_financeiro: float
+    lair: float
+
+    ir_csll: float
+    lucro_liquido: float
+    margem_liquida_pct: float
+
+    linhas: List[DRELinhaOut]
+
+
+class DREComparativoPonto(BaseModel):
+    mes: str
+    receita_bruta: float
+    receita_liquida: float
+    lucro_bruto: float
+    ebitda: float
+    lucro_liquido: float
+    margem_bruta_pct: float
+    ebitda_pct: float
+    margem_liquida_pct: float

@@ -157,11 +157,14 @@ def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None
                 produto.estoque_peso = 0
 
         # Registro da venda individual
+        # data_fechamento = dia contábil (fonte de verdade pros agregados).
+        # data = timestamp do INSERT (log de auditoria), server_default preenche.
         venda_mod = models.Venda(
             produto_id=produto.id,
             quantidade=v_schema.quantidade,
             preco_venda=v_schema.preco_venda,
-            custo_total=custo_item
+            custo_total=custo_item,
+            data_fechamento=data_fechamento,
         )
         db.add(venda_mod)
 
@@ -398,7 +401,12 @@ def excluir_venda(db: Session, venda_id: int) -> dict:
     qtd = venda.quantidade or 0
     receita_venda = qtd * (venda.preco_venda or 0)
     custo_venda = venda.custo_total or 0
-    dia_venda: date = venda.data.date() if venda.data else date.today()
+    # Dia contábil: prioriza data_fechamento (novo campo). Fallback pro timestamp
+    # do INSERT (legado) só se data_fechamento for NULL.
+    dia_venda: date = (
+        venda.data_fechamento
+        or (venda.data.date() if venda.data else date.today())
+    )
 
     # 1. Tenta casar com Movimentacao SAIDA irmã (±2s e mesma qtd/produto)
     peso_devolver = 0.0
@@ -471,6 +479,101 @@ def excluir_venda(db: Session, venda_id: int) -> dict:
         "estoque_qtd_apos": produto.estoque_qtd if produto else 0,
         "movimentacao_irma_encontrada": mov_irma is not None,
         "desativado": desativado,
+    }
+
+
+def reconciliar_agregados(db: Session) -> dict:
+    """
+    Recria VendaDiariaSKU e HistoricoMargem do zero a partir de Venda.
+
+    Venda é a única fonte de verdade. Os agregados são caches recalculáveis.
+    Esta função:
+      1. Apaga TODOS os VendaDiariaSKU e HistoricoMargem (tipo=dia)
+      2. Agrega Venda por (produto_id, data_fechamento) → VDS
+      3. Agrega Venda por data_fechamento → HistoricoMargem tipo=dia
+
+    Corrige automaticamente qualquer órfão: se não tem Venda na base, nenhum
+    agregado é criado.
+
+    Retorna: {vendas_lidas, vds_criados, hist_criados, vds_antes, hist_antes}
+    """
+    # Estado "antes" (só pra log)
+    vds_antes = db.query(models.VendaDiariaSKU).count()
+    hist_antes = db.query(models.HistoricoMargem).filter(
+        models.HistoricoMargem.tipo == "dia"
+    ).count()
+
+    # 1. Wipe agregados (só tipo=dia do HistoricoMargem — semana/mes ficam intactos)
+    db.query(models.VendaDiariaSKU).delete(synchronize_session=False)
+    db.query(models.HistoricoMargem).filter(
+        models.HistoricoMargem.tipo == "dia"
+    ).delete(synchronize_session=False)
+    db.flush()
+
+    vendas = db.query(models.Venda).all()
+    if not vendas:
+        db.commit()
+        return {
+            "vendas_lidas": 0,
+            "vds_criados": 0,
+            "hist_criados": 0,
+            "vds_antes": vds_antes,
+            "hist_antes": hist_antes,
+        }
+
+    # 2. Agrega por (produto_id, data_fechamento)
+    from collections import defaultdict
+    agg_sku: dict = defaultdict(lambda: {"qtd": 0.0, "receita": 0.0, "custo": 0.0})
+    agg_dia: dict = defaultdict(lambda: {"receita": 0.0, "custo": 0.0})
+
+    for v in vendas:
+        # Fallback robusto: data_fechamento > data::date > hoje
+        dia = v.data_fechamento
+        if dia is None and v.data:
+            dia = v.data.date() if hasattr(v.data, "date") else v.data
+        if dia is None:
+            continue
+        qtd = v.quantidade or 0
+        preco = v.preco_venda or 0.0
+        receita = qtd * preco
+        custo = v.custo_total or 0.0
+        agg_sku[(v.produto_id, dia)]["qtd"] += qtd
+        agg_sku[(v.produto_id, dia)]["receita"] += receita
+        agg_sku[(v.produto_id, dia)]["custo"] += custo
+        agg_dia[dia]["receita"] += receita
+        agg_dia[dia]["custo"] += custo
+
+    # 3. Recria VendaDiariaSKU
+    for (produto_id, dia), vals in agg_sku.items():
+        preco_medio = vals["receita"] / vals["qtd"] if vals["qtd"] > 0 else 0.0
+        db.add(models.VendaDiariaSKU(
+            produto_id=produto_id,
+            data=dia,
+            quantidade=vals["qtd"],
+            receita=vals["receita"],
+            custo=vals["custo"],
+            preco_medio=preco_medio,
+        ))
+
+    # 4. Recria HistoricoMargem tipo=dia
+    for dia, vals in agg_dia.items():
+        margem = (vals["receita"] - vals["custo"]) / vals["receita"] if vals["receita"] > 0 else 0.0
+        db.add(models.HistoricoMargem(
+            data=datetime.combine(dia, datetime.min.time()),
+            tipo="dia",
+            margem_pct=margem,
+            faturamento=vals["receita"],
+            custo_total=vals["custo"],
+            alerta_disparado=margem < 0.17 and vals["receita"] > 0,
+        ))
+
+    db.commit()
+    return {
+        "vendas_lidas": len(vendas),
+        "vds_criados": len(agg_sku),
+        "hist_criados": len(agg_dia),
+        "vds_antes": vds_antes,
+        "hist_antes": hist_antes,
     }
 
 

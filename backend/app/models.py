@@ -69,7 +69,8 @@ class Venda(Base):
     quantidade = Column(Float)  # aceita decimais (vendas por peso)
     preco_venda = Column(Float)
     custo_total = Column(Float)
-    data = Column(DateTime, server_default=func.now())
+    data = Column(DateTime, server_default=func.now())  # timestamp do INSERT (log)
+    data_fechamento = Column(Date, nullable=True, index=True)  # dia contábil da venda (fonte de verdade pros agregados)
 
     produto = relationship("Produto")
 
@@ -112,3 +113,136 @@ class VendaDiariaSKU(Base):
         if self.receita == 0:
             return 0
         return (self.receita - self.custo) / self.receita
+
+
+# ============================================================================
+# DRE — Demonstração do Resultado do Exercício
+#
+# Modelagem:
+#   Receita Bruta (soma VendaDiariaSKU.receita)
+#   (-) Impostos sobre Venda         ← aplicado via ConfigTributaria (alíquotas)
+#   (-) Devoluções                   ← LancamentoFinanceiro conta "3.2"
+#   = Receita Líquida
+#   (-) CMV (soma VendaDiariaSKU.custo)
+#   = Lucro Bruto
+#   (-) Despesas de Venda            ← LancamentoFinanceiro tipo DESP_VENDA
+#   (-) Despesas Administrativas     ← LancamentoFinanceiro tipo DESP_ADMIN
+#   = EBITDA
+#   (-) Depreciação/Amortização      ← LancamentoFinanceiro tipo DEPREC
+#   = EBIT (Lucro Operacional)
+#   (+/-) Resultado Financeiro       ← LancamentoFinanceiro tipo FIN
+#   = LAIR (Lucro Antes IR)
+#   (-) IR / CSLL                    ← aplicado via ConfigTributaria
+#   = Lucro Líquido
+# ============================================================================
+
+class ContaContabil(Base):
+    """
+    Plano de contas simplificado para DRE.
+    Código numérico hierárquico (ex: 3.1 Receita Bruta, 4.1 CMV, 5.1.1 Aluguel).
+    """
+    __tablename__ = "contas_contabeis"
+
+    id = Column(Integer, primary_key=True, index=True)
+    codigo = Column(String, unique=True, index=True, nullable=False)
+    nome = Column(String, nullable=False)
+    # Tipo define em qual linha do DRE o lançamento entra:
+    # RECEITA, DEDUCAO, CMV, DESP_VENDA, DESP_ADMIN, DEPREC, FIN, IR
+    tipo = Column(String, nullable=False, index=True)
+    # CREDITO soma na linha, DEBITO subtrai
+    natureza = Column(String, nullable=False, default="DEBITO")
+    ativa = Column(Boolean, default=True)
+
+
+class LancamentoFinanceiro(Base):
+    """
+    Lançamento financeiro — tudo que NÃO é movimento de estoque/venda.
+    Exemplos: pagamento de aluguel, folha, energia, impostos, juros bancários.
+
+    mes_competencia: 1º dia do mês a que o lançamento pertence contabilmente
+    (pode diferir de `data` quando há pagamento adiantado/atrasado).
+    """
+    __tablename__ = "lancamentos_financeiros"
+
+    id = Column(Integer, primary_key=True, index=True)
+    data = Column(Date, nullable=False, index=True)  # data efetiva do pagamento
+    mes_competencia = Column(Date, nullable=False, index=True)  # 1º do mês contábil
+    conta_id = Column(Integer, ForeignKey("contas_contabeis.id"), nullable=False)
+    valor = Column(Float, nullable=False)  # sempre positivo; natureza vem da conta
+    descricao = Column(String, nullable=True)
+    fornecedor = Column(String, nullable=True)
+    documento = Column(String, nullable=True)  # NF, boleto, recibo
+    recorrente = Column(Boolean, default=False)
+    criado_em = Column(DateTime, server_default=func.now())
+
+    conta = relationship("ContaContabil")
+
+    __table_args__ = (
+        Index('ix_lanc_mes_conta', 'mes_competencia', 'conta_id'),
+    )
+
+
+class ConfigTributaria(Base):
+    """
+    Configuração tributária vigente. Apenas 1 linha ativa por vez
+    (controlado por `vigencia_fim IS NULL`).
+
+    regime:
+      - SIMPLES_NACIONAL: aplica `aliquota_simples` sobre receita bruta
+        (já inclui ICMS, PIS, COFINS, IRPJ, CSLL consolidados)
+      - LUCRO_PRESUMIDO: aplica ICMS+PIS+COFINS sobre receita + IRPJ+CSLL
+        sobre presunção
+      - LUCRO_REAL: aplica ICMS+PIS+COFINS sobre receita + IRPJ+CSLL sobre LAIR
+    """
+    __tablename__ = "config_tributaria"
+
+    id = Column(Integer, primary_key=True, index=True)
+    regime = Column(String, nullable=False)  # SIMPLES_NACIONAL | LUCRO_PRESUMIDO | LUCRO_REAL
+    aliquota_simples = Column(Float, default=0.0)  # % sobre receita bruta (só Simples)
+    aliquota_icms = Column(Float, default=0.0)
+    aliquota_pis = Column(Float, default=0.0)
+    aliquota_cofins = Column(Float, default=0.0)
+    aliquota_irpj = Column(Float, default=0.0)
+    aliquota_csll = Column(Float, default=0.0)
+    presuncao_lucro_pct = Column(Float, default=0.08)  # presunção para Lucro Presumido (8% comércio)
+    vigencia_inicio = Column(Date, nullable=False)
+    vigencia_fim = Column(Date, nullable=True, index=True)  # NULL = ativa
+    criado_em = Column(DateTime, server_default=func.now())
+
+
+class DREMensal(Base):
+    """
+    Snapshot fechado do DRE mensal (imutável após fechamento).
+    Calculado a partir de VendaDiariaSKU + LancamentoFinanceiro + ConfigTributaria.
+    Reabrir = deletar e recalcular.
+    """
+    __tablename__ = "dre_mensal"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mes = Column(Date, nullable=False, unique=True, index=True)  # 1º dia do mês
+
+    # Linhas do DRE
+    receita_bruta = Column(Float, default=0)
+    impostos_venda = Column(Float, default=0)
+    devolucoes = Column(Float, default=0)
+    receita_liquida = Column(Float, default=0)
+    cmv = Column(Float, default=0)
+    lucro_bruto = Column(Float, default=0)
+    despesas_vendas = Column(Float, default=0)
+    despesas_admin = Column(Float, default=0)
+    ebitda = Column(Float, default=0)
+    depreciacao = Column(Float, default=0)
+    ebit = Column(Float, default=0)
+    resultado_financeiro = Column(Float, default=0)
+    lair = Column(Float, default=0)
+    ir_csll = Column(Float, default=0)
+    lucro_liquido = Column(Float, default=0)
+
+    # Percentuais (guardados pra não recalcular toda hora)
+    margem_bruta_pct = Column(Float, default=0)
+    ebitda_pct = Column(Float, default=0)
+    margem_liquida_pct = Column(Float, default=0)
+
+    # Meta
+    fechado_em = Column(DateTime, server_default=func.now())
+    regime_tributario = Column(String, nullable=True)  # snapshot do regime na apuração

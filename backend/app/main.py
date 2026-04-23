@@ -7,12 +7,21 @@ from sqlalchemy import func
 from dataclasses import asdict
 from datetime import date as date_type, timedelta
 
-from . import models, schemas, database
+from . import models, schemas, database, migrations
 from .database import engine, get_db
-from .services import margin_engine, sugestao_service, estoque_service, analise_service, forecast_service, recomendacao_service, categoria_service, serie_service
+from .services import margin_engine, sugestao_service, estoque_service, analise_service, forecast_service, recomendacao_service, categoria_service, serie_service, dre_seed, dre_service
 
-# Create tables
+# 1. Create tables that don't exist yet (create_all nunca altera colunas)
 models.Base.metadata.create_all(bind=engine)
+
+# 2. Aplica migrações idempotentes (ALTER TABLE, ADD COLUMN) para o schema
+#    evoluir sem precisar de Alembic. Logado no stdout.
+try:
+    for linha in migrations.apply_pending(engine):
+        print(f"[migrations] {linha}")
+except Exception as e:
+    print(f"[migrations] FAIL: {e}")
+    raise
 
 app = FastAPI(title="PromoMargem API", version="0.1.0")
 
@@ -57,6 +66,17 @@ async def startup_event():
             )
     except Exception as e:
         print(f"[startup] Backfill falhou (ignorando): {e}")
+
+    # Seed DRE: plano de contas + config tributária default (Simples 8%).
+    try:
+        dre_info = dre_seed.seed_tudo(db)
+        if dre_info["contas_criadas"] > 0 or dre_info["config_criada"]:
+            print(
+                f"[startup] DRE seed: {dre_info['contas_criadas']} contas criadas, "
+                f"config_criada={dre_info['config_criada']}"
+            )
+    except Exception as e:
+        print(f"[startup] DRE seed falhou (ignorando): {e}")
 
     db.close()
 
@@ -193,6 +213,30 @@ async def reconciliar_estoques_endpoint(db: Session = Depends(get_db)):
     """
     detalhe = estoque_service.reconciliar_estoques(db)
     return {"ok": True, "detalhe": detalhe}
+
+
+@app.post("/admin/reconciliar-agregados", response_model=schemas.ExclusaoResponse)
+async def reconciliar_agregados_endpoint(db: Session = Depends(get_db)):
+    """
+    Reconciliação dos agregados: recria VendaDiariaSKU e HistoricoMargem
+    (tipo=dia) do zero a partir da tabela Venda (única fonte de verdade).
+
+    Corrige o bug fantasma: se você apagou Vendas mas os agregados ficaram
+    órfãos, esta rota limpa tudo e recalcula consistentemente.
+    """
+    detalhe = estoque_service.reconciliar_agregados(db)
+    return {"ok": True, "detalhe": detalhe}
+
+
+@app.post("/admin/reconciliar-tudo", response_model=schemas.ExclusaoResponse)
+async def reconciliar_tudo_endpoint(db: Session = Depends(get_db)):
+    """
+    Reconciliação completa: estoques + agregados. Atalho para garantir que
+    todo o banco está consistente (produto.estoque == log Mov + VDS/Hist == Venda).
+    """
+    agregados = estoque_service.reconciliar_agregados(db)
+    estoques = estoque_service.reconciliar_estoques(db)
+    return {"ok": True, "detalhe": {"agregados": agregados, "estoques": estoques}}
 
 
 @app.get("/margem/serie", response_model=List[schemas.PontoSerieResponse])
@@ -354,3 +398,210 @@ async def simular_cesta(
         raise HTTPException(status_code=400, detail="urgencia deve ser alta, media ou baixa")
     recs = recomendacao_service.gerar_recomendacoes(db, data_alvo=data_alvo, janela_dias=janela)
     return recomendacao_service.simular_cesta_recomendada(db, recs, apenas_urgencia=urgencia)
+
+
+# ============================================================================
+# DRE — Plano de contas, lançamentos, config tributária, cálculo mensal
+# ============================================================================
+
+def _parse_mes(mes: Optional[str]) -> date_type:
+    """Aceita 'YYYY-MM' ou 'YYYY-MM-DD'. Default = mês atual."""
+    if not mes:
+        return date_type.today().replace(day=1)
+    partes = mes.split("-")
+    if len(partes) == 2:
+        return date_type(int(partes[0]), int(partes[1]), 1)
+    return date_type.fromisoformat(mes).replace(day=1)
+
+
+@app.get("/contas", response_model=List[schemas.ContaContabilOut])
+async def listar_contas(tipo: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Plano de contas. Filtro opcional por tipo
+    (RECEITA | DEDUCAO | CMV | DESP_VENDA | DESP_ADMIN | DEPREC | FIN | IR).
+    """
+    q = db.query(models.ContaContabil).filter(models.ContaContabil.ativa == True)
+    if tipo:
+        q = q.filter(models.ContaContabil.tipo == tipo)
+    return q.order_by(models.ContaContabil.codigo).all()
+
+
+@app.get("/despesas", response_model=List[schemas.LancamentoOut])
+async def listar_despesas(
+    mes: Optional[str] = None,
+    tipo: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista lançamentos financeiros do mês (default mês atual).
+    Filtro opcional por tipo da conta.
+    """
+    mes_inicio = _parse_mes(mes)
+    q = db.query(models.LancamentoFinanceiro, models.ContaContabil).join(
+        models.ContaContabil, models.ContaContabil.id == models.LancamentoFinanceiro.conta_id
+    ).filter(models.LancamentoFinanceiro.mes_competencia == mes_inicio)
+    if tipo:
+        q = q.filter(models.ContaContabil.tipo == tipo)
+    q = q.order_by(models.LancamentoFinanceiro.data.desc(), models.LancamentoFinanceiro.id.desc())
+
+    return [
+        {
+            "id": l.id,
+            "data": l.data,
+            "mes_competencia": l.mes_competencia,
+            "conta_id": l.conta_id,
+            "conta_codigo": c.codigo,
+            "conta_nome": c.nome,
+            "conta_tipo": c.tipo,
+            "valor": l.valor,
+            "descricao": l.descricao,
+            "fornecedor": l.fornecedor,
+            "documento": l.documento,
+            "recorrente": l.recorrente,
+        }
+        for l, c in q.all()
+    ]
+
+
+@app.post("/despesas", response_model=schemas.LancamentoOut)
+async def criar_despesa(lanc: schemas.LancamentoCreate, db: Session = Depends(get_db)):
+    """
+    Cria um lançamento financeiro. Se `mes_competencia` for omitido, usa o
+    1º dia do mês de `data`.
+    """
+    conta = db.query(models.ContaContabil).filter(
+        models.ContaContabil.id == lanc.conta_id, models.ContaContabil.ativa == True
+    ).first()
+    if not conta:
+        raise HTTPException(status_code=404, detail="Conta contábil não encontrada ou inativa")
+
+    mes_comp = lanc.mes_competencia or lanc.data.replace(day=1)
+
+    novo = models.LancamentoFinanceiro(
+        data=lanc.data,
+        mes_competencia=mes_comp,
+        conta_id=lanc.conta_id,
+        valor=lanc.valor,
+        descricao=lanc.descricao,
+        fornecedor=lanc.fornecedor,
+        documento=lanc.documento,
+        recorrente=lanc.recorrente,
+    )
+    db.add(novo)
+    db.commit()
+    db.refresh(novo)
+
+    return {
+        "id": novo.id,
+        "data": novo.data,
+        "mes_competencia": novo.mes_competencia,
+        "conta_id": novo.conta_id,
+        "conta_codigo": conta.codigo,
+        "conta_nome": conta.nome,
+        "conta_tipo": conta.tipo,
+        "valor": novo.valor,
+        "descricao": novo.descricao,
+        "fornecedor": novo.fornecedor,
+        "documento": novo.documento,
+        "recorrente": novo.recorrente,
+    }
+
+
+@app.delete("/despesas/{lancamento_id}")
+async def excluir_despesa(lancamento_id: int, db: Session = Depends(get_db)):
+    l = db.query(models.LancamentoFinanceiro).filter(
+        models.LancamentoFinanceiro.id == lancamento_id
+    ).first()
+    if not l:
+        raise HTTPException(status_code=404, detail="Lançamento não encontrado")
+    db.delete(l)
+    db.commit()
+    return {"ok": True, "id": lancamento_id}
+
+
+@app.get("/tributario", response_model=schemas.ConfigTributariaOut)
+async def obter_config_tributaria(db: Session = Depends(get_db)):
+    """Config tributária vigente (vigencia_fim IS NULL). Cria default se não existir."""
+    config = db.query(models.ConfigTributaria).filter(
+        models.ConfigTributaria.vigencia_fim.is_(None)
+    ).first()
+    if not config:
+        # Cria default (Simples 8%)
+        dre_seed.seed_config_tributaria_default(db)
+        config = db.query(models.ConfigTributaria).filter(
+            models.ConfigTributaria.vigencia_fim.is_(None)
+        ).first()
+    return config
+
+
+@app.put("/tributario", response_model=schemas.ConfigTributariaOut)
+async def atualizar_config_tributaria(
+    cfg: schemas.ConfigTributariaIn, db: Session = Depends(get_db)
+):
+    """
+    Atualiza config tributária: encerra a vigente (vigencia_fim = hoje) e
+    cria uma nova com os parâmetros informados.
+    """
+    if cfg.regime not in ("SIMPLES_NACIONAL", "LUCRO_PRESUMIDO", "LUCRO_REAL"):
+        raise HTTPException(status_code=400, detail="regime inválido")
+
+    atual = db.query(models.ConfigTributaria).filter(
+        models.ConfigTributaria.vigencia_fim.is_(None)
+    ).first()
+    if atual:
+        atual.vigencia_fim = date_type.today()
+
+    nova = models.ConfigTributaria(
+        regime=cfg.regime,
+        aliquota_simples=cfg.aliquota_simples,
+        aliquota_icms=cfg.aliquota_icms,
+        aliquota_pis=cfg.aliquota_pis,
+        aliquota_cofins=cfg.aliquota_cofins,
+        aliquota_irpj=cfg.aliquota_irpj,
+        aliquota_csll=cfg.aliquota_csll,
+        presuncao_lucro_pct=cfg.presuncao_lucro_pct,
+        vigencia_inicio=cfg.vigencia_inicio,
+        vigencia_fim=None,
+    )
+    db.add(nova)
+    db.commit()
+    db.refresh(nova)
+    return nova
+
+
+@app.get("/dre", response_model=schemas.DREMensalOut)
+async def dre_mes(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    DRE calculado do mês (default mês atual). Aceita YYYY-MM ou YYYY-MM-DD.
+    """
+    mes_alvo = _parse_mes(mes)
+    calc = dre_service.calcular_dre_mes(db, mes_alvo)
+    return asdict(calc)
+
+
+@app.get("/dre/comparativo", response_model=List[schemas.DREComparativoPonto])
+async def dre_comparativo(
+    ate: Optional[str] = None, meses: int = 12, db: Session = Depends(get_db)
+):
+    """Série compacta dos últimos `meses` meses (default 12). Pra gráfico."""
+    if meses < 1 or meses > 60:
+        raise HTTPException(status_code=400, detail="meses deve estar entre 1 e 60")
+    ate_mes = _parse_mes(ate)
+    return dre_service.dre_comparativo(db, ate_mes, meses=meses)
+
+
+@app.post("/dre/fechar")
+async def dre_fechar(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Fecha o mês: calcula o DRE e salva snapshot em DREMensal. Idempotente —
+    se já estava fechado, substitui pelo novo cálculo.
+    """
+    mes_alvo = _parse_mes(mes)
+    snap = dre_service.fechar_mes(db, mes_alvo)
+    return {
+        "ok": True,
+        "mes": snap.mes.isoformat(),
+        "lucro_liquido": snap.lucro_liquido,
+        "margem_liquida_pct": snap.margem_liquida_pct,
+        "fechado_em": snap.fechado_em.isoformat() if snap.fechado_em else None,
+    }
