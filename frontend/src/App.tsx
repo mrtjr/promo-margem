@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X } from 'lucide-react'
+import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react'
 import axios from 'axios'
 
 // API base URL
@@ -822,6 +822,31 @@ function DashboardPage({ stats, onNavigate }: any) {
   const diasAcima = serie.filter(p => p.status === 'acima_meta').length
   const diasComVenda = serie.filter(p => p.status !== 'sem_vendas').length
 
+  // Séries pros KPIs (últimos 14 pontos, só dias com venda viram sparkline)
+  const serieUltimos14 = serie.slice(-14)
+  const spark14Margem = serieUltimos14
+    .filter(p => p.status !== 'sem_vendas')
+    .map(p => p.margem * 100)
+  const spark14Fat = serieUltimos14
+    .filter(p => p.status !== 'sem_vendas')
+    .map(p => p.faturamento)
+
+  // Delta de margem: última vs média dos 7 anteriores (em pontos percentuais)
+  const comVendaAll = serie.filter(p => p.status !== 'sem_vendas').map(p => p.margem * 100)
+  const ultMargem = comVendaAll.length > 0 ? comVendaAll[comVendaAll.length - 1] : null
+  const prev7Margem = comVendaAll.length >= 8 ? comVendaAll.slice(-8, -1) : []
+  const mediaPrev7Margem = prev7Margem.length > 0
+    ? prev7Margem.reduce((a, b) => a + b, 0) / prev7Margem.length
+    : null
+  const deltaMargem = ultMargem != null && mediaPrev7Margem != null ? ultMargem - mediaPrev7Margem : 0
+
+  // Delta de faturamento: hoje vs média dos 7 anteriores (em %)
+  const comVendaFat = serie.filter(p => p.status !== 'sem_vendas').map(p => p.faturamento)
+  const prev7Fat = comVendaFat.length >= 8 ? comVendaFat.slice(-8, -1) : comVendaFat.slice(0, -1)
+  const mediaPrev7Fat = prev7Fat.length > 0 ? prev7Fat.reduce((a, b) => a + b, 0) / prev7Fat.length : 0
+  const faturamentoHoje = stats?.total_vendas_hoje || 0
+  const deltaFatPct = mediaPrev7Fat > 0 ? ((faturamentoHoje - mediaPrev7Fat) / mediaPrev7Fat) * 100 : 0
+
   return (
     <div className="max-w-6xl mx-auto p-8 space-y-8">
       <header className="flex justify-between items-end">
@@ -841,17 +866,38 @@ function DashboardPage({ stats, onNavigate }: any) {
         </div>
       </header>
 
-      {/* Stats Grid */}
+      {/* Stats Grid — Tremor-style: valor + delta + sparkline */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <StatCard
+        <KPICard
+          title="Margem (dia)"
+          value={ultMargem != null ? `${ultMargem.toFixed(1)}%` : '—'}
+          status={ultMargem == null ? 'neutral' : ultMargem >= 17 && ultMargem <= 19 ? 'ok' : ultMargem < 17 ? 'alert' : 'warn'}
+          delta={deltaMargem}
+          deltaFormat="pp"
+          deltaLabel={mediaPrev7Margem != null ? `vs média 7d (${mediaPrev7Margem.toFixed(1)}%)` : 'Meta 17–19%'}
+          sparklineData={spark14Margem}
+        />
+        <KPICard
+          title="Vendas (hoje)"
+          value={`R$ ${faturamentoHoje.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          status={faturamentoHoje > 0 ? 'up' : 'neutral'}
+          delta={deltaFatPct}
+          deltaFormat="pct"
+          deltaLabel={mediaPrev7Fat > 0 ? `vs média 7d (R$ ${mediaPrev7Fat.toLocaleString('pt-BR', { maximumFractionDigits: 0 })})` : 'Faturamento do dia'}
+          sparklineData={spark14Fat}
+        />
+        <KPICard
           title="Projeção D+1"
           value={projecaoPct === "—" ? "—" : `${projecaoPct}%`}
-          subValue={`Margem prevista · ${projecaoConfianca}`}
-          status={projecaoConfianca === "sem_dados" ? "neutral" : (projecao?.margem_prevista >= 0.17 && projecao?.margem_prevista <= 0.19 ? "ok" : "alert")}
+          subValue={`Confiança: ${projecaoConfianca}`}
+          status={projecaoConfianca === "sem_dados" ? "neutral" : (projecao?.margem_prevista >= 0.17 && projecao?.margem_prevista <= 0.19 ? "ok" : "warn")}
         />
-        <StatCard title="Vendas (Hoje)" value={`R$ ${stats?.total_vendas_hoje?.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) || '0,00'}`} subValue="Faturamento Real" status="up" />
-        <StatCard title="Total SKUs" value={stats?.total_skus || '0'} subValue="Itens Cadastrados" status="neutral" />
-        <StatCard title="Rupturas" value={stats?.rupturas || '0'} subValue="Estoque Zerado" status={stats?.rupturas > 0 ? "alert" : "ok"} />
+        <KPICard
+          title="Rupturas"
+          value={stats?.rupturas || 0}
+          subValue={stats?.rupturas > 0 ? `${stats.rupturas}/${stats?.total_skus} zerados · repor` : `${stats?.total_skus || 0} SKUs · 0 zerados`}
+          status={stats?.rupturas > 0 ? "alert" : "ok"}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -938,23 +984,148 @@ function DashboardPage({ stats, onNavigate }: any) {
   )
 }
 
-function StatCard({ title, value, subValue, status }: any) {
-  const dotColor = () => {
-    switch(status) {
-      case 'up':     return 'bg-[color:var(--claude-sage)]';
-      case 'alert':  return 'bg-[color:var(--claude-coral)]';
-      case 'ok':     return 'bg-[color:var(--claude-sage)]';
-      default:       return 'bg-[color:var(--claude-stone)]/40';
-    }
+// ============================================================================
+// Tremor-style KPI primitives — sparkline SVG puro + badge delta + card
+// Sem dependências externas; usa tokens Claude Design.
+// ============================================================================
+
+type SparkTone = 'sage' | 'coral' | 'amber' | 'stone'
+
+function Sparkline({ data, tone = 'sage', height = 28 }: { data: number[]; tone?: SparkTone; height?: number }) {
+  if (!data || data.length < 2) return null
+  const min = Math.min(...data)
+  const max = Math.max(...data)
+  const range = max - min || 1
+  const w = 100
+  const h = height
+  const pad = 2
+
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w
+    const y = h - pad - ((v - min) / range) * (h - pad * 2)
+    return { x, y }
+  })
+
+  const linePoints = pts.map(p => `${p.x},${p.y}`).join(' ')
+  const areaPath = `M 0,${h} L ${linePoints.split(' ').join(' L ')} L ${w},${h} Z`
+
+  const colorMap: Record<SparkTone, string> = {
+    sage: 'var(--claude-sage)',
+    coral: 'var(--claude-coral)',
+    amber: 'var(--claude-amber)',
+    stone: 'var(--claude-stone)',
   }
+  const color = colorMap[tone]
+  const gradId = `spark-${tone}-${Math.random().toString(36).slice(2, 8)}`
+  const last = pts[pts.length - 1]
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }} preserveAspectRatio="none">
+      <defs>
+        <linearGradient id={gradId} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.22" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={areaPath} fill={`url(#${gradId})`} />
+      <polyline
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
+        points={linePoints}
+      />
+      <circle cx={last.x} cy={last.y} r="1.8" fill={color} vectorEffect="non-scaling-stroke" />
+    </svg>
+  )
+}
+
+type DeltaFormat = 'pp' | 'pct' | 'abs_brl'
+
+function BadgeDelta({ value, format = 'pp', invertColor = false }: { value: number; format?: DeltaFormat; invertColor?: boolean }) {
+  const isZero = value === 0 || !isFinite(value) || Math.abs(value) < 0.05
+  if (isZero) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold mono px-1.5 py-0.5 rounded"
+            style={{ background: 'color-mix(in srgb, var(--claude-stone) 12%, transparent)', color: 'var(--claude-stone)' }}>
+        <Minus size={10} strokeWidth={3} /> 0
+      </span>
+    )
+  }
+  const isPositive = value > 0
+  const isGood = invertColor ? !isPositive : isPositive
+  const color = isGood ? 'var(--claude-sage)' : 'var(--claude-coral)'
+  const Icon = isPositive ? ArrowUpRight : ArrowDownRight
+  const label =
+    format === 'pp' ? `${isPositive ? '+' : ''}${value.toFixed(1)}pp`
+    : format === 'pct' ? `${isPositive ? '+' : ''}${value.toFixed(1)}%`
+    : `${isPositive ? '+' : '-'}R$ ${Math.abs(value).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`
+
+  return (
+    <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold mono px-1.5 py-0.5 rounded"
+          style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}>
+      <Icon size={10} strokeWidth={2.5} /> {label}
+    </span>
+  )
+}
+
+type KPIStatus = 'up' | 'ok' | 'alert' | 'warn' | 'neutral'
+type KPICardProps = {
+  title: string
+  value: string | number
+  subValue?: string
+  sub?: string                // alias legado (compat com telas que ainda usam)
+  status?: KPIStatus
+  tone?: KPIStatus            // alias legado
+  delta?: number
+  deltaFormat?: DeltaFormat
+  deltaLabel?: string
+  deltaInvertColor?: boolean
+  sparklineData?: number[]
+  sparklineTone?: SparkTone
+}
+
+function KPICard({
+  title, value, subValue, sub, status, tone,
+  delta, deltaFormat = 'pp', deltaLabel, deltaInvertColor,
+  sparklineData, sparklineTone,
+}: KPICardProps) {
+  const effectiveStatus: KPIStatus = status ?? tone ?? 'neutral'
+  const effectiveSub = subValue ?? sub
+  const toneFromStatus: Record<KPIStatus, SparkTone> = {
+    up: 'sage', ok: 'sage', alert: 'coral', warn: 'amber', neutral: 'stone',
+  }
+  const sparkTone: SparkTone = sparklineTone || toneFromStatus[effectiveStatus]
+  const dotColor: Record<KPIStatus, string> = {
+    up: 'bg-[color:var(--claude-sage)]',
+    ok: 'bg-[color:var(--claude-sage)]',
+    alert: 'bg-[color:var(--claude-coral)]',
+    warn: 'bg-[color:var(--claude-amber)]',
+    neutral: 'bg-[color:var(--claude-stone)]/40',
+  }
+  const hasSpark = sparklineData && sparklineData.length >= 2
 
   return (
     <div className="claude-card p-5 transition-all hover:shadow-[0_4px_16px_-8px_rgba(28,27,23,0.16)]">
-      <p className="section-label mb-3">{title}</p>
-      <p className="kpi-value text-[28px] leading-none text-[color:var(--claude-ink)]">{value}</p>
-      <div className="mt-3 flex items-center justify-between">
-        <p className="text-[10px] font-medium text-[color:var(--claude-stone)] uppercase tracking-wide">{subValue}</p>
-        <span className={`w-2 h-2 rounded-full ${dotColor()}`}></span>
+      <div className="flex items-start justify-between gap-2">
+        <p className="section-label">{title}</p>
+        {delta !== undefined && <BadgeDelta value={delta} format={deltaFormat} invertColor={deltaInvertColor} />}
+      </div>
+      <p className="kpi-value text-[28px] leading-none text-[color:var(--claude-ink)] mt-2">{value}</p>
+      {hasSpark ? (
+        <div className="mt-3 -mx-1" aria-hidden="true">
+          <Sparkline data={sparklineData!} tone={sparkTone} height={28} />
+        </div>
+      ) : (
+        <div className="mt-3 h-[28px]" />
+      )}
+      <div className="mt-1 flex items-center justify-between">
+        <p className="text-[10px] font-medium text-[color:var(--claude-stone)] uppercase tracking-wide">
+          {deltaLabel || effectiveSub}
+        </p>
+        <span className={`w-2 h-2 rounded-full ${dotColor[effectiveStatus]}`}></span>
       </div>
     </div>
   )
@@ -1913,22 +2084,6 @@ function RecomendacaoCard({ r }: any) {
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-function KPICard({ title, value, sub, tone }: any) {
-  const toneMap: Record<string, string> = {
-    ok:    'text-[color:var(--claude-sage)]',
-    warn:  'text-[color:var(--claude-amber)]',
-    alert: 'text-[color:var(--claude-coral)]',
-  }
-  const toneColor = toneMap[tone] || 'text-[color:var(--claude-ink)]'
-  return (
-    <div className="claude-card p-5">
-      <p className="section-label mb-2">{title}</p>
-      <p className={`kpi-value text-2xl leading-none ${toneColor}`}>{value}</p>
-      <p className="text-[11px] font-medium text-[color:var(--claude-stone)] mt-2">{sub}</p>
     </div>
   )
 }
