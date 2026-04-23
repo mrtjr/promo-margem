@@ -1,4 +1,8 @@
+from collections import defaultdict
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+from datetime import date, datetime, timedelta
+from typing import List, Optional
 from .. import models, schemas
 import uuid
 
@@ -66,41 +70,498 @@ async def registrar_entrada_bulk(db: Session, entradas: list):
         registrar_entrada(db, e)
     return True
 
-def registrar_venda_bulk(db: Session, vendas: list):
+
+def backfill_vendas_diarias_sku(db: Session) -> dict:
+    """
+    Popula VendaDiariaSKU a partir do histórico de `Venda` existente.
+
+    Idempotente: se VendaDiariaSKU já tiver dados, retorna sem alterar nada.
+    Útil após migração do schema (Sprint 3) para habilitar análises e
+    projeções sobre vendas anteriores sem perder histórico.
+
+    Retorna dict com contadores: {skipped, vendas_lidas, dias_criados}.
+    """
+    if db.query(models.VendaDiariaSKU).count() > 0:
+        return {"skipped": True, "vendas_lidas": 0, "dias_criados": 0}
+
+    vendas = db.query(models.Venda).all()
+    if not vendas:
+        return {"skipped": False, "vendas_lidas": 0, "dias_criados": 0}
+
+    agregado: dict = defaultdict(lambda: {"qtd": 0.0, "receita": 0.0, "custo": 0.0})
+    for v in vendas:
+        if v.data is None:
+            continue
+        dia = v.data.date() if hasattr(v.data, "date") else v.data
+        key = (v.produto_id, dia)
+        qtd = v.quantidade or 0
+        preco = v.preco_venda or 0.0
+        agregado[key]["qtd"] += qtd
+        agregado[key]["receita"] += qtd * preco
+        agregado[key]["custo"] += v.custo_total or 0.0
+
+    dias_criados = 0
+    for (produto_id, dia), vals in agregado.items():
+        preco_medio = vals["receita"] / vals["qtd"] if vals["qtd"] > 0 else 0.0
+        db.add(models.VendaDiariaSKU(
+            produto_id=produto_id,
+            data=dia,
+            quantidade=vals["qtd"],
+            receita=vals["receita"],
+            custo=vals["custo"],
+            preco_medio=preco_medio,
+        ))
+        dias_criados += 1
+    db.commit()
+    return {"skipped": False, "vendas_lidas": len(vendas), "dias_criados": dias_criados}
+
+def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None):
+    """
+    Registra lote de vendas (fechamento do dia), baixa estoque, grava:
+      - Venda (linha por item lançado)
+      - Movimentacao (log SAIDA)
+      - VendaDiariaSKU (agregado diário por SKU — upsert)
+      - HistoricoMargem (snapshot consolidado do dia)
+
+    data_fechamento: data alvo do fechamento (default = hoje). Permite refazer
+    fechamento de dia retroativo sem perder histórico.
+    """
+    if data_fechamento is None:
+        data_fechamento = date.today()
+
+    # Acumulador por produto para consolidar agregado diário
+    agg_por_produto = {}
+
     for v in vendas:
         v_schema = schemas.VendaBulkItem(**v)
         produto = db.query(models.Produto).filter(models.Produto.id == v_schema.produto_id).first()
-        if produto:
-            # Calculate weight to remove based on current average weight per volume
-            if produto.estoque_qtd > 0:
-                peso_medio_volume = produto.estoque_peso / produto.estoque_qtd
-                peso_baixado = v_schema.quantidade * peso_medio_volume
-                
-                # Minimum safety check
-                produto.estoque_qtd -= v_schema.quantidade
-                produto.estoque_peso -= peso_baixado
-                
-                # Prevent negative stock
-                if produto.estoque_qtd < 0: produto.estoque_qtd = 0
-                if produto.estoque_peso < 0: produto.estoque_peso = 0
-            
-            # Record sale
-            venda_mod = models.Venda(
-                produto_id=produto.id,
-                quantidade=v_schema.quantidade,
-                preco_venda=v_schema.preco_venda,
-                custo_total=v_schema.quantidade * (produto.custo if produto.custo else 0)
+        if not produto:
+            continue
+
+        custo_unit = produto.custo if produto.custo else 0.0
+        receita_item = v_schema.quantidade * v_schema.preco_venda
+        custo_item = v_schema.quantidade * custo_unit
+
+        # Baixa estoque proporcional ao peso médio atual
+        peso_baixado = 0.0
+        if produto.estoque_qtd > 0:
+            peso_medio_volume = produto.estoque_peso / produto.estoque_qtd
+            peso_baixado = v_schema.quantidade * peso_medio_volume
+
+            produto.estoque_qtd -= v_schema.quantidade
+            produto.estoque_peso -= peso_baixado
+
+            if produto.estoque_qtd < 0:
+                produto.estoque_qtd = 0
+            if produto.estoque_peso < 0:
+                produto.estoque_peso = 0
+
+        # Registro da venda individual
+        venda_mod = models.Venda(
+            produto_id=produto.id,
+            quantidade=v_schema.quantidade,
+            preco_venda=v_schema.preco_venda,
+            custo_total=custo_item
+        )
+        db.add(venda_mod)
+
+        # Log de movimentação — `peso` guarda o peso_baixado total da venda,
+        # assim a reversão (excluir venda) devolve exatamente o que foi tirado.
+        mov = models.Movimentacao(
+            produto_id=produto.id,
+            tipo="SAIDA",
+            quantidade=v_schema.quantidade,
+            peso=peso_baixado,
+            custo_unitario=v_schema.preco_venda
+        )
+        db.add(mov)
+
+        # Acumula agregado diário
+        if produto.id not in agg_por_produto:
+            agg_por_produto[produto.id] = {
+                "quantidade": 0.0,
+                "receita": 0.0,
+                "custo": 0.0,
+            }
+        agg_por_produto[produto.id]["quantidade"] += v_schema.quantidade
+        agg_por_produto[produto.id]["receita"] += receita_item
+        agg_por_produto[produto.id]["custo"] += custo_item
+
+    # Upsert VendaDiariaSKU (por produto, na data_fechamento)
+    for produto_id, agg in agg_por_produto.items():
+        existente = db.query(models.VendaDiariaSKU).filter(
+            models.VendaDiariaSKU.produto_id == produto_id,
+            models.VendaDiariaSKU.data == data_fechamento
+        ).first()
+
+        if existente:
+            existente.quantidade += agg["quantidade"]
+            existente.receita += agg["receita"]
+            existente.custo += agg["custo"]
+            existente.preco_medio = (existente.receita / existente.quantidade) if existente.quantidade > 0 else 0
+        else:
+            nova = models.VendaDiariaSKU(
+                produto_id=produto_id,
+                data=data_fechamento,
+                quantidade=agg["quantidade"],
+                receita=agg["receita"],
+                custo=agg["custo"],
+                preco_medio=(agg["receita"] / agg["quantidade"]) if agg["quantidade"] > 0 else 0
             )
-            db.add(venda_mod)
-            
-            # Movement log
-            mov = models.Movimentacao(
-                produto_id=produto.id,
-                tipo="SAIDA",
-                quantidade=v_schema.quantidade,
-                custo_unitario=v_schema.preco_venda
-            )
-            db.add(mov)
-    
+            db.add(nova)
+
+    # Snapshot consolidado em HistoricoMargem (tipo=dia)
+    total_receita = sum(a["receita"] for a in agg_por_produto.values())
+    total_custo = sum(a["custo"] for a in agg_por_produto.values())
+    margem_pct = (total_receita - total_custo) / total_receita if total_receita > 0 else 0
+    alerta = margem_pct < 0.17 and total_receita > 0
+
+    hist_existente = db.query(models.HistoricoMargem).filter(
+        func.date(models.HistoricoMargem.data) == data_fechamento,
+        models.HistoricoMargem.tipo == "dia"
+    ).first()
+
+    if hist_existente:
+        hist_existente.faturamento += total_receita
+        hist_existente.custo_total += total_custo
+        hist_existente.margem_pct = (
+            (hist_existente.faturamento - hist_existente.custo_total) / hist_existente.faturamento
+            if hist_existente.faturamento > 0 else 0
+        )
+        hist_existente.alerta_disparado = hist_existente.margem_pct < 0.17
+    else:
+        hist = models.HistoricoMargem(
+            data=datetime.combine(data_fechamento, datetime.min.time()),
+            tipo="dia",
+            margem_pct=margem_pct,
+            faturamento=total_receita,
+            custo_total=total_custo,
+            alerta_disparado=alerta
+        )
+        db.add(hist)
+
     db.commit()
     return True
+
+
+# ============================================================================
+# Reversão de movimentações — exclusão com integridade de estoque, custo e
+# agregados. Cada função é atômica: se falhar antes do commit, nada muda.
+# ============================================================================
+
+def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
+    """
+    Recalcula estoque (qtd + peso) e CMP do produto a partir do zero, varrendo
+    TODAS as Movimentacoes restantes. Fonte canônica de verdade pós-exclusão.
+
+    Semântica de `Movimentacao.peso`:
+      - ENTRADA: peso unitário (peso contribuído = qtd × peso)
+      - SAIDA:   peso total baixado da venda (peso consumido = peso)
+
+    CMP = Σ(peso_entrada_i × custo_unit_i) / Σ(peso_entrada_i)
+    Se não sobrar entrada, CMP=0.
+
+    Retorna dict {qtd, peso, custo, entradas, saidas} com o estado recalculado.
+    """
+    entradas = db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == produto.id,
+        models.Movimentacao.tipo == "ENTRADA",
+    ).all()
+    saidas = db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == produto.id,
+        models.Movimentacao.tipo == "SAIDA",
+    ).all()
+
+    # Soma ENTRADAS
+    qtd_entrada = 0.0
+    peso_entrada = 0.0
+    valor_entrada = 0.0
+    for e in entradas:
+        q = e.quantidade or 0
+        p_unit = e.peso or 0
+        c_unit = e.custo_unitario or 0
+        peso_parcela = q * p_unit
+        qtd_entrada += q
+        peso_entrada += peso_parcela
+        valor_entrada += peso_parcela * c_unit
+
+    # Soma SAIDAS (peso já total)
+    qtd_saida = sum((s.quantidade or 0) for s in saidas)
+    peso_saida = sum((s.peso or 0) for s in saidas)
+
+    # Estoque efetivo
+    produto.estoque_qtd = max(0.0, qtd_entrada - qtd_saida)
+    produto.estoque_peso = max(0.0, peso_entrada - peso_saida)
+    produto.custo = (valor_entrada / peso_entrada) if peso_entrada > 0 else 0.0
+
+    return {
+        "qtd": produto.estoque_qtd,
+        "peso": produto.estoque_peso,
+        "custo": produto.custo,
+        "entradas": len(entradas),
+        "saidas": len(saidas),
+    }
+
+
+def _desativar_se_orfao(db: Session, produto: models.Produto) -> bool:
+    """
+    Se o produto ficou sem NENHUMA movimentação e sem NENHUMA venda histórica,
+    marca como ativo=False (soft delete). Retorna True se desativou.
+    """
+    if not produto or not produto.ativo:
+        return False
+    tem_mov = db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == produto.id
+    ).first() is not None
+    tem_venda = db.query(models.Venda).filter(
+        models.Venda.produto_id == produto.id
+    ).first() is not None
+    tem_vds = db.query(models.VendaDiariaSKU).filter(
+        models.VendaDiariaSKU.produto_id == produto.id
+    ).first() is not None
+    if not tem_mov and not tem_venda and not tem_vds:
+        produto.ativo = False
+        return True
+    return False
+
+
+def excluir_entrada(db: Session, movimentacao_id: int) -> dict:
+    """
+    Exclui uma Movimentacao tipo=ENTRADA:
+      1. Deleta a Movimentacao
+      2. Recalcula estoque e CMP do produto a partir das movimentações restantes
+      3. Se produto ficou órfão (zero movimentações + zero vendas), desativa
+
+    Retorna dict com produto afetado e estado resultante.
+    Levanta ValueError se id não existe ou é tipo=SAIDA.
+    """
+    mov = db.query(models.Movimentacao).filter(
+        models.Movimentacao.id == movimentacao_id
+    ).first()
+    if not mov:
+        raise ValueError(f"Movimentação {movimentacao_id} não encontrada")
+    if mov.tipo != "ENTRADA":
+        raise ValueError(
+            f"Movimentação {movimentacao_id} não é ENTRADA (é {mov.tipo}). "
+            "Use DELETE /vendas/<id>."
+        )
+
+    produto = db.query(models.Produto).filter(models.Produto.id == mov.produto_id).first()
+    produto_id = mov.produto_id
+
+    db.delete(mov)
+    db.flush()
+
+    if not produto:
+        db.commit()
+        return {
+            "produto_id": produto_id,
+            "produto_nome": None,
+            "estoque_qtd": 0,
+            "custo": 0,
+            "desativado": False,
+        }
+
+    estado = _recalcular_produto_do_zero(db, produto)
+    desativado = _desativar_se_orfao(db, produto)
+
+    db.commit()
+    db.refresh(produto)
+    return {
+        "produto_id": produto.id,
+        "produto_nome": produto.nome,
+        "estoque_qtd": produto.estoque_qtd,
+        "estoque_peso": produto.estoque_peso,
+        "custo": produto.custo,
+        "entradas_restantes": estado["entradas"],
+        "saidas_restantes": estado["saidas"],
+        "desativado": desativado,
+    }
+
+
+def excluir_venda(db: Session, venda_id: int) -> dict:
+    """
+    Exclui uma Venda:
+      1. Devolve quantidade + peso ao estoque do produto
+      2. Decrementa (ou deleta) o VendaDiariaSKU correspondente
+      3. Decrementa (ou deleta) o HistoricoMargem do dia
+      4. Deleta a Movimentacao SAIDA irmã (match por produto+data+qtd)
+      5. Deleta a Venda
+
+    Retorna dict com produto afetado e estado pós.
+    """
+    venda = db.query(models.Venda).filter(models.Venda.id == venda_id).first()
+    if not venda:
+        raise ValueError(f"Venda {venda_id} não encontrada")
+
+    produto = db.query(models.Produto).filter(models.Produto.id == venda.produto_id).first()
+    qtd = venda.quantidade or 0
+    receita_venda = qtd * (venda.preco_venda or 0)
+    custo_venda = venda.custo_total or 0
+    dia_venda: date = venda.data.date() if venda.data else date.today()
+
+    # 1. Tenta casar com Movimentacao SAIDA irmã (±2s e mesma qtd/produto)
+    peso_devolver = 0.0
+    mov_irma: Optional[models.Movimentacao] = None
+    if venda.data:
+        janela = timedelta(seconds=2)
+        candidatas = db.query(models.Movimentacao).filter(
+            models.Movimentacao.produto_id == venda.produto_id,
+            models.Movimentacao.tipo == "SAIDA",
+            models.Movimentacao.quantidade == qtd,
+            models.Movimentacao.data >= venda.data - janela,
+            models.Movimentacao.data <= venda.data + janela,
+        ).all()
+        if len(candidatas) == 1:
+            mov_irma = candidatas[0]
+        elif len(candidatas) > 1:
+            # múltiplas vendas no mesmo instante — pega a mais próxima
+            mov_irma = min(candidatas, key=lambda m: abs((m.data - venda.data).total_seconds()))
+    if mov_irma:
+        peso_devolver = mov_irma.peso or 0.0
+
+    # 2. Decrementa VendaDiariaSKU
+    vds = db.query(models.VendaDiariaSKU).filter(
+        models.VendaDiariaSKU.produto_id == venda.produto_id,
+        models.VendaDiariaSKU.data == dia_venda,
+    ).first()
+    if vds:
+        vds.quantidade -= qtd
+        vds.receita -= receita_venda
+        vds.custo -= custo_venda
+        if vds.quantidade <= 0.0001 or vds.receita <= 0.01:
+            db.delete(vds)
+        else:
+            vds.preco_medio = vds.receita / vds.quantidade if vds.quantidade > 0 else 0
+
+    # 3. Decrementa HistoricoMargem (tipo=dia)
+    hist = db.query(models.HistoricoMargem).filter(
+        func.date(models.HistoricoMargem.data) == dia_venda,
+        models.HistoricoMargem.tipo == "dia",
+    ).first()
+    if hist:
+        hist.faturamento = max(0.0, hist.faturamento - receita_venda)
+        hist.custo_total = max(0.0, hist.custo_total - custo_venda)
+        if hist.faturamento <= 0.01:
+            db.delete(hist)
+        else:
+            hist.margem_pct = (hist.faturamento - hist.custo_total) / hist.faturamento
+            hist.alerta_disparado = hist.margem_pct < 0.17
+
+    # 4. Deleta movimentação irmã (se achou) e a venda
+    if mov_irma:
+        db.delete(mov_irma)
+    db.delete(venda)
+    db.flush()
+
+    # 5. Recalcula estoque/custo a partir do log remanescente (fonte de verdade)
+    desativado = False
+    if produto:
+        _recalcular_produto_do_zero(db, produto)
+        desativado = _desativar_se_orfao(db, produto)
+
+    db.commit()
+    if produto:
+        db.refresh(produto)
+
+    return {
+        "venda_id": venda_id,
+        "produto_id": venda.produto_id,
+        "produto_nome": produto.nome if produto else None,
+        "estoque_qtd_apos": produto.estoque_qtd if produto else 0,
+        "movimentacao_irma_encontrada": mov_irma is not None,
+        "desativado": desativado,
+    }
+
+
+def reconciliar_estoques(db: Session) -> dict:
+    """
+    Reconciliação global: para cada produto ativo, recalcula estoque e CMP a
+    partir do log de Movimentacoes. Corrige estado legado inconsistente.
+    Não apaga produtos, só normaliza os números (e desativa órfãos puros).
+
+    Retorna {produtos_verificados, produtos_ajustados, produtos_desativados,
+    detalhes: [{id, nome, antes, depois}]}
+    """
+    produtos = db.query(models.Produto).all()
+    ajustados = 0
+    desativados = 0
+    detalhes = []
+
+    for p in produtos:
+        antes = {"qtd": p.estoque_qtd, "peso": p.estoque_peso, "custo": p.custo, "ativo": p.ativo}
+        _recalcular_produto_do_zero(db, p)
+        if _desativar_se_orfao(db, p):
+            desativados += 1
+        depois = {"qtd": p.estoque_qtd, "peso": p.estoque_peso, "custo": p.custo, "ativo": p.ativo}
+        mudou = any(abs(antes[k] - depois[k]) > 0.0001 for k in ("qtd", "peso", "custo")) or antes["ativo"] != depois["ativo"]
+        if mudou:
+            ajustados += 1
+            detalhes.append({
+                "produto_id": p.id,
+                "produto_nome": p.nome,
+                "antes": antes,
+                "depois": depois,
+            })
+
+    db.commit()
+    return {
+        "produtos_verificados": len(produtos),
+        "produtos_ajustados": ajustados,
+        "produtos_desativados": desativados,
+        "detalhes": detalhes,
+    }
+
+
+def listar_historico_movimentacoes(
+    db: Session,
+    dias: int = 30,
+    tipo: Optional[str] = None,
+    produto_id: Optional[int] = None,
+) -> List[dict]:
+    """
+    Lista movimentações recentes unificando ENTRADAS e SAÍDAS, com produto_nome
+    resolvido. Para SAÍDAS inclui o venda_id (quando encontrado), assim a UI
+    pode chamar DELETE /vendas/<id> em vez de DELETE /entradas/<id>.
+
+    dias: janela (default 30). tipo: ENTRADA | SAIDA | None (ambos).
+    """
+    cutoff = datetime.now() - timedelta(days=dias)
+    q = db.query(models.Movimentacao, models.Produto).outerjoin(
+        models.Produto, models.Produto.id == models.Movimentacao.produto_id
+    ).filter(models.Movimentacao.data >= cutoff)
+    if tipo in ("ENTRADA", "SAIDA"):
+        q = q.filter(models.Movimentacao.tipo == tipo)
+    if produto_id:
+        q = q.filter(models.Movimentacao.produto_id == produto_id)
+    q = q.order_by(models.Movimentacao.data.desc())
+
+    resultado = []
+    for mov, prod in q.all():
+        venda_id: Optional[int] = None
+        if mov.tipo == "SAIDA" and mov.data:
+            janela = timedelta(seconds=2)
+            cand = db.query(models.Venda).filter(
+                models.Venda.produto_id == mov.produto_id,
+                models.Venda.quantidade == mov.quantidade,
+                models.Venda.data >= mov.data - janela,
+                models.Venda.data <= mov.data + janela,
+            ).first()
+            if cand:
+                venda_id = cand.id
+
+        resultado.append({
+            "movimentacao_id": mov.id,
+            "venda_id": venda_id,
+            "tipo": mov.tipo,
+            "produto_id": mov.produto_id,
+            "produto_nome": prod.nome if prod else "(produto excluído)",
+            "produto_sku": prod.sku if prod else None,
+            "quantidade": mov.quantidade or 0,
+            "peso": mov.peso or 0,
+            "custo_unitario": mov.custo_unitario or 0,
+            "valor_total": (mov.quantidade or 0) * (mov.custo_unitario or 0),
+            "cidade": mov.cidade,
+            "data": mov.data.isoformat() if mov.data else None,
+        })
+    return resultado

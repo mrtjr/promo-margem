@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle } from 'lucide-react'
+import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X } from 'lucide-react'
 import axios from 'axios'
 
 // API base URL
@@ -28,14 +28,16 @@ function App() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-900 font-sans">
+    <div className="flex h-screen bg-[color:var(--claude-cream)] text-[color:var(--claude-ink)] font-sans">
       {/* Sidebar */}
-      <aside className="w-64 bg-slate-900 text-white flex flex-col">
+      <aside className="w-64 flex flex-col text-[color:var(--claude-cream)]"
+             style={{ background: 'linear-gradient(180deg, #1C1B17 0%, #252219 100%)' }}>
         <div className="p-6">
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
-            PromoMargem
+          <h1 className="headline text-[28px] leading-none tracking-editorial">
+            <span className="text-[color:var(--claude-cream)]">Promo</span>
+            <span className="text-[color:var(--claude-coral-soft)]">Margem</span>
           </h1>
-          <p className="text-slate-400 text-xs mt-1 uppercase tracking-widest font-semibold">Gestão Inteligente</p>
+          <p className="section-label mt-2 text-[color:var(--claude-cream)]/50">Gestão Inteligente</p>
         </div>
 
         <nav className="flex-1 mt-6 px-3 space-y-1 overflow-y-auto">
@@ -57,35 +59,54 @@ function App() {
             icon={<Package size={20} />} 
             label="Produtos" 
           />
-          <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Operações</div>
+          <div className="pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40">Operações</div>
           <NavItem 
             isActive={currentPage === 'compras'} 
             onClick={() => setCurrentPage('compras')}
             icon={<ShoppingBag size={20} />} 
             label="Entrada (Excel)" 
           />
-          <NavItem 
-            isActive={currentPage === 'relatorios'} 
+          <NavItem
+            isActive={currentPage === 'relatorios'}
             onClick={() => setCurrentPage('relatorios')}
-            icon={<FileText size={20} />} 
-            label="Fechamento do Dia" 
+            icon={<FileText size={20} />}
+            label="Fechamento do Dia"
           />
-          <NavItem 
-            isActive={currentPage === 'simulador'} 
+          <NavItem
+            isActive={currentPage === 'briefing'}
+            onClick={() => setCurrentPage('briefing')}
+            icon={<Sparkles size={20} />}
+            label="Briefing Diário"
+          />
+          <NavItem
+            isActive={currentPage === 'projecao'}
+            onClick={() => setCurrentPage('projecao')}
+            icon={<Target size={20} />}
+            label="Projeção D+1"
+          />
+          <NavItem
+            isActive={currentPage === 'simulador'}
             onClick={() => setCurrentPage('simulador')}
-            icon={<Calculator size={20} />} 
-            label="Simulador" 
+            icon={<Calculator size={20} />}
+            label="Simulador"
+          />
+          <NavItem
+            isActive={currentPage === 'historico'}
+            onClick={() => setCurrentPage('historico')}
+            icon={<History size={20} />}
+            label="Histórico"
           />
         </nav>
 
-        <div className="p-4 bg-slate-800/50">
+        <div className="p-4 border-t border-white/5">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-xs font-bold text-white">JR</div>
+            <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-[color:var(--claude-ink)]"
+                 style={{ background: 'var(--claude-coral-soft)' }}>JR</div>
             <div>
-              <p className="text-sm font-medium">Gestor Comercial</p>
-              <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                <p className="text-[10px] text-slate-400 font-bold uppercase">Online</p>
+              <p className="text-sm font-medium text-[color:var(--claude-cream)]">Gestor Comercial</p>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--claude-sage)] animate-pulse"></span>
+                <p className="text-[10px] text-[color:var(--claude-cream)]/50 uppercase tracking-widest">Online</p>
               </div>
             </div>
           </div>
@@ -96,7 +117,7 @@ function App() {
       <main className="flex-1 overflow-hidden flex flex-col">
         {loading && !['chat', 'compras', 'produtos', 'dashboard'].includes(currentPage) ? (
           <div className="flex items-center justify-center h-full">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[color:var(--claude-coral)]"></div>
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto">
@@ -105,7 +126,10 @@ function App() {
             {currentPage === 'produtos' && <ProdutosPage />}
             {currentPage === 'compras' && <ComprasPage onComplete={() => setCurrentPage('produtos')} />}
             {currentPage === 'relatorios' && <RelatoriosPage />}
+            {currentPage === 'briefing' && <BriefingPage />}
+            {currentPage === 'projecao' && <ProjecaoPage />}
             {currentPage === 'simulador' && <SimuladorPage />}
+            {currentPage === 'historico' && <HistoricoPage />}
           </div>
         )}
       </main>
@@ -115,16 +139,16 @@ function App() {
 
 function NavItem({ icon, label, isActive, onClick }: any) {
   return (
-    <button 
+    <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
-        isActive 
-          ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' 
-          : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+      className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg transition-all duration-200 ${
+        isActive
+          ? 'bg-[color:var(--claude-coral)]/18 text-[color:var(--claude-coral-soft)] border border-[color:var(--claude-coral)]/30'
+          : 'text-[color:var(--claude-cream)]/60 hover:bg-white/5 hover:text-[color:var(--claude-cream)] border border-transparent'
       }`}
     >
       {icon}
-      <span className="font-medium">{label}</span>
+      <span className="text-sm font-medium">{label}</span>
     </button>
   )
 }
@@ -544,110 +568,369 @@ function QuickAction({ icon, label, onClick }: any) {
   )
 }
 
+// ============================================================================
+// MargemTrendChart — SVG puro, Tufte-inspired
+// - Faixa meta 17-19% desenhada como retângulo sage translúcido (referência visual)
+// - Linha principal stroke coral; dots coloridos por status do dia
+// - Linha média tracejada (stone) como ponto de comparação silencioso
+// - Callout do último ponto em mono
+// - Dias sem venda aparecem como círculo cinza aberto (mostra ausência sem mentir)
+// ============================================================================
+type PontoSerie = {
+  data: string
+  dia_semana: string
+  faturamento: number
+  custo: number
+  margem: number
+  status: string
+}
+
+function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
+  if (!serie || serie.length < 2) {
+    return (
+      <div className="h-64 rounded-xl flex flex-col items-center justify-center text-[color:var(--claude-stone)] text-sm">
+        <AlertTriangle className="mb-2 text-[color:var(--claude-stone)]/40" size={28} />
+        <span className="serif italic">Dados insuficientes para traçar a tendência.</span>
+      </div>
+    )
+  }
+
+  // Canvas virtual — deixa o SVG escalar por viewBox; proporções pensadas em 760x240
+  const W = 760
+  const H = 240
+  const padL = 44
+  const padR = 24
+  const padT = 18
+  const padB = 36
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+
+  // Escala Y: 0% até max(25%, pico+2pp) — nunca comprime a meta 17-19%
+  const margens = serie.map(p => p.margem)
+  const yMaxDomain = Math.max(0.25, Math.max(...margens) + 0.02)
+  const yToPx = (m: number) => padT + innerH - (m / yMaxDomain) * innerH
+
+  // Escala X: índice
+  const xToPx = (i: number) => padL + (i / (serie.length - 1)) * innerW
+
+  // Faixa meta
+  const metaMin = 0.17
+  const metaMax = 0.19
+  const metaTop = yToPx(metaMax)
+  const metaBot = yToPx(metaMin)
+
+  // Média da janela (desconsidera sem_vendas)
+  const comVenda = serie.filter(p => p.status !== 'sem_vendas')
+  const media = comVenda.length > 0
+    ? comVenda.reduce((s, p) => s + p.margem, 0) / comVenda.length
+    : 0
+
+  // Path da linha — quebra quando dia sem_vendas (Tufte: não fingir continuidade)
+  let path = ''
+  serie.forEach((p, i) => {
+    const x = xToPx(i)
+    const y = yToPx(p.margem)
+    if (p.status === 'sem_vendas') {
+      // quebra — próximo ponto recomeça com M
+      if (path && !path.endsWith(' ')) path += ' '
+      return
+    }
+    const cmd = path === '' || path.endsWith(' ') ? 'M' : 'L'
+    path += `${cmd}${x.toFixed(1)},${y.toFixed(1)} `
+  })
+
+  // Cores por status
+  const dotColor: Record<string, string> = {
+    saudavel:    'var(--claude-sage)',
+    acima_meta:  'var(--claude-coral)',
+    abaixo_meta: 'var(--claude-amber)',
+    sem_vendas:  'var(--claude-stone)',
+  }
+
+  // Ticks X: primeiro, meio, último (Tufte: mínimo de ink)
+  const tickIdx = [0, Math.floor(serie.length / 2), serie.length - 1]
+
+  // Ticks Y: 0, meta_min, meta_max, topo
+  const yTicks = [0, 0.10, metaMin, metaMax, yMaxDomain]
+
+  // Último ponto útil pra callout
+  const lastValid = [...serie].reverse().find(p => p.status !== 'sem_vendas') || serie[serie.length - 1]
+  const lastIdx = serie.indexOf(lastValid)
+  const lastX = xToPx(lastIdx)
+  const lastY = yToPx(lastValid.margem)
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="w-full h-64"
+      role="img"
+      aria-label="Tendência de margem diária dos últimos 30 dias"
+    >
+      <defs>
+        <linearGradient id="areaMargem" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--claude-coral)" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="var(--claude-coral)" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+
+      {/* Faixa meta — fundo muito sutil */}
+      <rect
+        x={padL}
+        y={metaTop}
+        width={innerW}
+        height={Math.max(2, metaBot - metaTop)}
+        fill="var(--claude-sage)"
+        fillOpacity="0.10"
+      />
+      {/* Linha da meta superior/inferior bem discreta */}
+      <line x1={padL} y1={metaTop} x2={W - padR} y2={metaTop} stroke="var(--claude-sage)" strokeOpacity="0.35" strokeDasharray="2 3" />
+      <line x1={padL} y1={metaBot} x2={W - padR} y2={metaBot} stroke="var(--claude-sage)" strokeOpacity="0.35" strokeDasharray="2 3" />
+
+      {/* Gridlines Y — stroke quase invisível */}
+      {yTicks.map((t, i) => (
+        <g key={`gy-${i}`}>
+          <line
+            x1={padL} y1={yToPx(t)} x2={W - padR} y2={yToPx(t)}
+            stroke="var(--border)" strokeOpacity={t === 0 ? 0.6 : 0.3}
+          />
+          <text
+            x={padL - 8} y={yToPx(t) + 3}
+            textAnchor="end"
+            fontSize="10"
+            fill="var(--claude-stone)"
+            fontFamily="JetBrains Mono, monospace"
+          >
+            {(t * 100).toFixed(0)}%
+          </text>
+        </g>
+      ))}
+
+      {/* Média — linha tracejada stone */}
+      {media > 0 && (
+        <>
+          <line
+            x1={padL} y1={yToPx(media)} x2={W - padR} y2={yToPx(media)}
+            stroke="var(--claude-stone)" strokeOpacity="0.55" strokeDasharray="4 4" strokeWidth="1"
+          />
+          <text
+            x={W - padR - 2} y={yToPx(media) - 4}
+            textAnchor="end" fontSize="9"
+            fill="var(--claude-stone)"
+            fontFamily="JetBrains Mono, monospace"
+          >
+            média {(media * 100).toFixed(1)}%
+          </text>
+        </>
+      )}
+
+      {/* Área sob a linha — gradient muito sutil */}
+      <path
+        d={`${path}L${xToPx(serie.length - 1)},${padT + innerH} L${padL},${padT + innerH} Z`}
+        fill="url(#areaMargem)"
+        opacity="0.6"
+      />
+
+      {/* Linha principal */}
+      <path
+        d={path}
+        fill="none"
+        stroke="var(--claude-coral)"
+        strokeWidth="2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+
+      {/* Dots por dia */}
+      {serie.map((p, i) => {
+        const x = xToPx(i)
+        const y = yToPx(p.margem)
+        const isSemVendas = p.status === 'sem_vendas'
+        return (
+          <g key={p.data}>
+            <circle
+              cx={x} cy={isSemVendas ? padT + innerH - 2 : y}
+              r={isSemVendas ? 2.5 : 3.5}
+              fill={isSemVendas ? 'transparent' : dotColor[p.status] || 'var(--claude-stone)'}
+              stroke={dotColor[p.status] || 'var(--claude-stone)'}
+              strokeWidth={isSemVendas ? 1 : 1.5}
+              opacity={isSemVendas ? 0.5 : 1}
+            >
+              <title>{`${p.data} (${p.dia_semana}) · ${isSemVendas ? 'sem vendas' : `${(p.margem * 100).toFixed(1)}%`} · R$ ${p.faturamento.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`}</title>
+            </circle>
+          </g>
+        )
+      })}
+
+      {/* Callout último ponto */}
+      {lastValid.status !== 'sem_vendas' && (
+        <g>
+          <circle cx={lastX} cy={lastY} r="5" fill="var(--claude-coral)" fillOpacity="0.15" />
+          <text
+            x={Math.min(lastX + 8, W - padR - 46)}
+            y={lastY - 8}
+            fontSize="11"
+            fontFamily="JetBrains Mono, monospace"
+            fontWeight="600"
+            fill="var(--claude-ink)"
+          >
+            {(lastValid.margem * 100).toFixed(1)}%
+          </text>
+        </g>
+      )}
+
+      {/* Ticks X — só primeiro, meio, último */}
+      {tickIdx.map(i => {
+        const p = serie[i]
+        const dia = p.data.slice(8, 10)
+        const mes = p.data.slice(5, 7)
+        return (
+          <text
+            key={`tx-${i}`}
+            x={xToPx(i)} y={H - 12}
+            textAnchor={i === 0 ? 'start' : i === serie.length - 1 ? 'end' : 'middle'}
+            fontSize="10"
+            fill="var(--claude-stone)"
+            fontFamily="JetBrains Mono, monospace"
+          >
+            {`${dia}/${mes}`}
+          </text>
+        )
+      })}
+    </svg>
+  )
+}
+
 function DashboardPage({ stats, onNavigate }: any) {
-  const [grupos, setGrupos] = useState<any[]>([])
-  
+  const [saudeCategorias, setSaudeCategorias] = useState<any[]>([])
+  const [projecao, setProjecao] = useState<any>(null)
+  const [serie, setSerie] = useState<PontoSerie[]>([])
+
   useEffect(() => {
-    axios.get(`${API_URL}/grupos`).then(res => setGrupos(res.data))
+    axios.get(`${API_URL}/categorias/saude`).then(res => setSaudeCategorias(res.data)).catch(() => {})
+    axios.get(`${API_URL}/projecao/amanha?top_n=0`).then(res => setProjecao(res.data)).catch(() => {})
+    axios.get(`${API_URL}/margem/serie?dias=30`).then(res => setSerie(res.data)).catch(() => {})
   }, [])
 
-  const marginPct = (stats?.total_skus > 0 && stats?.margem_semana) ? (stats?.margem_semana * 100).toFixed(1) : "0.0"
+  const marginPct = stats?.margem_semana ? (stats.margem_semana * 100).toFixed(1) : "0.0"
   const isHealthy = stats?.margem_semana >= 0.17 && stats?.margem_semana <= 0.19
-  const hasSales = stats?.total_vendas_hoje > 0
+  const projecaoPct = projecao?.margem_prevista ? (projecao.margem_prevista * 100).toFixed(1) : "—"
+  const projecaoConfianca = projecao?.confianca_geral || "sem_dados"
+
+  // Contadores da série pra microcopy do chart
+  const diasSaudaveis = serie.filter(p => p.status === 'saudavel').length
+  const diasAbaixo = serie.filter(p => p.status === 'abaixo_meta').length
+  const diasAcima = serie.filter(p => p.status === 'acima_meta').length
+  const diasComVenda = serie.filter(p => p.status !== 'sem_vendas').length
 
   return (
     <div className="max-w-6xl mx-auto p-8 space-y-8">
       <header className="flex justify-between items-end">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Painel de Decisão</h2>
-          <p className="text-slate-500">Inteligência aplicada para garantir seus lucros.</p>
+          <p className="section-label mb-2">Visão Geral · {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}</p>
+          <h2 className="headline text-4xl tracking-editorial">Painel de Decisão</h2>
+          <p className="text-[color:var(--claude-stone)] mt-1">Inteligência aplicada para garantir seus lucros.</p>
         </div>
-        <div className="bg-white p-3 rounded-xl border border-slate-200 flex items-center gap-4 shadow-sm">
+        <div className="claude-card p-3 flex items-center gap-4">
           <div className="text-right">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider leading-none mb-1">Margem Global</p>
-            <p className={`text-xl font-black ${isHealthy ? 'text-emerald-500' : 'text-amber-500'}`}>{marginPct}%</p>
+            <p className="section-label leading-none mb-1">Margem Semana</p>
+            <p className={`kpi-value text-2xl leading-none ${isHealthy ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{marginPct}%</p>
           </div>
-          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isHealthy ? 'bg-emerald-50 text-emerald-500' : 'bg-amber-50 text-amber-500'}`}>
-            <Gauge size={24} />
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isHealthy ? 'bg-[color:var(--claude-sage)]/12 text-[color:var(--claude-sage)]' : 'bg-[color:var(--claude-coral)]/12 text-[color:var(--claude-coral)]'}`}>
+            <Gauge size={22} />
           </div>
         </div>
       </header>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <StatCard title="Projeção Atual" value={`${marginPct}%`} subValue="Base Sazonal" status={isHealthy ? "ok" : "alert"} />
-        <StatCard title="Vendas (Hoje)" value={`R$ ${stats?.total_vendas_hoje?.toFixed(2) || '0.00'}`} subValue="Faturamento Real" status="up" />
+        <StatCard
+          title="Projeção D+1"
+          value={projecaoPct === "—" ? "—" : `${projecaoPct}%`}
+          subValue={`Margem prevista · ${projecaoConfianca}`}
+          status={projecaoConfianca === "sem_dados" ? "neutral" : (projecao?.margem_prevista >= 0.17 && projecao?.margem_prevista <= 0.19 ? "ok" : "alert")}
+        />
+        <StatCard title="Vendas (Hoje)" value={`R$ ${stats?.total_vendas_hoje?.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2}) || '0,00'}`} subValue="Faturamento Real" status="up" />
         <StatCard title="Total SKUs" value={stats?.total_skus || '0'} subValue="Itens Cadastrados" status="neutral" />
         <StatCard title="Rupturas" value={stats?.rupturas || '0'} subValue="Estoque Zerado" status={stats?.rupturas > 0 ? "alert" : "ok"} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-8">
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-4 opacity-5">
-              <TrendingUp size={120} />
-            </div>
-            <h3 className="font-bold text-lg mb-4">Tendência de Margem vs Vendas</h3>
-            <div className="h-64 bg-slate-50 rounded-xl flex flex-col items-center justify-center text-slate-400 text-sm italic">
-              {stats?.total_skus > 0 ? (
-                 <span>[Gráfico de Elasticidade Alimentado]</span>
-              ) : (
-                 <>
-                   <AlertTriangle className="mb-2 text-slate-300" size={32} />
-                   <span>Cadastre produtos para gerar inteligência de mercado.</span>
-                 </>
+          <div className="claude-card p-6 relative overflow-hidden">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <p className="section-label mb-1">Últimos 30 dias</p>
+                <h3 className="headline text-2xl">Tendência de Margem</h3>
+                <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+                  Faixa verde = meta 17–19%. Dots coral = dia em promoção acima da meta. Âmbar = abaixo. Cinza = sem venda.
+                </p>
+              </div>
+              {diasComVenda > 0 && (
+                <div className="flex gap-2 text-[10px]">
+                  <span className="pill pill-ok"><span className="mono">{diasSaudaveis}</span> saudável</span>
+                  {diasAcima > 0 && <span className="pill pill-alert"><span className="mono">{diasAcima}</span> acima</span>}
+                  {diasAbaixo > 0 && <span className="pill pill-warn"><span className="mono">{diasAbaixo}</span> abaixo</span>}
+                </div>
               )}
             </div>
+            <MargemTrendChart serie={serie} />
           </div>
-          
-          <div className="bg-gradient-to-br from-blue-600 to-blue-800 p-6 rounded-2xl text-white shadow-xl shadow-blue-900/20 transition-all hover:scale-[1.01]">
+
+          <div className="rounded-2xl p-6 text-white shadow-lg overflow-hidden relative"
+               style={{ background: 'linear-gradient(135deg, #1C1B17 0%, #2A2620 60%, #CC785C 180%)' }}>
             <div className="flex justify-between items-start mb-6">
               <div>
-                <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
-                  <Sparkles className="text-blue-300" size={20} /> Copiloto IA
+                <h3 className="headline text-2xl mb-1 flex items-center gap-2 text-white">
+                  <Sparkles className="text-[color:var(--claude-coral-soft)]" size={20} /> Copiloto IA
                 </h3>
-                <p className="text-blue-200 text-sm">O motor está pronto para responder qualquer dúvida.</p>
+                <p className="text-white/60 text-sm">Motor pronto para responder qualquer dúvida sobre o dia.</p>
               </div>
-              <button 
+              <button
                 onClick={() => onNavigate('chat')}
-                className="bg-white/10 hover:bg-white/20 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+                className="bg-white/10 hover:bg-white/20 text-white text-xs font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
               >
                 Abrir Chat <ArrowRight size={14} />
               </button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-white/10 p-4 rounded-xl border border-white/5">
-                <p className="text-xs font-bold text-blue-200 uppercase mb-2">Comando Sugerido</p>
-                <p className="font-bold text-lg leading-tight mb-2">Como está meu lucro hoje?</p>
-                <p className="text-[10px] text-blue-100 uppercase tracking-widest font-black italic">Toque para perguntar</p>
-              </div>
-              <div className="bg-white/10 p-4 rounded-xl border border-white/5">
-                <p className="text-xs font-bold text-blue-200 uppercase mb-2">Comando Sugerido</p>
-                <p className="font-bold text-lg leading-tight mb-2">Análise de rupturas.</p>
-                <p className="text-[10px] text-blue-100 uppercase tracking-widest font-black italic">Toque para perguntar</p>
-              </div>
+              <button onClick={() => onNavigate('chat')} className="bg-white/8 hover:bg-white/15 transition-colors p-4 rounded-xl border border-white/10 text-left">
+                <p className="section-label text-[color:var(--claude-coral-soft)] mb-2">Comando Sugerido</p>
+                <p className="serif text-lg leading-tight mb-1">Como está meu lucro hoje?</p>
+                <p className="text-[10px] text-white/50 uppercase tracking-widest">Toque para perguntar</p>
+              </button>
+              <button onClick={() => onNavigate('chat')} className="bg-white/8 hover:bg-white/15 transition-colors p-4 rounded-xl border border-white/10 text-left">
+                <p className="section-label text-[color:var(--claude-coral-soft)] mb-2">Comando Sugerido</p>
+                <p className="serif text-lg leading-tight mb-1">Análise de rupturas.</p>
+                <p className="text-[10px] text-white/50 uppercase tracking-widest">Toque para perguntar</p>
+              </button>
             </div>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col">
-          <h3 className="font-bold text-lg mb-4">Saúde por Categoria</h3>
-          <div className="flex-1 space-y-6">
-            {grupos.length > 0 ? grupos.map((g: any) => (
-              <GroupProgress 
-                key={g.id} 
-                label={g.nome} 
-                value={hasSales ? 50 : 0} // Placeholder fixed logic: if no sales, show 0.
-                margin={`${(g.margem_minima * 100).toFixed(0)} - ${(g.margem_maxima * 100).toFixed(0)}%`} 
-                status={hasSales ? "high" : "neutral"} 
+        <div className="claude-card p-6 flex flex-col">
+          <p className="section-label mb-1">Janela de 30 dias</p>
+          <h3 className="headline text-2xl mb-1">Saúde por Categoria</h3>
+          <p className="text-xs text-[color:var(--claude-stone)] mb-5">Margem real praticada vs meta configurada no grupo.</p>
+          <div className="flex-1 space-y-5">
+            {saudeCategorias.length > 0 ? saudeCategorias.map((g: any) => (
+              <GroupProgress
+                key={g.grupo_id}
+                label={g.nome}
+                margemReal={g.margem_real}
+                metaMin={g.margem_minima}
+                metaMax={g.margem_maxima}
+                faturamento={g.faturamento_periodo}
+                skusVendidos={g.skus_vendidos_periodo}
+                skusNoGrupo={g.skus_no_grupo}
+                status={g.status}
               />
             )) : (
-              <p className="text-slate-400 text-sm italic">Nenhum grupo cadastrado.</p>
+              <p className="text-[color:var(--claude-stone)] text-sm italic serif">Nenhum grupo cadastrado.</p>
             )}
           </div>
-          <div className="mt-8 p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 flex flex-col items-center text-center">
-             <ShoppingBag className="text-slate-300 mb-2" size={24} />
-             <p className="text-[10px] font-bold text-slate-500">Acompanha a saúde das 4 categorias principais em tempo real conforme as vendas ocorrem.</p>
+          <div className="mt-6 p-4 bg-[color:var(--claude-cream-deep)]/50 rounded-xl border border-dashed border-[color:var(--border)] flex flex-col items-center text-center">
+             <ShoppingBag className="text-[color:var(--claude-stone)]/40 mb-2" size={20} />
+             <p className="text-[10px] text-[color:var(--claude-stone)] leading-snug">Barra = margem real na escala. Marcas verticais = faixa da meta do grupo.</p>
           </div>
         </div>
       </div>
@@ -656,43 +939,76 @@ function DashboardPage({ stats, onNavigate }: any) {
 }
 
 function StatCard({ title, value, subValue, status }: any) {
-  const getStatusColor = () => {
+  const dotColor = () => {
     switch(status) {
-      case 'up': return 'text-emerald-500';
-      case 'alert': return 'text-rose-500';
-      case 'ok': return 'text-blue-500';
-      default: return 'text-slate-400';
+      case 'up':     return 'bg-[color:var(--claude-sage)]';
+      case 'alert':  return 'bg-[color:var(--claude-coral)]';
+      case 'ok':     return 'bg-[color:var(--claude-sage)]';
+      default:       return 'bg-[color:var(--claude-stone)]/40';
     }
   }
 
   return (
-    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm transition-all hover:shadow-md">
-      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">{title}</p>
-      <p className="text-2xl font-black text-slate-900 leading-none">{value}</p>
+    <div className="claude-card p-5 transition-all hover:shadow-[0_4px_16px_-8px_rgba(28,27,23,0.16)]">
+      <p className="section-label mb-3">{title}</p>
+      <p className="kpi-value text-[28px] leading-none text-[color:var(--claude-ink)]">{value}</p>
       <div className="mt-3 flex items-center justify-between">
-        <p className="text-[10px] font-medium text-slate-500 uppercase">{subValue}</p>
-        <span className={`w-2 h-2 rounded-full ${getStatusColor().replace('text-', 'bg-')}`}></span>
+        <p className="text-[10px] font-medium text-[color:var(--claude-stone)] uppercase tracking-wide">{subValue}</p>
+        <span className={`w-2 h-2 rounded-full ${dotColor()}`}></span>
       </div>
     </div>
   )
 }
 
-function GroupProgress({ label, value, margin, status }: any) {
-  const colors = {
-    ok: 'bg-emerald-500',
-    low: 'bg-amber-500',
-    high: 'bg-blue-500',
-    neutral: 'bg-slate-200'
+function GroupProgress({ label, margemReal, metaMin, metaMax, faturamento, skusVendidos, skusNoGrupo, status }: any) {
+  // Cor Claude Design por status
+  const barColorMap: Record<string, string> = {
+    saudavel:    'bg-[color:var(--claude-sage)]',
+    acima_meta:  'bg-[color:var(--claude-coral)]',
+    abaixo_meta: 'bg-[color:var(--claude-amber)]',
+    sem_vendas:  'bg-[color:var(--claude-stone)]/25',
+  }
+  const barColor = barColorMap[status] || 'bg-[color:var(--claude-stone)]/25'
+
+  // Escala: 0 a max(meta_max*1.5, 30%) — evita achatar todos na ponta
+  const escalaMax = Math.max(metaMax * 1.5, 0.30)
+  const widthPct = Math.min(100, Math.max(0, (margemReal / escalaMax) * 100))
+  const metaMinPos = (metaMin / escalaMax) * 100
+  const metaMaxPos = (metaMax / escalaMax) * 100
+
+  const margemLabel = status === 'sem_vendas' ? '—' : `${(margemReal * 100).toFixed(1)}%`
+  const metaLabel = `meta ${(metaMin * 100).toFixed(0)}–${(metaMax * 100).toFixed(0)}%`
+
+  const statusTextColor: any = {
+    saudavel:    'text-[color:var(--claude-sage)]',
+    acima_meta:  'text-[color:var(--claude-coral)]',
+    abaixo_meta: 'text-[color:var(--claude-amber)]',
+    sem_vendas:  'text-[color:var(--claude-stone)]/60',
   }
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-2">
-        <span className="text-sm font-bold text-slate-700">{label}</span>
-        <span className="text-xs font-black bg-slate-100 px-2 py-0.5 rounded text-slate-600">{margin}</span>
+      <div className="flex justify-between items-baseline mb-1.5">
+        <span className="text-sm font-medium text-[color:var(--claude-ink)]">{label}</span>
+        <span className={`kpi-value text-sm ${statusTextColor[status] || 'text-[color:var(--claude-stone)]'}`}>{margemLabel}</span>
       </div>
-      <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full transition-all duration-1000 ${(colors as any)[status] || colors.neutral}`} style={{ width: `${value}%` }}></div>
+      <div className="relative w-full bg-[color:var(--claude-cream-deep)] h-[6px] rounded-full overflow-visible mb-1.5">
+        <div className={`h-full rounded-full transition-all duration-700 ${barColor}`} style={{ width: `${widthPct}%` }}></div>
+        {/* Faixa-meta como marca discreta */}
+        <div
+          className="absolute top-[-3px] h-[12px] border-l border-r border-[color:var(--claude-sage)]/70"
+          style={{ left: `${metaMinPos}%`, width: `${Math.max(0, metaMaxPos - metaMinPos)}%`, background: 'color-mix(in srgb, var(--claude-sage) 8%, transparent)' }}
+          title={metaLabel}
+        ></div>
+      </div>
+      <div className="flex justify-between items-center text-[10px] text-[color:var(--claude-stone)]">
+        <span className="uppercase tracking-wide">{metaLabel}</span>
+        <span className="mono">
+          {status === 'sem_vendas'
+            ? `${skusNoGrupo} SKUs · sem vendas`
+            : `${skusVendidos}/${skusNoGrupo} · R$ ${Number(faturamento).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+          }
+        </span>
       </div>
     </div>
   )
@@ -823,30 +1139,10 @@ function RelatoriosPage() {
 
     setSubmitting(true)
     try {
-      await axios.post(`${API_URL}/vendas/bulk`, { vendas: items })
-      
-      let totalVenda = 0
-      let totalCusto = 0
-      items.forEach(it => {
-        const p = produtos.find(prod => prod.id === it.produto_id)
-        totalVenda += it.quantidade * it.preco_venda
-        totalCusto += it.quantidade * p.custo
-      })
-      const margem = totalVenda > 0 ? (totalVenda - totalCusto) / totalVenda : 0
-      
-      setSummary({
-        data: new Date().toLocaleDateString('pt-BR'),
-        venda: totalVenda,
-        margem: (margem * 100).toFixed(1),
-        itens: items.map(it => ({
-          nome: produtos.find(p => p.id === it.produto_id).nome,
-          qtd: it.quantidade,
-          preco: it.preco_venda
-        }))
-      })
-      
-      alert("Vendas registradas com sucesso!")
+      const res = await axios.post(`${API_URL}/fechamento`, { vendas: items })
+      setSummary(res.data)
     } catch (err) {
+      console.error(err)
       alert("Erro ao salvar vendas.")
     } finally {
       setSubmitting(false)
@@ -854,57 +1150,41 @@ function RelatoriosPage() {
   }
 
   const copyToWhatsApp = () => {
-    const text = `📊 *Fechamento do Dia - ${summary.data}*\n\n` +
-      `💰 Total Vendido: R$ ${summary.venda.toFixed(2)}\n` +
-      `🎯 Margem Média: ${summary.margem}%\n\n` +
-      `*Produtos:*\n` +
-      summary.itens.map((it: any) => `- ${it.nome}: ${it.qtd.toFixed(3)} x R$ ${it.preco.toFixed(2)}`).join('\n')
-    
+    if (!summary) return
+    const statusLabel = summary.status_meta === 'saudavel' ? '✅ Saudável'
+      : summary.status_meta === 'atencao' ? '⚠️ Atenção'
+      : summary.status_meta === 'alerta' ? '🚨 Alerta'
+      : '📭 Sem vendas'
+    const topLines = (summary.top_skus || []).slice(0, 5).map((s: any) =>
+      `• ${s.nome} [${s.classe_abc}${s.classe_xyz}] — ${s.quantidade.toFixed(2)}un / R$ ${s.receita.toFixed(2)}`
+    ).join('\n')
+    const anomaliaLines = (summary.anomalias || []).slice(0, 5).map((a: any) =>
+      `• ${a.severidade === 'alta' ? '🔴' : '🟡'} ${a.descricao}`
+    ).join('\n')
+
+    const text =
+      `📊 *Fechamento ${summary.data}*\n\n` +
+      `Status: ${statusLabel}\n` +
+      `💰 Faturamento: R$ ${summary.faturamento_dia.toFixed(2)}\n` +
+      `🎯 Margem: ${(summary.margem_dia * 100).toFixed(1)}% (média 7d: ${(summary.margem_media_7d * 100).toFixed(1)}%)\n` +
+      `📈 Variação vs 7d: ${summary.variacao_faturamento_7d_pct.toFixed(1)}%\n` +
+      `📦 SKUs vendidos: ${summary.total_skus_vendidos}/${summary.total_skus_cadastrados} · Rupturas: ${summary.rupturas}\n\n` +
+      (topLines ? `*Top SKUs:*\n${topLines}\n\n` : '') +
+      (anomaliaLines ? `*Anomalias:*\n${anomaliaLines}` : '')
+
     navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-    alert("Relatório copiado para o WhatsApp!")
   }
 
   if (summary) {
     return (
-      <div className="max-w-2xl mx-auto py-12">
-        <div className="bg-white p-8 rounded-3xl border-4 border-emerald-500 shadow-2xl relative transition-all animate-in fade-in zoom-in duration-500">
-          <div className="absolute -top-4 -right-4 bg-emerald-500 text-white p-2 rounded-xl">
-             <Check size={24} />
-          </div>
-          <h2 className="text-2xl font-black text-center mb-8">RELATÓRIO DE FECHAMENTO</h2>
-          <div className="space-y-6">
-            <div className="flex justify-between border-b pb-4">
-              <span className="text-slate-500 font-medium">Data</span>
-              <span className="font-extrabold">{summary.data}</span>
-            </div>
-            <div className="flex justify-between border-b pb-4">
-              <span className="text-slate-500 font-medium">Total Vendido (Gross)</span>
-              <span className="font-extrabold text-xl">R$ {summary.venda.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between border-b pb-4">
-              <span className="text-slate-500 font-medium">Margem Média do Dia</span>
-              <span className="font-black text-emerald-600">{summary.margem}%</span>
-            </div>
-          </div>
-
-          <div className="mt-12 flex flex-col sm:flex-row gap-4">
-            <button 
-              onClick={copyToWhatsApp}
-              className="flex-1 bg-emerald-600 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all active:scale-95"
-            >
-               <Copy size={18} /> {copied ? 'Copiado!' : 'Copiar para WhatsApp'}
-            </button>
-            <button 
-              onClick={() => { setSummary(null); setSalesItems({}); setSalesPrices({}); }}
-              className="flex-1 bg-slate-100 text-slate-600 font-bold py-4 rounded-xl hover:bg-slate-200 transition-all active:scale-95"
-            >
-              Novo Lançamento
-            </button>
-          </div>
-        </div>
-      </div>
+      <AnaliseFechamentoView
+        analise={summary}
+        onCopy={copyToWhatsApp}
+        copied={copied}
+        onReset={() => { setSummary(null); setSalesItems({}); setSalesPrices({}); }}
+      />
     )
   }
 
@@ -983,6 +1263,685 @@ function RelatoriosPage() {
 
 
 
+function ProjecaoPage() {
+  const [proj, setProj] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    carregar()
+  }, [])
+
+  const carregar = async () => {
+    setLoading(true)
+    try {
+      const res = await axios.get(`${API_URL}/projecao/amanha?top_n=30`)
+      setProj(res.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+      </div>
+    )
+  }
+
+  if (!proj) {
+    return (
+      <div className="max-w-4xl mx-auto p-8">
+        <p className="text-slate-500 italic">Erro ao carregar projeção.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header className="flex justify-between items-start">
+        <div>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Projeção para amanhã</p>
+          <h2 className="text-3xl font-bold tracking-tight capitalize">{proj.dia_semana} · {new Date(proj.data_alvo + 'T12:00').toLocaleDateString('pt-BR')}</h2>
+        </div>
+        <button
+          onClick={carregar}
+          className="bg-white border border-slate-200 px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50"
+        >
+          Recalcular
+        </button>
+      </header>
+      <ProjecaoCard proj={proj} />
+      <ProjecaoDetalhesSKU proj={proj} />
+    </div>
+  )
+}
+
+function ProjecaoCard({ proj }: any) {
+  const confMap: Record<string, { cor: string, label: string }> = {
+    alta: { cor: 'bg-emerald-500', label: 'Alta' },
+    media: { cor: 'bg-blue-500', label: 'Média' },
+    baixa: { cor: 'bg-amber-500', label: 'Baixa' },
+    sem_dados: { cor: 'bg-slate-400', label: 'Sem dados' },
+  }
+  const conf = confMap[proj.confianca_geral] || confMap.sem_dados
+
+  return (
+    <div className="bg-gradient-to-br from-indigo-600 to-blue-800 p-6 rounded-3xl text-white shadow-xl shadow-blue-900/20">
+      <div className="flex justify-between items-start mb-6">
+        <div>
+          <h3 className="text-xl font-bold flex items-center gap-2">
+            <Target size={20} className="text-blue-200" /> Projeção D+1 · {proj.dia_semana}
+          </h3>
+          <p className="text-blue-200 text-sm mt-1">
+            Baseado em rolling mean 7d + fator dia-da-semana (30d).
+          </p>
+        </div>
+        <span className={`${conf.cor} text-white text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg`}>
+          Confiança {conf.label}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-white/10 p-4 rounded-xl border border-white/5">
+          <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">Faturamento</p>
+          <p className="text-2xl font-black leading-tight mt-1">R$ {proj.faturamento_previsto.toFixed(2)}</p>
+          <p className="text-[10px] text-blue-200 mt-1">
+            {proj.comparacao_media_7d_pct >= 0 ? '+' : ''}{proj.comparacao_media_7d_pct.toFixed(1)}% vs média 7d
+          </p>
+        </div>
+        <div className="bg-white/10 p-4 rounded-xl border border-white/5">
+          <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">Margem</p>
+          <p className="text-2xl font-black leading-tight mt-1">{(proj.margem_prevista * 100).toFixed(1)}%</p>
+          <p className="text-[10px] text-blue-200 mt-1">Meta 17–19%</p>
+        </div>
+        <div className="bg-white/10 p-4 rounded-xl border border-white/5">
+          <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">Custo projetado</p>
+          <p className="text-2xl font-black leading-tight mt-1">R$ {proj.custo_previsto.toFixed(2)}</p>
+        </div>
+        <div className="bg-white/10 p-4 rounded-xl border border-white/5">
+          <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">SKUs com previsão</p>
+          <p className="text-2xl font-black leading-tight mt-1">{proj.skus_previstos}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProjecaoDetalhesSKU({ proj }: any) {
+  const skusComPrevisao = (proj.por_sku || []).filter((s: any) => s.quantidade_prevista > 0)
+  const skusSemHistorico = (proj.por_sku || []).filter((s: any) => s.confianca === 'sem_dados')
+
+  const confBadge = (conf: string) => {
+    const map: Record<string, string> = {
+      alta: 'bg-emerald-100 text-emerald-700',
+      media: 'bg-blue-100 text-blue-700',
+      baixa: 'bg-amber-100 text-amber-700',
+      sem_dados: 'bg-slate-100 text-slate-500',
+    }
+    return map[conf] || map.sem_dados
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+      <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
+        <TrendingUp size={18} className="text-blue-500" /> Top SKUs previstos
+      </h3>
+      {skusComPrevisao.length === 0 ? (
+        <div className="p-6 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
+          <AlertTriangle className="text-amber-600 shrink-0" size={18} />
+          <div>
+            <p className="text-sm font-bold text-amber-900">Sem histórico suficiente para projeção.</p>
+            <p className="text-xs text-amber-700 mt-1">
+              Registre ao menos 3 fechamentos diários para começar a gerar previsões. Confiança alta a partir de 21 dias.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-widest text-slate-400 border-b">
+              <th className="text-left pb-2 font-black">Produto</th>
+              <th className="text-center pb-2 font-black">Confiança</th>
+              <th className="text-right pb-2 font-black">Qtd prev.</th>
+              <th className="text-right pb-2 font-black">Receita</th>
+              <th className="text-right pb-2 font-black">Margem</th>
+              <th className="text-right pb-2 font-black">Fator DoW</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {skusComPrevisao.map((s: any) => (
+              <tr key={s.produto_id} className="hover:bg-slate-50/50">
+                <td className="py-2.5 font-semibold text-slate-800">{s.nome}</td>
+                <td className="py-2.5 text-center">
+                  <span className={`inline-flex px-2 py-0.5 rounded-md text-[10px] font-black tracking-wider ${confBadge(s.confianca)}`}>
+                    {s.confianca} · {s.dias_historico}d
+                  </span>
+                </td>
+                <td className="py-2.5 text-right font-mono text-slate-600">{s.quantidade_prevista.toFixed(2)}</td>
+                <td className="py-2.5 text-right font-mono font-bold text-slate-900">R$ {s.receita_prevista.toFixed(2)}</td>
+                <td className="py-2.5 text-right">
+                  <span className={`font-black ${s.margem_prevista >= 0.17 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {(s.margem_prevista * 100).toFixed(1)}%
+                  </span>
+                </td>
+                <td className="py-2.5 text-right">
+                  <span className={`text-xs font-bold ${s.dow_factor > 1.05 ? 'text-emerald-600' : s.dow_factor < 0.95 ? 'text-rose-600' : 'text-slate-500'}`}>
+                    {s.dow_factor.toFixed(2)}×
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {skusSemHistorico.length > 0 && (
+        <p className="text-[11px] text-slate-400 mt-4 italic">
+          {skusSemHistorico.length} SKU(s) sem histórico não foram projetados.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
+  const statusConfig: Record<string, { label: string, bg: string, text: string, border: string }> = {
+    saudavel:   { label: 'SAUDÁVEL',   bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-500' },
+    atencao:    { label: 'ATENÇÃO',    bg: 'bg-amber-50',   text: 'text-amber-700',   border: 'border-amber-500' },
+    alerta:     { label: 'ALERTA',     bg: 'bg-rose-50',    text: 'text-rose-700',    border: 'border-rose-500' },
+    sem_vendas: { label: 'SEM VENDAS', bg: 'bg-slate-50',   text: 'text-slate-600',   border: 'border-slate-400' },
+  }
+  const cfg = statusConfig[analise.status_meta] || statusConfig.sem_vendas
+
+  const abc = analise.classificacao_abc || {}
+  const xyz = analise.classificacao_xyz || {}
+  const anomaliasOrdenadas = [...(analise.anomalias || [])].sort((a: any, b: any) => {
+    const ord: Record<string, number> = { alta: 0, media: 1, baixa: 2 }
+    return (ord[a.severidade] ?? 3) - (ord[b.severidade] ?? 3)
+  })
+
+  const sevIcon = (s: string) =>
+    s === 'alta' ? <AlertTriangle size={14} className="text-rose-600" /> :
+    s === 'media' ? <AlertCircle size={14} className="text-amber-600" /> :
+    <Check size={14} className="text-slate-500" />
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header className="flex justify-between items-start">
+        <div>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Fechamento do dia</p>
+          <h2 className="text-3xl font-bold tracking-tight">{new Date(analise.data + 'T12:00').toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
+        </div>
+        <div className={`${cfg.bg} ${cfg.text} ${cfg.border} border-2 px-6 py-3 rounded-2xl font-black uppercase text-sm tracking-widest shadow-sm`}>
+          {cfg.label}
+        </div>
+      </header>
+
+      {/* KPIs principais */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <KPICard title="Faturamento" value={`R$ ${analise.faturamento_dia.toFixed(2)}`} sub={`vs 7d: ${analise.variacao_faturamento_7d_pct >= 0 ? '+' : ''}${analise.variacao_faturamento_7d_pct.toFixed(1)}%`} tone={analise.variacao_faturamento_7d_pct >= -5 ? 'ok' : 'alert'} />
+        <KPICard title="Margem do Dia" value={`${(analise.margem_dia * 100).toFixed(1)}%`} sub={`Meta: 17–19%`} tone={analise.status_meta === 'saudavel' ? 'ok' : analise.status_meta === 'alerta' ? 'alert' : 'warn'} />
+        <KPICard title="Margem 7d / 30d" value={`${(analise.margem_media_7d * 100).toFixed(1)}%`} sub={`30d: ${(analise.margem_media_30d * 100).toFixed(1)}%`} tone="neutral" />
+        <KPICard title="SKUs vendidos" value={`${analise.total_skus_vendidos}/${analise.total_skus_cadastrados}`} sub={`Rupturas: ${analise.rupturas}`} tone={analise.rupturas > 0 ? 'warn' : 'ok'} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Top SKUs */}
+        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+          <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
+            <TrendingUp size={18} className="text-blue-500" /> Top SKUs do Dia
+          </h3>
+          {(analise.top_skus || []).length === 0 ? (
+            <p className="text-sm text-slate-400 italic">Nenhuma venda registrada.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-widest text-slate-400 border-b">
+                  <th className="text-left pb-2 font-black">Produto</th>
+                  <th className="text-center pb-2 font-black">Classe</th>
+                  <th className="text-right pb-2 font-black">Qtd</th>
+                  <th className="text-right pb-2 font-black">Receita</th>
+                  <th className="text-right pb-2 font-black">Margem</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {analise.top_skus.map((s: any) => (
+                  <tr key={s.produto_id} className="hover:bg-slate-50/50">
+                    <td className="py-2.5 font-semibold text-slate-800">{s.nome}</td>
+                    <td className="py-2.5 text-center">
+                      <span className="inline-flex px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-[10px] font-black tracking-wider">{s.classe_abc}{s.classe_xyz}</span>
+                    </td>
+                    <td className="py-2.5 text-right font-mono text-slate-600">{s.quantidade.toFixed(2)}</td>
+                    <td className="py-2.5 text-right font-mono font-bold text-slate-900">R$ {s.receita.toFixed(2)}</td>
+                    <td className="py-2.5 text-right">
+                      <span className={`font-black ${s.margem_dia >= 0.17 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {(s.margem_dia * 100).toFixed(1)}%
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Classificação ABC-XYZ */}
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+          <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
+            <Gauge size={18} className="text-blue-500" /> Matriz ABC-XYZ (30d)
+          </h3>
+          <div className="space-y-4">
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Por receita (ABC)</p>
+              <div className="flex gap-2">
+                <ClassBadge label="A" count={abc.A || 0} color="bg-emerald-500" />
+                <ClassBadge label="B" count={abc.B || 0} color="bg-blue-500" />
+                <ClassBadge label="C" count={abc.C || 0} color="bg-slate-400" />
+                <ClassBadge label="N/A" count={abc['N/A'] || 0} color="bg-slate-200 text-slate-500" />
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Por previsibilidade (XYZ)</p>
+              <div className="flex gap-2">
+                <ClassBadge label="X" count={xyz.X || 0} color="bg-emerald-500" />
+                <ClassBadge label="Y" count={xyz.Y || 0} color="bg-amber-500" />
+                <ClassBadge label="Z" count={xyz.Z || 0} color="bg-rose-500" />
+                <ClassBadge label="N/A" count={xyz['N/A'] || 0} color="bg-slate-200 text-slate-500" />
+              </div>
+            </div>
+            <div className="pt-2 text-[11px] text-slate-500 leading-relaxed border-t">
+              <b>A</b>=80% da receita · <b>X</b>=venda estável · <b>Z</b>=errática.
+              <br/>Alvo de promoção: <b>CX/CY</b> (baixo risco).
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Anomalias */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+        <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
+          <AlertTriangle size={18} className="text-amber-500" /> Anomalias detectadas ({anomaliasOrdenadas.length})
+        </h3>
+        {anomaliasOrdenadas.length === 0 ? (
+          <p className="text-sm text-slate-400 italic flex items-center gap-2">
+            <Check size={14} className="text-emerald-500" /> Nenhuma anomalia. Dia dentro do esperado.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {anomaliasOrdenadas.slice(0, 15).map((a: any, i: number) => (
+              <li key={i} className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl">
+                <div className="mt-0.5">{sevIcon(a.severidade)}</div>
+                <div className="flex-1">
+                  <p className="text-sm text-slate-800">{a.descricao}</p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+                    {a.tipo.replace(/_/g, ' ')} · {a.severidade}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-4">
+        <button
+          onClick={onCopy}
+          className="flex-1 bg-emerald-600 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all active:scale-95"
+        >
+          <Copy size={18} /> {copied ? 'Copiado!' : 'Copiar análise para WhatsApp'}
+        </button>
+        <button
+          onClick={onReset}
+          className="flex-1 bg-slate-100 text-slate-600 font-bold py-4 rounded-xl hover:bg-slate-200 transition-all active:scale-95"
+        >
+          Novo Lançamento
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function BriefingPage() {
+  const [briefing, setBriefing] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [data, setData] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [simCesta, setSimCesta] = useState<any>(null)
+  const [simLoading, setSimLoading] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    carregar(data)
+  }, [data])
+
+  const carregar = async (alvo: string) => {
+    setLoading(true)
+    setSimCesta(null)
+    try {
+      const res = await axios.get(`${API_URL}/fechamento/narrativa?data=${alvo}&top_recs=10`)
+      setBriefing(res.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const simularCesta = async (urgencia?: string) => {
+    setSimLoading(true)
+    try {
+      const url = urgencia
+        ? `${API_URL}/recomendacoes/simular-cesta?data=${data}&urgencia=${urgencia}`
+        : `${API_URL}/recomendacoes/simular-cesta?data=${data}`
+      const res = await axios.get(url)
+      setSimCesta(res.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSimLoading(false)
+    }
+  }
+
+  const copiar = async () => {
+    if (!briefing?.narrativa) return
+    try {
+      await navigator.clipboard.writeText(briefing.narrativa)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  if (loading) {
+    return <div className="p-8 text-[color:var(--claude-stone)] serif italic">Gerando briefing…</div>
+  }
+  if (!briefing) {
+    return <div className="p-8 text-[color:var(--claude-coral)]">Erro ao carregar briefing.</div>
+  }
+
+  const analise = briefing.analise || {}
+  const projecao = briefing.projecao || {}
+  const recs = briefing.recomendacoes || []
+
+  const statusMap: Record<string, { bg: string; accent: string; label: string }> = {
+    saudavel: { bg: 'var(--claude-sage)',  accent: 'var(--claude-sage)',  label: 'Saudável' },
+    atencao:  { bg: 'var(--claude-amber)', accent: 'var(--claude-amber)', label: 'Atenção'  },
+    alerta:   { bg: 'var(--claude-coral)', accent: 'var(--claude-coral)', label: 'Alerta'   },
+  }
+  const statusInfo = statusMap[analise.status_meta] || { bg: 'var(--claude-stone)', accent: 'var(--claude-stone)', label: 'Sem dados' }
+
+  const margemPct = (analise.margem_dia || 0) * 100
+  const margemPrevPct = (projecao.margem_prevista || 0) * 100
+
+  return (
+    <div className="p-6 overflow-auto h-full">
+      <div className="max-w-6xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="section-label mb-1">Narrativa consolidada</p>
+            <h1 className="headline text-4xl flex items-center gap-3 tracking-editorial">
+              <Sparkles size={28} className="text-[color:var(--claude-coral)]" />
+              Briefing Diário
+            </h1>
+            <p className="text-sm text-[color:var(--claude-stone)] mt-1">
+              Fechamento + projeção + próximos movimentos, prontos para o WhatsApp.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={data}
+              onChange={(e) => setData(e.target.value)}
+              className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white mono"
+            />
+            <button
+              onClick={() => carregar(data)}
+              className="px-4 py-2 bg-[color:var(--claude-ink)] text-[color:var(--claude-cream)] text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
+            >
+              Atualizar
+            </button>
+          </div>
+        </div>
+
+        {/* Narrativa card */}
+        <div
+          className="claude-card p-6 border-l-4"
+          style={{
+            borderLeftColor: statusInfo.accent,
+            background: `color-mix(in srgb, ${statusInfo.bg} 5%, white)`
+          }}
+        >
+          <div className="flex items-start justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <span className="pill"
+                    style={{
+                      background: `color-mix(in srgb, ${statusInfo.bg} 15%, transparent)`,
+                      color: statusInfo.accent
+                    }}>
+                {statusInfo.label}
+              </span>
+              <span className="section-label text-[color:var(--claude-stone)]">
+                {briefing.fonte === 'ia' ? 'Gerado por IA' : 'Template determinístico'}
+              </span>
+            </div>
+            <button
+              onClick={copiar}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-[color:var(--claude-cream-deep)] border border-[color:var(--border)] rounded-lg text-xs font-medium transition-colors"
+            >
+              {copied ? <><Check size={14} /> Copiado</> : <><Clipboard size={14} /> Copiar p/ WhatsApp</>}
+            </button>
+          </div>
+          <div className="prose prose-sm max-w-none whitespace-pre-wrap text-[color:var(--claude-ink)] leading-relaxed serif text-[15px]">
+            {briefing.narrativa}
+          </div>
+        </div>
+
+        {/* KPIs consolidados */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <KPICard
+            title="Margem do Dia"
+            value={`${margemPct.toFixed(1)}%`}
+            sub={`Meta 17-19% · ${analise.status_meta || '-'}`}
+            tone={margemPct >= 17 && margemPct <= 19 ? 'ok' : margemPct < 17 ? 'alert' : 'warn'}
+          />
+          <KPICard
+            title="Faturamento Hoje"
+            value={`R$ ${(analise.faturamento_dia || 0).toFixed(2)}`}
+            sub={`${(analise.variacao_faturamento_7d_pct || 0) > 0 ? '+' : ''}${(analise.variacao_faturamento_7d_pct || 0).toFixed(1)}% vs 7d`}
+            tone={(analise.variacao_faturamento_7d_pct || 0) >= 0 ? 'ok' : 'warn'}
+          />
+          <KPICard
+            title="Previsão Amanhã"
+            value={`R$ ${(projecao.faturamento_previsto || 0).toFixed(2)}`}
+            sub={`${projecao.dia_semana || '-'} · margem ${margemPrevPct.toFixed(1)}%`}
+            tone="ok"
+          />
+          <KPICard
+            title="SKUs c/ Ação"
+            value={recs.length}
+            sub={`${recs.filter((r: any) => r.urgencia === 'alta').length} urgência alta`}
+            tone={recs.filter((r: any) => r.urgencia === 'alta').length > 0 ? 'warn' : 'ok'}
+          />
+        </div>
+
+        {/* Simulador de cesta */}
+        <div className="claude-card p-5" style={{ background: 'color-mix(in srgb, var(--claude-coral) 4%, white)' }}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="headline text-xl flex items-center gap-2">
+              <Calculator size={18} className="text-[color:var(--claude-coral)]" />
+              Simular cesta de recomendações
+            </h3>
+            <div className="flex gap-2">
+              <button
+                onClick={() => simularCesta('alta')}
+                disabled={simLoading}
+                className="px-3 py-1.5 text-white text-xs font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+                style={{ background: 'var(--claude-coral)' }}
+              >
+                Só urgência alta
+              </button>
+              <button
+                onClick={() => simularCesta()}
+                disabled={simLoading}
+                className="px-3 py-1.5 text-[color:var(--claude-cream)] text-xs font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+                style={{ background: 'var(--claude-ink)' }}
+              >
+                Todas recomendações
+              </button>
+            </div>
+          </div>
+          {simLoading && <p className="text-xs text-[color:var(--claude-stone)] serif italic">Calculando impacto…</p>}
+          {simCesta && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2">
+              <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
+                <p className="section-label">Margem atual</p>
+                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">{(simCesta.margem_atual * 100).toFixed(2)}%</p>
+              </div>
+              <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
+                <p className="section-label">Margem pós</p>
+                <p className={`kpi-value text-xl mt-1 ${simCesta.status === 'seguro' ? 'text-[color:var(--claude-sage)]' : simCesta.status === 'alerta' ? 'text-[color:var(--claude-amber)]' : 'text-[color:var(--claude-coral)]'}`}>
+                  {(simCesta.nova_margem_estimada * 100).toFixed(2)}%
+                </p>
+              </div>
+              <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
+                <p className="section-label">Impacto</p>
+                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">-{simCesta.impacto_pp.toFixed(2)}pp</p>
+              </div>
+              <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
+                <p className="section-label">SKUs afetados</p>
+                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">
+                  {simCesta.skus_afetados} <span className="text-xs text-[color:var(--claude-stone)] font-normal">· {simCesta.desconto_medio_ponderado.toFixed(1)}% desc</span>
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Recomendações detalhadas */}
+        <div>
+          <p className="section-label mb-2">Plano de ação</p>
+          <h2 className="headline text-2xl mb-4">Recomendações por SKU</h2>
+          <div className="space-y-2">
+            {recs.map((r: any) => <RecomendacaoCard key={r.produto_id} r={r} />)}
+            {recs.length === 0 && (
+              <div className="claude-card p-8 text-center">
+                <ShoppingBag className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={28} />
+                <p className="serif italic text-[color:var(--claude-stone)]">Nenhuma recomendação gerada para esta data.</p>
+                <p className="text-xs text-[color:var(--claude-stone)]/70 mt-1">Registre vendas para o motor de inteligência começar a sugerir movimentos.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RecomendacaoCard({ r }: any) {
+  const urgBorderMap: Record<string, string> = {
+    alta:  'var(--claude-coral)',
+    media: 'var(--claude-amber)',
+    baixa: 'var(--claude-stone)',
+  }
+  const urgColor = urgBorderMap[r.urgencia] || 'var(--claude-stone)'
+
+  // Paleta unificada — ações positivas em sage/coral, liquidações em coral mais intenso
+  const acaoColorMap: Record<string, string> = {
+    ajuste_cima:           'var(--claude-amber)',
+    repor_urgente:         'var(--claude-coral)',
+    liquidar_forte:        'var(--claude-coral)',
+    liquidar_leve:         'var(--claude-amber)',
+    promover_alto:         'var(--claude-ink)',
+    promover_moderado:     'var(--claude-ink)',
+    promover_combo:        'var(--claude-ink)',
+    proteger:              'var(--claude-sage)',
+    garantir_disponibilidade: 'var(--claude-sage)',
+  }
+  const acaoColor = acaoColorMap[r.acao] || 'var(--claude-stone)'
+  const acaoLabel = r.acao.replace(/_/g, ' ').toUpperCase()
+
+  return (
+    <div className="claude-card p-4 border-l-4 hover:shadow-[0_4px_16px_-8px_rgba(28,27,23,0.16)] transition-shadow"
+         style={{ borderLeftColor: urgColor }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded text-white"
+                  style={{ background: acaoColor }}>
+              {acaoLabel}
+            </span>
+            <span className="pill"
+                  style={{
+                    background: `color-mix(in srgb, ${urgColor} 15%, transparent)`,
+                    color: urgColor
+                  }}>
+              urg {r.urgencia}
+            </span>
+            <span className="pill pill-muted mono">
+              {r.classe_abc}-{r.classe_xyz}
+            </span>
+          </div>
+          <h4 className="serif font-semibold text-[color:var(--claude-ink)] mt-2 text-lg leading-tight truncate">{r.nome}</h4>
+          <p className="text-xs text-[color:var(--claude-stone)] mono">SKU {r.sku}</p>
+          <p className="text-sm text-[color:var(--claude-ink)] mt-2">{r.justificativa}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] italic mt-1">→ {r.impacto_esperado}</p>
+        </div>
+        <div className="text-right flex-shrink-0 space-y-2">
+          {r.desconto_sugerido !== null && r.desconto_sugerido !== undefined && (
+            <div>
+              <p className="section-label">Desc. sug.</p>
+              <p className="kpi-value text-xl text-[color:var(--claude-coral)]">-{r.desconto_sugerido.toFixed(1)}%</p>
+            </div>
+          )}
+          {r.preco_sugerido && (
+            <div>
+              <p className="section-label">Preço sug.</p>
+              <p className="kpi-value text-sm text-[color:var(--claude-ink)]">R$ {r.preco_sugerido.toFixed(2)}</p>
+            </div>
+          )}
+          <div>
+            <p className="section-label">Margem</p>
+            <p className="kpi-value text-sm text-[color:var(--claude-ink)]">
+              {(r.margem_atual * 100).toFixed(1)}%
+              {r.margem_pos_acao !== null && r.margem_pos_acao !== undefined && (
+                <span className="text-[color:var(--claude-stone)]"> → {(r.margem_pos_acao * 100).toFixed(1)}%</span>
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function KPICard({ title, value, sub, tone }: any) {
+  const toneMap: Record<string, string> = {
+    ok:    'text-[color:var(--claude-sage)]',
+    warn:  'text-[color:var(--claude-amber)]',
+    alert: 'text-[color:var(--claude-coral)]',
+  }
+  const toneColor = toneMap[tone] || 'text-[color:var(--claude-ink)]'
+  return (
+    <div className="claude-card p-5">
+      <p className="section-label mb-2">{title}</p>
+      <p className={`kpi-value text-2xl leading-none ${toneColor}`}>{value}</p>
+      <p className="text-[11px] font-medium text-[color:var(--claude-stone)] mt-2">{sub}</p>
+    </div>
+  )
+}
+
+function ClassBadge({ label, count, color }: any) {
+  return (
+    <div className={`flex-1 rounded-xl p-3 text-center ${color} ${color.includes('text-') ? '' : 'text-white'}`}>
+      <p className="text-[10px] font-black uppercase tracking-widest opacity-80">{label}</p>
+      <p className="text-lg font-black">{count}</p>
+    </div>
+  )
+}
+
 function SimuladorPage() {
   const [produtos, setProdutos] = useState<any[]>([])
   const [selectedIds, setSelectedIds] = useState<number[]>([])
@@ -1058,12 +2017,28 @@ function SimuladorPage() {
               <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Margem Estimada Resultante</p>
               <p className="text-5xl font-black text-slate-900 tracking-tighter">{(result.nova_margem_estimada * 100).toFixed(1)}%</p>
               <div className={`p-4 rounded-xl border font-black uppercase text-xs text-center tracking-widest ${
-                result.status === 'SAUDÁVEL' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'
+                result.status === 'seguro'
+                  ? 'bg-emerald-50 border-emerald-100 text-emerald-600'
+                  : result.status === 'alerta'
+                    ? 'bg-amber-50 border-amber-100 text-amber-700'
+                    : 'bg-rose-50 border-rose-100 text-rose-600'
               }`}>
-                 Status: {result.status}
+                 Status: {result.status === 'seguro' ? 'SAUDÁVEL' : result.status === 'alerta' ? 'ATENÇÃO' : 'BLOQUEADO'}
+              </div>
+              <div className="bg-slate-50 rounded-xl p-4 space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-semibold">Margem atual</span>
+                  <span className="font-black text-slate-700">{(result.margem_atual * 100).toFixed(1)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-semibold">Impacto</span>
+                  <span className={`font-black ${result.impacto_pp > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                    {result.impacto_pp > 0 ? '-' : '+'}{Math.abs(result.impacto_pp).toFixed(2)} pp
+                  </span>
+                </div>
               </div>
               <p className="text-xs text-slate-500 leading-relaxed italic">
-                * Este cálculo considera que todos os faturamentos seriam afetados pela nova regra de margem.
+                * Cálculo ponderado pelo estoque atual. Status bloqueado = margem &lt; 17%.
               </p>
             </div>
           ) : (
@@ -1074,6 +2049,306 @@ function SimuladorPage() {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// HistoricoPage — inspeção e exclusão de entradas/saídas
+// ============================================================================
+type Movimentacao = {
+  movimentacao_id: number
+  venda_id: number | null
+  tipo: 'ENTRADA' | 'SAIDA'
+  produto_id: number | null
+  produto_nome: string
+  produto_sku: string | null
+  quantidade: number
+  peso: number
+  custo_unitario: number
+  valor_total: number
+  cidade: string | null
+  data: string | null
+}
+
+function HistoricoPage() {
+  const [movs, setMovs] = useState<Movimentacao[]>([])
+  const [loading, setLoading] = useState(true)
+  const [dias, setDias] = useState(30)
+  const [filtroTipo, setFiltroTipo] = useState<'' | 'ENTRADA' | 'SAIDA'>('')
+  const [confirmando, setConfirmando] = useState<Movimentacao | null>(null)
+  const [excluindo, setExcluindo] = useState(false)
+  const [reconciliando, setReconciliando] = useState(false)
+  const [toast, setToast] = useState<{ tipo: 'ok' | 'erro'; msg: string } | null>(null)
+
+  const reconciliar = async () => {
+    if (reconciliando) return
+    if (!confirm('Reconciliar: recalcula estoque e custo de TODOS os produtos a partir do log de movimentações. Corrige estado inconsistente e desativa produtos sem movimentação. Continuar?')) return
+    setReconciliando(true)
+    try {
+      const res = await axios.post(`${API_URL}/admin/reconciliar-estoques`)
+      const d = res.data?.detalhe
+      setToast({
+        tipo: 'ok',
+        msg: `Reconciliação ok: ${d?.produtos_verificados ?? 0} verificados, ${d?.produtos_ajustados ?? 0} ajustados, ${d?.produtos_desativados ?? 0} desativados.`
+      })
+      await carregar()
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao reconciliar.' })
+    } finally {
+      setReconciliando(false)
+      setTimeout(() => setToast(null), 6000)
+    }
+  }
+
+  const carregar = async () => {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ dias: String(dias) })
+      if (filtroTipo) params.append('tipo', filtroTipo)
+      const res = await axios.get(`${API_URL}/historico/movimentacoes?${params}`)
+      setMovs(res.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { carregar() }, [dias, filtroTipo])
+
+  const confirmarExclusao = async () => {
+    if (!confirmando) return
+    setExcluindo(true)
+    try {
+      if (confirmando.tipo === 'ENTRADA') {
+        await axios.delete(`${API_URL}/entradas/${confirmando.movimentacao_id}`)
+      } else if (confirmando.venda_id) {
+        await axios.delete(`${API_URL}/vendas/${confirmando.venda_id}`)
+      } else {
+        throw new Error('Venda órfã — sem venda_id para deletar.')
+      }
+      setToast({ tipo: 'ok', msg: `${confirmando.tipo === 'ENTRADA' ? 'Entrada' : 'Venda'} de ${confirmando.produto_nome} excluída. Estoque revertido.` })
+      setConfirmando(null)
+      await carregar()
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao excluir.' })
+    } finally {
+      setExcluindo(false)
+      setTimeout(() => setToast(null), 4500)
+    }
+  }
+
+  const totais = {
+    entradas: movs.filter(m => m.tipo === 'ENTRADA').length,
+    saidas: movs.filter(m => m.tipo === 'SAIDA').length,
+    valorEntradas: movs.filter(m => m.tipo === 'ENTRADA').reduce((s, m) => s + m.valor_total, 0),
+    valorSaidas: movs.filter(m => m.tipo === 'SAIDA').reduce((s, m) => s + m.valor_total, 0),
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header className="flex justify-between items-end">
+        <div>
+          <p className="section-label mb-1">Auditoria · últimos {dias} dias</p>
+          <h2 className="headline text-4xl tracking-editorial">Histórico de Movimentações</h2>
+          <p className="text-[color:var(--claude-stone)] mt-1">
+            Revise entradas e saídas lançadas. Excluir reverte o estoque automaticamente.
+          </p>
+        </div>
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={reconciliar}
+            disabled={reconciliando}
+            title="Recalcula estoque e custo de todos os produtos a partir do log de movimentações"
+            className="px-3 py-2 text-sm rounded-lg border border-[color:var(--border)] text-[color:var(--claude-ink)] hover:bg-[color:var(--claude-cream-deep)] disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {reconciliando ? 'Reconciliando…' : 'Reconciliar estoques'}
+          </button>
+          <select
+            value={filtroTipo}
+            onChange={(e) => setFiltroTipo(e.target.value as any)}
+            className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+          >
+            <option value="">Todos os tipos</option>
+            <option value="ENTRADA">Apenas entradas</option>
+            <option value="SAIDA">Apenas saídas</option>
+          </select>
+          <select
+            value={dias}
+            onChange={(e) => setDias(Number(e.target.value))}
+            className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+          >
+            <option value={7}>7 dias</option>
+            <option value={30}>30 dias</option>
+            <option value={90}>90 dias</option>
+            <option value={365}>1 ano</option>
+          </select>
+        </div>
+      </header>
+
+      {/* Sumário */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="claude-card p-4">
+          <p className="section-label">Entradas</p>
+          <p className="kpi-value text-2xl text-[color:var(--claude-sage)] mt-1">{totais.entradas}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorEntradas.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+        </div>
+        <div className="claude-card p-4">
+          <p className="section-label">Saídas</p>
+          <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">{totais.saidas}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorSaidas.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+        </div>
+        <div className="claude-card p-4 md:col-span-2">
+          <p className="section-label">Fluxo líquido</p>
+          <p className={`kpi-value text-2xl mt-1 ${totais.valorSaidas - totais.valorEntradas >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
+            {totais.valorSaidas - totais.valorEntradas >= 0 ? '+' : ''}R$ {(totais.valorSaidas - totais.valorEntradas).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+          </p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1">Receita − Custo de entradas na janela</p>
+        </div>
+      </div>
+
+      {/* Tabela */}
+      <div className="claude-card overflow-hidden">
+        {loading ? (
+          <div className="p-12 flex justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[color:var(--claude-coral)]"></div>
+          </div>
+        ) : movs.length === 0 ? (
+          <div className="p-12 text-center">
+            <FileText className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={32} />
+            <p className="serif italic text-[color:var(--claude-stone)]">Nenhuma movimentação no período.</p>
+            <p className="text-xs text-[color:var(--claude-stone)]/70 mt-1">Lance entradas e vendas pra começar o histórico.</p>
+          </div>
+        ) : (
+          <table className="w-full text-left">
+            <thead>
+              <tr className="border-b border-[color:var(--border)] bg-[color:var(--claude-cream-deep)]/40">
+                <th className="px-4 py-3 section-label">Tipo</th>
+                <th className="px-4 py-3 section-label">Produto</th>
+                <th className="px-4 py-3 section-label text-right">Qtd</th>
+                <th className="px-4 py-3 section-label text-right">Peso</th>
+                <th className="px-4 py-3 section-label text-right">Preço/Custo</th>
+                <th className="px-4 py-3 section-label text-right">Valor total</th>
+                <th className="px-4 py-3 section-label">Cidade</th>
+                <th className="px-4 py-3 section-label">Data</th>
+                <th className="px-4 py-3 section-label text-center">Ação</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[color:var(--border)]">
+              {movs.map(m => {
+                const isEntrada = m.tipo === 'ENTRADA'
+                const acentColor = isEntrada ? 'var(--claude-sage)' : 'var(--claude-coral)'
+                const Icon = isEntrada ? ArrowDownCircle : ArrowUpCircle
+                const dataFmt = m.data
+                  ? new Date(m.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+                  : '—'
+                const podeExcluir = isEntrada || m.venda_id !== null
+                return (
+                  <tr key={`${m.tipo}-${m.movimentacao_id}`} className="hover:bg-[color:var(--claude-cream-deep)]/30 transition-colors">
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide"
+                            style={{ color: acentColor }}>
+                        <Icon size={14} /> {m.tipo}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-[color:var(--claude-ink)] truncate max-w-[220px]">{m.produto_nome}</p>
+                      {m.produto_sku && <p className="text-[10px] text-[color:var(--claude-stone)] mono">{m.produto_sku}</p>}
+                    </td>
+                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{m.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</td>
+                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-stone)]">{m.peso > 0 ? m.peso.toFixed(2) : '—'}</td>
+                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">R$ {m.custo_unitario.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right mono text-sm font-semibold" style={{ color: acentColor }}>
+                      R$ {m.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)]">{m.cidade || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)] mono">{dataFmt}</td>
+                    <td className="px-4 py-3 text-center">
+                      <button
+                        onClick={() => setConfirmando(m)}
+                        disabled={!podeExcluir}
+                        title={podeExcluir ? 'Excluir e reverter estoque' : 'Sem vínculo com venda — não é possível excluir por aqui'}
+                        className="p-1.5 rounded-lg text-[color:var(--claude-stone)] hover:text-[color:var(--claude-coral)] hover:bg-[color:var(--claude-coral)]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Modal confirmação */}
+      {confirmando && (
+        <div className="fixed inset-0 bg-[color:var(--claude-ink)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+             onClick={() => !excluindo && setConfirmando(null)}>
+          <div className="claude-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                     style={{ background: 'color-mix(in srgb, var(--claude-coral) 15%, transparent)' }}>
+                  <AlertTriangle size={20} className="text-[color:var(--claude-coral)]" />
+                </div>
+                <div>
+                  <p className="section-label">Confirmar exclusão</p>
+                  <h3 className="headline text-xl">Reverter {confirmando.tipo === 'ENTRADA' ? 'entrada' : 'venda'}?</h3>
+                </div>
+              </div>
+              <button onClick={() => !excluindo && setConfirmando(null)}
+                      className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-sm text-[color:var(--claude-ink)] mb-5">
+              <p><span className="text-[color:var(--claude-stone)]">Produto:</span> <span className="font-medium">{confirmando.produto_nome}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Quantidade:</span> <span className="mono">{confirmando.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">R$ {confirmando.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></p>
+              <div className="mt-3 p-3 rounded-lg text-xs"
+                   style={{ background: 'color-mix(in srgb, var(--claude-amber) 10%, transparent)', color: 'var(--claude-ink)' }}>
+                {confirmando.tipo === 'ENTRADA'
+                  ? <>⚠ Estoque cairá {confirmando.quantidade} un. Custo médio será recalculado a partir das entradas restantes.</>
+                  : <>↩ Estoque voltará +{confirmando.quantidade} un. Faturamento e margem do dia {confirmando.data?.slice(0, 10)} serão decrementados.</>
+                }
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmando(null)}
+                disabled={excluindo}
+                className="px-4 py-2 text-sm rounded-lg border border-[color:var(--border)] text-[color:var(--claude-ink)] hover:bg-[color:var(--claude-cream-deep)] disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarExclusao}
+                disabled={excluindo}
+                className="px-4 py-2 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+                style={{ background: 'var(--claude-coral)' }}
+              >
+                {excluindo ? 'Excluindo…' : <><Trash2 size={14} /> Confirmar exclusão</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 claude-card px-4 py-3 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2"
+             style={{
+               borderLeftWidth: '4px',
+               borderLeftColor: toast.tipo === 'ok' ? 'var(--claude-sage)' : 'var(--claude-coral)'
+             }}>
+          {toast.tipo === 'ok' ? <Check size={16} className="text-[color:var(--claude-sage)]" /> : <AlertCircle size={16} className="text-[color:var(--claude-coral)]" />}
+          <p className="text-sm text-[color:var(--claude-ink)]">{toast.msg}</p>
+        </div>
+      )}
     </div>
   )
 }

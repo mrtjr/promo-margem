@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, DateTime, JSON, Date, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -66,7 +66,7 @@ class Venda(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     produto_id = Column(Integer, ForeignKey("produtos.id"))
-    quantidade = Column(Integer)
+    quantidade = Column(Float)  # aceita decimais (vendas por peso)
     preco_venda = Column(Float)
     custo_total = Column(Float)
     data = Column(DateTime, server_default=func.now())
@@ -79,7 +79,7 @@ class Movimentacao(Base):
     id = Column(Integer, primary_key=True, index=True)
     produto_id = Column(Integer, ForeignKey("produtos.id"))
     tipo = Column(String)  # ENTRADA, SAIDA
-    quantidade = Column(Integer)  # QTD
+    quantidade = Column(Float)  # QTD (aceita decimais)
     peso = Column(Float, nullable=True)  # PESO
     custo_unitario = Column(Float)
     cidade = Column(String, nullable=True)
@@ -87,3 +87,28 @@ class Movimentacao(Base):
     data = Column(DateTime, server_default=func.now())
 
     produto = relationship("Produto")
+
+class VendaDiariaSKU(Base):
+    """Agregação diária de vendas por SKU — base para forecast e análise ABC-XYZ."""
+    __tablename__ = "vendas_diarias_sku"
+
+    id = Column(Integer, primary_key=True, index=True)
+    produto_id = Column(Integer, ForeignKey("produtos.id"), nullable=False)
+    data = Column(Date, nullable=False, index=True)
+    quantidade = Column(Float, default=0)  # aceita fracionado (kg)
+    receita = Column(Float, default=0)
+    custo = Column(Float, default=0)
+    preco_medio = Column(Float, default=0)
+
+    produto = relationship("Produto")
+
+    __table_args__ = (
+        UniqueConstraint('produto_id', 'data', name='uq_venda_diaria_produto_data'),
+        Index('ix_vendas_diarias_data_produto', 'data', 'produto_id'),
+    )
+
+    @property
+    def margem(self):
+        if self.receita == 0:
+            return 0
+        return (self.receita - self.custo) / self.receita

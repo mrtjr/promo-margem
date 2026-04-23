@@ -32,6 +32,10 @@ dist/
 *.csv
 postgres_data/
 
+# Debug / scratch
+narr.json
+*.narr.json
+
 # OS
 .DS_Store
 Thumbs.db

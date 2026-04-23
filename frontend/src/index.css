@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,51 +6,125 @@
 
 @layer base {
   :root {
-    --background: 210 40% 98%;
-    --foreground: 222.2 84% 4.9%;
+    /* Base neutra — cream claro de fundo, ink quase-preto pra texto */
+    --background: 42 28% 96%;          /* #F5F4ED warm cream */
+    --foreground: 24 10% 10%;          /* #1C1B17 ink */
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 24 10% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    --popover-foreground: 24 10% 10%;
+
+    /* Accent Claude Coral */
+    --primary: 18 52% 58%;             /* #CC785C coral */
+    --primary-foreground: 42 28% 98%;
+    --secondary: 42 22% 92%;           /* cream secundário */
+    --secondary-foreground: 24 10% 10%;
+    --muted: 42 18% 93%;
+    --muted-foreground: 24 6% 40%;
+    --accent: 18 52% 58%;
+    --accent-foreground: 42 28% 98%;
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 42 28% 98%;
+    --border: 30 15% 88%;
+    --input: 30 15% 88%;
+    --ring: 18 52% 58%;
     --radius: 0.75rem;
+
+    /* Tokens semânticos Claude Design — usados direto em classes customizadas */
+    --claude-coral: #CC785C;
+    --claude-coral-soft: #E8B5A2;
+    --claude-cream: #F5F4ED;
+    --claude-cream-deep: #EFEADC;
+    --claude-ink: #1C1B17;
+    --claude-stone: #6B6558;
+    --claude-sage: #7A8B5F;          /* verde oliva — saúde/meta */
+    --claude-amber: #D4A24C;         /* âmbar — alerta suave */
   }
 
   * {
-    @apply border-border selection:bg-blue-100 selection:text-blue-900;
+    @apply border-border selection:bg-[color:var(--claude-coral-soft)] selection:text-[color:var(--claude-ink)];
   }
-  
+
+  html {
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    font-family: 'Inter', sans-serif;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, .serif {
+    font-family: 'Fraunces', 'Iowan Old Style', 'Georgia', serif;
+    font-feature-settings: "ss01", "ss02";
+    letter-spacing: -0.015em;
+  }
+
+  .mono, .tabular {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "zero", "ss01";
   }
 }
 
 @layer components {
   .glass {
-    @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl;
+    @apply bg-white/85 backdrop-blur-md border border-white/40 shadow-[0_4px_24px_-8px_rgba(28,27,23,0.12)];
+  }
+
+  /* Card Claude — borda sutil, sombra quase inexistente, tipografia cuidada */
+  .claude-card {
+    @apply bg-card rounded-xl border border-[color:var(--border)] shadow-[0_1px_2px_0_rgba(28,27,23,0.04)];
+  }
+
+  /* Label de seção — small-caps estilo editorial */
+  .section-label {
+    font-family: 'Inter', sans-serif;
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--claude-stone)];
+  }
+
+  /* KPI numérico — sempre mono pra alinhamento vertical */
+  .kpi-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+    @apply font-semibold;
+  }
+
+  /* Headline editorial */
+  .headline {
+    font-family: 'Fraunces', serif;
+    @apply text-[color:var(--claude-ink)] font-semibold;
+    letter-spacing: -0.02em;
+  }
+
+  /* Pílula status */
+  .pill {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium tracking-wide;
+  }
+  .pill-ok {
+    background: color-mix(in srgb, var(--claude-sage) 15%, transparent);
+    color: var(--claude-sage);
+  }
+  .pill-warn {
+    background: color-mix(in srgb, var(--claude-amber) 18%, transparent);
+    color: var(--claude-amber);
+  }
+  .pill-alert {
+    background: color-mix(in srgb, var(--claude-coral) 15%, transparent);
+    color: var(--claude-coral);
+  }
+  .pill-muted {
+    background: hsl(var(--muted));
+    color: var(--claude-stone);
   }
 }
 
-/* Custom Scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-}
-::-webkit-scrollbar-track {
-  @apply bg-transparent;
-}
+/* Scrollbar discreta */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { @apply bg-transparent; }
 ::-webkit-scrollbar-thumb {
-  @apply bg-slate-200 rounded-full hover:bg-slate-300 transition-colors;
+  background: rgba(107, 101, 88, 0.25);
+  border-radius: 9999px;
+  transition: background 0.2s;
 }
+::-webkit-scrollbar-thumb:hover { background: rgba(107, 101, 88, 0.45); }
