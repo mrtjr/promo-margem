@@ -350,6 +350,20 @@ def _apagar_fechamento_do_dia(db: Session, dia: date) -> int:
             db.delete(m)
         db.delete(v)
 
+    # Apaga ENTRADAs-espelho criadas pelo próprio CSV import. Identificadas
+    # pelo timestamp exato 00:00:00 do dia (commit_importacao usa
+    # `datetime.combine(data_alvo, datetime.min.time())`); entradas manuais
+    # via estoque_service.registrar_entrada caem em func.now() do banco e
+    # nunca batem o midnight exato. Sem isso, re-importar o mesmo dia deixa
+    # ENTRADAs órfãs (caso o user marque a linha original como IGNORAR no
+    # 2º import) e o estoque vira positivo fantasma após recálculo.
+    ts_csv_entrada = datetime.combine(dia, datetime.min.time())
+    db.query(models.Movimentacao).filter(
+        models.Movimentacao.tipo == "ENTRADA",
+        models.Movimentacao.produto_id.in_(produtos_afetados),
+        models.Movimentacao.data == ts_csv_entrada,
+    ).delete(synchronize_session=False)
+
     # Apaga agregados do dia
     db.query(models.VendaDiariaSKU).filter(
         models.VendaDiariaSKU.data == dia
@@ -362,12 +376,19 @@ def _apagar_fechamento_do_dia(db: Session, dia: date) -> int:
 
     db.flush()
 
-    # Recalcula estoque dos produtos afetados a partir do log remanescente
+    # Recalcula estoque dos produtos afetados a partir do log remanescente.
+    # PRESERVA produto.custo quando o recalc zeraria por falta de ENTRADAS:
+    # acabamos de deletar as ENTRADAs-espelho do CSV; o re-import vai
+    # recompor o CMP com novas ENTRADAs. Sem o preserve, o re-import gera
+    # SAIDAs com custo_unitario=0 (margem 100% errada).
     from . import estoque_service
     for pid in produtos_afetados:
         prod = db.query(models.Produto).filter(models.Produto.id == pid).first()
         if prod:
+            custo_prev = prod.custo or 0
             estoque_service._recalcular_produto_do_zero(db, prod)
+            if (prod.custo or 0) == 0 and custo_prev > 0:
+                prod.custo = custo_prev
 
     return n
 
@@ -488,6 +509,11 @@ def commit_importacao(
 
     for l in linhas:
         produto: Optional[models.Produto] = None
+        # Sinaliza quando esta linha estabeleceu o custo do produto agora
+        # (criar/reativar/corrigir_custo). Nestes casos, a SAÍDA precisa de
+        # uma ENTRADA espelho — sem ela ficaria débito sem crédito no
+        # Histórico de Movimentações e no CMP.
+        estabeleceu_custo = False
 
         if l["status"] == "ok":
             produto = db.query(models.Produto).filter(
@@ -512,6 +538,7 @@ def commit_importacao(
                     raise ValueError(f"Linha {l['idx']}: produto_id {res['produto_id']} não existe.")
                 produto.custo = float(res["novo_custo"])
                 db.flush()
+                estabeleceu_custo = True
             elif res["acao"] == "associar":
                 produto = db.query(models.Produto).filter(
                     models.Produto.id == res["produto_id"]
@@ -529,33 +556,68 @@ def commit_importacao(
                     if not conflito:
                         produto.codigo = l["codigo_csv"]
             elif res["acao"] == "criar":
-                # Valida código único
-                if res.get("novo_codigo"):
+                # Resolução de unicidade do código:
+                #   - Se já existe ATIVO com esse código → erro (provável duplicata na UI).
+                #   - Se já existe INATIVO com esse código → reativa e atualiza (igual
+                #     ao padrão de Entrada de Estoque). Evita o bloqueio "código já
+                #     usado pelo SKU AUTO-…" causado por produtos soft-deleted que
+                #     ainda detêm o código no índice UNIQUE.
+                novo_codigo = (res["novo_codigo"].strip() if res.get("novo_codigo") else None)
+                conflito = None
+                if novo_codigo:
                     conflito = db.query(models.Produto).filter(
-                        models.Produto.codigo == res["novo_codigo"].strip()
+                        models.Produto.codigo == novo_codigo
                     ).first()
-                    if conflito:
-                        raise ValueError(
-                            f"Linha {l['idx']}: código '{res['novo_codigo']}' já usado "
-                            f"pelo SKU {conflito.sku}."
-                        )
-                produto = models.Produto(
-                    sku=_proximo_sku_auto(db),
-                    codigo=(res["novo_codigo"].strip() if res.get("novo_codigo") else None),
-                    nome=res["novo_nome"].strip(),
-                    grupo_id=res["novo_grupo_id"],
-                    custo=float(res["novo_custo"]),
-                    preco_venda=float(res["novo_preco_venda"]),
-                    estoque_qtd=0,
-                    estoque_peso=0,
-                    ativo=True,
-                )
-                db.add(produto)
-                db.flush()
-                produtos_criados += 1
+                if conflito and conflito.ativo:
+                    raise ValueError(
+                        f"Linha {l['idx']}: código '{novo_codigo}' já usado "
+                        f"pelo SKU {conflito.sku} (ativo)."
+                    )
+                if conflito and not conflito.ativo:
+                    # Reativa o produto fantasma com os dados do CSV
+                    produto = conflito
+                    produto.nome = res["novo_nome"].strip()
+                    produto.grupo_id = res["novo_grupo_id"]
+                    produto.custo = float(res["novo_custo"])
+                    produto.preco_venda = float(res["novo_preco_venda"])
+                    produto.ativo = True
+                    db.flush()
+                    produtos_criados += 1  # conta como "criado" do ponto de vista do user
+                    estabeleceu_custo = True
+                else:
+                    produto = models.Produto(
+                        sku=_proximo_sku_auto(db),
+                        codigo=novo_codigo,
+                        nome=res["novo_nome"].strip(),
+                        grupo_id=res["novo_grupo_id"],
+                        custo=float(res["novo_custo"]),
+                        preco_venda=float(res["novo_preco_venda"]),
+                        estoque_qtd=0,
+                        estoque_peso=0,
+                        ativo=True,
+                    )
+                    db.add(produto)
+                    db.flush()
+                    produtos_criados += 1
+                    estabeleceu_custo = True
 
         if not produto:
             continue
+
+        # Detecta produtos que ficaram sem ENTRADA histórica (cleanup de
+        # re-import apagou as antigas, ou produto puro-CSV ainda virgem).
+        # Sem ENTRADA-espelho a SAÍDA fica órfã no Histórico. Esta checagem
+        # roda DEPOIS de _apagar_fechamento_do_dia, então enxerga o estado
+        # pós-cleanup. Linhas "criar"/"corrigir_custo" já têm a flag setada
+        # pela ação; aqui complementamos para "ok"/"associar" cujo histórico
+        # foi limpo pela substituição.
+        if not estabeleceu_custo:
+            tem_entrada = db.query(models.Movimentacao).filter(
+                models.Movimentacao.produto_id == produto.id,
+                models.Movimentacao.tipo == "ENTRADA",
+            ).first() is not None
+            if not tem_entrada:
+                estabeleceu_custo = True
 
         qtd = float(l["quantidade"])
         preco = float(l["preco_unitario"])
@@ -566,10 +628,34 @@ def commit_importacao(
         # Timestamp da venda: fim do dia para ficar após qualquer entrada do mesmo dia
         ts = datetime.combine(data_alvo, datetime.min.time()) + timedelta(hours=23, minutes=59)
 
+        # ENTRADA espelho: quando o produto foi criado/reativado/teve custo
+        # corrigido nesta importação OU quando ele perdeu o histórico de
+        # ENTRADA na substituição, a SAÍDA da venda fica sem origem contábil.
+        # Registra ENTRADA no início do dia (00:00) com a mesma quantidade e
+        # o custo recém-estabelecido. Isso:
+        #   - mantém o Histórico de Movimentações balanceado (ENTRADA → SAÍDA);
+        #   - alimenta o estoque para que a baixa subsequente tenha de onde sair;
+        #   - documenta no audit trail a procedência do custo.
+        if estabeleceu_custo:
+            ts_entrada = datetime.combine(data_alvo, datetime.min.time())
+            mov_in = models.Movimentacao(
+                produto_id=produto.id,
+                tipo="ENTRADA",
+                quantidade=qtd,
+                peso=0,  # CSV de fechamento não traz peso; entra zerado
+                custo_unitario=custo_unit,
+                data=ts_entrada,
+            )
+            db.add(mov_in)
+            # Atualiza estoque para refletir a entrada antes da SAÍDA. Sem
+            # isso a baixa abaixo seria no-op (estoque já zero) e o produto
+            # ficaria com qtd negativa virtual.
+            produto.estoque_qtd = (produto.estoque_qtd or 0) + qtd
+
         # Baixa estoque proporcional ao peso médio atual
         peso_baixado = 0.0
         if (produto.estoque_qtd or 0) > 0:
-            peso_medio = (produto.estoque_peso or 0) / produto.estoque_qtd
+            peso_medio = (produto.estoque_peso or 0) / produto.estoque_qtd if (produto.estoque_qtd or 0) > 0 else 0
             peso_baixado = qtd * peso_medio
             produto.estoque_qtd = max(0.0, (produto.estoque_qtd or 0) - qtd)
             produto.estoque_peso = max(0.0, (produto.estoque_peso or 0) - peso_baixado)

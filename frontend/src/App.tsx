@@ -1868,7 +1868,12 @@ function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, gru
       {preview.ja_existe_fechamento && (
         <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-900 flex items-start gap-2">
           <AlertTriangle size={18} className="shrink-0 mt-0.5" />
-          <span>Já existe fechamento para <strong>{preview.data_alvo}</strong>. Ao confirmar, as vendas existentes serão apagadas e substituídas pelas do CSV.</span>
+          <span>
+            Já existe fechamento para <strong>{preview.data_alvo}</strong>. Ao confirmar,
+            <strong> vendas, ENTRADAS-espelho e SAÍDAS</strong> dos produtos deste dia
+            serão apagadas e regeneradas a partir do CSV. Movimentações manuais (Entrada
+            de Estoque) <em>não</em> são afetadas. Tem certeza que quer sobrescrever?
+          </span>
         </div>
       )}
 
