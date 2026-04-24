@@ -33,6 +33,13 @@ def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
             db.refresh(produto)
 
     if produto:
+        # Se o produto estava inativo (soft-deleted por _desativar_se_orfao numa
+        # exclusão anterior), reativa agora que chegou nova ENTRADA. Sem isso,
+        # o produto soma estoque + movimentação mas continua invisível em
+        # GET /produtos (que filtra ativo=True) — some de "Gestão de SKUs".
+        if not produto.ativo:
+            produto.ativo = True
+
         # Calculate new weighted average cost based on Total Weight
         total_peso_novo = entrada.quantidade * entrada.peso
         
