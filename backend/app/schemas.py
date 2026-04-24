@@ -483,13 +483,14 @@ class PDVLogOut(BaseModel):
 class CSVLinhaResolucao(BaseModel):
     """Ação que o usuário resolve numa linha pendente antes de commitar."""
     idx: int  # índice da linha no preview
-    acao: str  # "associar" | "criar" | "ignorar"
-    produto_id: Optional[int] = None  # quando acao == "associar"
+    acao: str  # "associar" | "criar" | "ignorar" | "corrigir_custo"
+    produto_id: Optional[int] = None  # quando acao == "associar" ou "corrigir_custo"
     # Campos obrigatórios quando acao == "criar":
     novo_codigo: Optional[str] = None
     novo_nome: Optional[str] = None
     novo_grupo_id: Optional[int] = None
     novo_preco_venda: Optional[float] = None
+    # Obrigatório em "criar" E "corrigir_custo":
     novo_custo: Optional[float] = None
 
 
@@ -504,7 +505,7 @@ class CSVLinhaPreview(BaseModel):
     total: float
     data_csv: Optional[str] = None
     # Resultado do matching
-    status: str  # "ok" | "conflito" | "sem_match" | "erro"
+    status: str  # "ok" | "conflito" | "sem_match" | "sem_custo" | "erro"
     produto_id: Optional[int] = None   # se casou
     produto_nome: Optional[str] = None
     mensagens: List[str] = []          # avisos/erros específicos desta linha

@@ -250,6 +250,15 @@ def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
         if status != "erro":  # só sobrescreve se não tem erro aritmético
             status = status_match
 
+        # Produto matched mas com custo<=0: vira pendente "sem_custo". O usuário
+        # precisa informar o custo antes de gerar a SAÍDA (senão margem = 100%).
+        if status == "ok" and produto and (produto.custo or 0) <= 0:
+            status = "sem_custo"
+            mensagens.append(
+                f"Produto '{produto.nome}' (SKU {produto.sku}) está sem custo unitário. "
+                "Informe o custo para gerar a venda."
+            )
+
         if status == "ok":
             ok += 1
             if produto:
@@ -280,8 +289,8 @@ def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
             "total": l.total,
             "data_csv": l.data.isoformat() if l.data else None,
             "status": status,
-            "produto_id": produto.id if produto and status == "ok" else None,
-            "produto_nome": produto.nome if produto and status == "ok" else None,
+            "produto_id": produto.id if produto and status in ("ok", "sem_custo") else None,
+            "produto_nome": produto.nome if produto and status in ("ok", "sem_custo") else None,
             "mensagens": mensagens,
         })
 
@@ -407,10 +416,15 @@ def commit_importacao(
                 f"Linha {l['idx']} ({l['nome_csv']}) tem status '{l['status']}' "
                 "mas sem resolução enviada."
             )
-        if res["acao"] not in ("associar", "criar", "ignorar"):
+        if res["acao"] not in ("associar", "criar", "ignorar", "corrigir_custo"):
             raise ValueError(f"Linha {l['idx']}: ação '{res['acao']}' inválida.")
         if res["acao"] == "associar" and not res.get("produto_id"):
             raise ValueError(f"Linha {l['idx']}: ação 'associar' exige produto_id.")
+        if res["acao"] == "corrigir_custo":
+            if not res.get("produto_id"):
+                raise ValueError(f"Linha {l['idx']}: ação 'corrigir_custo' exige produto_id.")
+            if float(res.get("novo_custo") or 0) <= 0:
+                raise ValueError(f"Linha {l['idx']}: ação 'corrigir_custo' exige novo_custo > 0.")
         if res["acao"] == "criar":
             faltando = [
                 k for k in ("novo_nome", "novo_grupo_id", "novo_preco_venda", "novo_custo")
@@ -446,6 +460,9 @@ def commit_importacao(
             elif res["acao"] == "criar":
                 if float(res.get("novo_custo") or 0) <= 0:
                     produtos_sem_custo.append(f"{res.get('novo_nome') or l['nome_csv']} (novo)")
+            # corrigir_custo: o novo_custo já foi validado (>0) na validação de
+            # resoluções acima; aqui nada a checar — custo será aplicado na
+            # passagem principal antes de gerar a venda.
 
     if produtos_sem_custo:
         unicos = list(dict.fromkeys(produtos_sem_custo))
@@ -483,7 +500,19 @@ def commit_importacao(
             if res["acao"] == "ignorar":
                 linhas_ignoradas += 1
                 continue
-            if res["acao"] == "associar":
+            if res["acao"] == "corrigir_custo":
+                # Produto existe mas estava com custo<=0. Atualiza o custo antes
+                # de gerar a SAÍDA. (Origem correta do custo é a Entrada de
+                # Estoque via CMP; esta é uma escotilha para destravar o
+                # fechamento quando há dado legado sem histórico de entrada.)
+                produto = db.query(models.Produto).filter(
+                    models.Produto.id == res["produto_id"]
+                ).first()
+                if not produto:
+                    raise ValueError(f"Linha {l['idx']}: produto_id {res['produto_id']} não existe.")
+                produto.custo = float(res["novo_custo"])
+                db.flush()
+            elif res["acao"] == "associar":
                 produto = db.query(models.Produto).filter(
                     models.Produto.id == res["produto_id"]
                 ).first()

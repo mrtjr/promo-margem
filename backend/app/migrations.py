@@ -125,10 +125,49 @@ def m_003_produto_codigo(conn: Connection) -> str:
     return "ok: produtos.codigo criado + índice unique parcial"
 
 
+def m_004_soft_delete_produtos_custo_zero(conn: Connection) -> str:
+    """
+    Desativa produtos órfãos que foram criados com custo=0 antes da validação
+    existir (commits anteriores a 2d87723). Produto com custo=0 gera SAÍDA
+    com margem 100% (dado contábil errado), então o matching do CSV deve
+    ignorá-los até que uma Entrada de Estoque estabeleça o CMP correto.
+
+    Idempotente: só age em produtos com custo<=0 E ativo=True. Roda novamente
+    sem efeito se o banco já estiver limpo. Uma vez que o usuário registrar
+    Entrada, o produto volta a ativo=True via estoque_service.
+    """
+    res = conn.execute(text(
+        "UPDATE produtos SET ativo = FALSE "
+        "WHERE (custo IS NULL OR custo <= 0) AND ativo = TRUE"
+    ))
+    n = res.rowcount if res.rowcount is not None else 0
+    return f"ok: {n} produto(s) órfão(s) com custo<=0 desativados" if n else "skip: nenhum produto com custo<=0 ativo"
+
+
+def m_005_produto_custo_nonneg(conn: Connection) -> str:
+    """
+    Adiciona CHECK CONSTRAINT garantindo que produto.custo nunca seja negativo.
+    Permite zero (produto pode nascer com custo=0 transitoriamente, antes da
+    primeira Entrada), mas bloqueia valores negativos por corrupção/bug.
+    """
+    row = conn.execute(text(
+        "SELECT 1 FROM information_schema.table_constraints "
+        "WHERE table_name='produtos' AND constraint_name='produto_custo_nonneg'"
+    )).first()
+    if row:
+        return "skip: constraint produto_custo_nonneg já existe"
+    conn.execute(text(
+        "ALTER TABLE produtos ADD CONSTRAINT produto_custo_nonneg CHECK (custo >= 0)"
+    ))
+    return "ok: constraint produto_custo_nonneg criada"
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
     m_003_produto_codigo,
+    m_004_soft_delete_produtos_custo_zero,
+    m_005_produto_custo_nonneg,
 ]
 
 

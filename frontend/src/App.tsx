@@ -342,7 +342,7 @@ function ComprasPage({ onComplete }: any) {
                 </td>
                 <td className="px-6 py-4">
                   <select
-                    className="w-full bg-slate-100/50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-slate-100/50 border border-slate-200 rounded-lg pl-2 pr-7 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 truncate"
                     value={row.matchedId || ''}
                     onChange={(e) => {
                       const id = parseInt(e.target.value)
@@ -354,7 +354,7 @@ function ComprasPage({ onComplete }: any) {
                       }
                     }}
                   >
-                    <option value="">-- NOVO ITEM --</option>
+                    <option value="">— novo item —</option>
                     {produtos.map(p => (
                       <option key={p.id} value={p.id}>{p.nome}{p.codigo ? ` [${p.codigo}]` : ''}</option>
                     ))}
@@ -918,12 +918,12 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
             stroke="var(--claude-stone)" strokeOpacity="0.55" strokeDasharray="4 4" strokeWidth="1"
           />
           <text
-            x={W - padR - 2} y={yToPx(media) - 4}
-            textAnchor="end" fontSize="9"
+            x={padL + 4} y={yToPx(media) - 4}
+            textAnchor="start" fontSize="9"
             fill="var(--claude-stone)"
             fontFamily="JetBrains Mono, monospace"
           >
-            média {(media * 100).toFixed(1)}%
+            méd. {(media * 100).toFixed(1)}%
           </text>
         </>
       )}
@@ -1635,18 +1635,55 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const associarSemProduto = Object.values(resolucoes).filter((r: any) =>
     r.acao === 'associar' && !r.produto_id
   ) as any[]
-  const podeCommitar = criarSemCusto.length === 0 && criarSemCampos.length === 0 && associarSemProduto.length === 0
+  const corrigirSemCusto = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'corrigir_custo' && (!r.novo_custo || Number(r.novo_custo) <= 0)
+  ) as any[]
+  // Linhas status=sem_custo que o usuário ainda não decidiu (sem resolução
+  // salva no state) também bloqueiam — exigem escolha explícita.
+  const semCustoNaoResolvidas = (preview?.linhas || []).filter(
+    (l: any) => l.status === 'sem_custo' && !resolucoes[l.idx]
+  ) as any[]
+  const podeCommitar =
+    criarSemCusto.length === 0 &&
+    criarSemCampos.length === 0 &&
+    associarSemProduto.length === 0 &&
+    corrigirSemCusto.length === 0 &&
+    semCustoNaoResolvidas.length === 0
+
+  const motivoBloqueio = (() => {
+    if (podeCommitar) return ''
+    const partes: string[] = []
+    if (criarSemCampos.length) {
+      const detalhes = criarSemCampos.map((r: any) => {
+        const faltando = [
+          !r.novo_nome && 'nome',
+          !r.novo_grupo_id && 'grupo',
+          !r.novo_preco_venda && 'preço',
+          !r.novo_custo && 'custo',
+        ].filter(Boolean).join(', ')
+        return `linha ${r.idx}: ${faltando}`
+      }).join(' | ')
+      partes.push(`Criar com campos faltando — ${detalhes}`)
+    }
+    if (criarSemCusto.length && !criarSemCampos.length) {
+      partes.push(`${criarSemCusto.length} linha(s) criar com custo <= 0`)
+    }
+    if (associarSemProduto.length) {
+      partes.push(`${associarSemProduto.length} linha(s) associar sem produto`)
+    }
+    if (corrigirSemCusto.length) {
+      partes.push(`${corrigirSemCusto.length} linha(s) corrigir custo sem valor`)
+    }
+    if (semCustoNaoResolvidas.length) {
+      partes.push(`${semCustoNaoResolvidas.length} linha(s) "sem custo" não resolvidas`)
+    }
+    return partes.join(' · ')
+  })()
 
   const commitar = async () => {
     if (!preview) return
     if (!podeCommitar) {
-      if (criarSemCusto.length) {
-        setErro(`${criarSemCusto.length} linha(s) 'criar' sem custo > 0. Informe o custo — uma venda sem custo vira margem 100%.`)
-      } else if (criarSemCampos.length) {
-        setErro(`${criarSemCampos.length} linha(s) 'criar' com campos faltando (nome/grupo/preço/custo).`)
-      } else {
-        setErro(`${associarSemProduto.length} linha(s) 'associar' sem produto selecionado.`)
-      }
+      setErro(motivoBloqueio || 'Há pendências nas resoluções.')
       return
     }
     setErro(null)
@@ -1706,8 +1743,11 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
 
         {/* Footer */}
         <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
-          <div className="text-sm">
+          <div className="text-sm max-w-[60%]">
             {erro && <span className="text-rose-600 font-semibold">{erro}</span>}
+            {!erro && estado === 'preview' && motivoBloqueio && (
+              <span className="text-amber-700 font-semibold text-xs">⚠ {motivoBloqueio}</span>
+            )}
           </div>
           <div className="flex gap-2">
             {estado === 'preview' && (
@@ -1738,7 +1778,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
                 onClick={commitar}
                 disabled={submitting || !podeCommitar}
                 className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 disabled:opacity-50 transition-all"
-                title={!podeCommitar ? 'Complete as resoluções pendentes (produto em associar, ou nome/grupo/preço/custo em criar).' : ''}
+                title={motivoBloqueio || ''}
               >
                 {submitting ? 'Importando...' : (preview?.ja_existe_fechamento ? 'Substituir e importar' : 'Confirmar importação')}
               </button>
@@ -1797,6 +1837,7 @@ function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, gru
       ok: 'bg-emerald-100 text-emerald-700',
       conflito: 'bg-amber-100 text-amber-700',
       sem_match: 'bg-amber-100 text-amber-700',
+      sem_custo: 'bg-amber-100 text-amber-700',
       erro: 'bg-rose-100 text-rose-700',
     }
     return map[status] || 'bg-slate-100 text-slate-700'
@@ -1806,6 +1847,7 @@ function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, gru
       ok: '✓ ok',
       conflito: 'conflito',
       sem_match: 'sem match',
+      sem_custo: 'sem custo',
       erro: 'erro',
     }
     return map[status] || status
@@ -1874,7 +1916,11 @@ function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, gru
                   ) : (
                     <LinhaResolucao
                       linha={l}
-                      resolucao={resolucoes[l.idx] || { idx: l.idx, acao: 'ignorar' }}
+                      resolucao={resolucoes[l.idx] || (
+                        l.status === 'sem_custo'
+                          ? { idx: l.idx, acao: 'corrigir_custo', produto_id: l.produto_id }
+                          : { idx: l.idx, acao: 'ignorar' }
+                      )}
                       onChange={(patch: any) => onResolucao(l.idx, patch)}
                       produtos={produtosExistentes}
                       grupos={grupos}
@@ -1909,11 +1955,59 @@ function MiniStat({ label, valor, cor }: any) {
 function LinhaResolucao({ linha, resolucao, onChange, produtos, grupos }: any) {
   const acao = resolucao.acao || 'ignorar'
 
+  // Caso especial: produto existe mas está com custo=0. UI simplificada —
+  // só pede o custo (e o botão Ignorar como escape).
+  if (linha.status === 'sem_custo') {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex gap-1.5">
+          <BotaoAcao
+            ativo={acao === 'corrigir_custo'}
+            onClick={() => onChange({ acao: 'corrigir_custo', produto_id: linha.produto_id })}
+            label="Informar custo"
+          />
+          <BotaoAcao ativo={acao === 'ignorar'} onClick={() => onChange({ acao: 'ignorar' })} label="Ignorar" />
+        </div>
+
+        {acao === 'corrigir_custo' && (
+          <div className="p-2 bg-amber-50 rounded-lg border border-amber-200 space-y-1.5">
+            <p className="text-[10px] text-amber-900">
+              Produto: <strong>{linha.produto_nome}</strong>. Informe o custo unitário para gerar a venda.
+            </p>
+            <input
+              type="number" step="0.01" min="0.01"
+              value={resolucao.novo_custo ?? ''}
+              onChange={(e) => onChange({ novo_custo: parseFloat(e.target.value) || 0 })}
+              placeholder="Custo unitário *"
+              className={`w-full p-1.5 rounded border text-xs bg-white ${
+                (!resolucao.novo_custo || Number(resolucao.novo_custo) <= 0)
+                  ? 'border-rose-400 bg-rose-50'
+                  : 'border-slate-300'
+              }`}
+            />
+            <p className="text-[10px] text-slate-500">
+              <strong className="text-rose-600">Custo &gt; 0</strong> obrigatório. O valor será salvo no produto e usado como CMP.
+            </p>
+          </div>
+        )}
+
+        {acao === 'ignorar' && (
+          <p className="text-[10px] text-slate-500 italic">Esta linha não vai virar venda.</p>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-1.5">
       <div className="flex gap-1.5">
         <BotaoAcao ativo={acao === 'associar'} onClick={() => onChange({ acao: 'associar' })} label="Associar" />
-        <BotaoAcao ativo={acao === 'criar'} onClick={() => onChange({ acao: 'criar' })} label="Criar" />
+        <BotaoAcao ativo={acao === 'criar'} onClick={() => onChange({
+          acao: 'criar',
+          novo_nome: resolucao.novo_nome ?? linha.nome_csv,
+          novo_codigo: resolucao.novo_codigo ?? linha.codigo_csv ?? '',
+          novo_preco_venda: resolucao.novo_preco_venda ?? linha.preco_unitario,
+        })} label="Criar" />
         <BotaoAcao ativo={acao === 'ignorar'} onClick={() => onChange({ acao: 'ignorar' })} label="Ignorar" />
       </div>
 
