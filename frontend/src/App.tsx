@@ -165,7 +165,7 @@ function ComprasPage({ onComplete }: any) {
   const [produtos, setProdutos] = useState<any[]>([])
   const [grupos, setGrupos] = useState<any[]>([])
   const [rows, setRows] = useState<any[]>([
-    { id: Date.now(), matchedId: null, name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }
+    { id: Date.now(), matchedId: null, codigo: '', name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }
   ])
   const [submitting, setSubmitting] = useState(false)
 
@@ -181,14 +181,27 @@ function ComprasPage({ onComplete }: any) {
     
     const newRows = lines.map(line => {
       const parts = line.split('\t').map(p => p.trim())
-      // Expected: Prod | Cid | Qtd | Peso | Valor | Categoria (Texto)
-      const [name, cidade, qtd, peso, vl_fp, cat_text] = parts
-      
-      // Auto-match product
-      const matched = produtos.find(p => 
-        p.nome.toLowerCase().includes((name || '').toLowerCase()) || 
-        (name || '').toLowerCase().includes(p.nome.toLowerCase())
-      )
+      // Formato aceito (7 colunas — código é opcional no final):
+      //   Prod | Cid | Qtd | Peso | Valor | Categoria | Código
+      // Detecta pelo nº de colunas; com 6 colunas usa o formato legado (sem código).
+      let name = '', cidade = '', qtd = '', peso = '', vl_fp = '', cat_text = '', codigo = ''
+      if (parts.length >= 7) {
+        [name, cidade, qtd, peso, vl_fp, cat_text, codigo] = parts
+      } else {
+        [name, cidade, qtd, peso, vl_fp, cat_text] = parts
+      }
+
+      // Auto-match: primeiro por código (se veio), depois por nome
+      let matched = null as any
+      if (codigo) {
+        matched = produtos.find(p => (p.codigo || '').toLowerCase() === codigo.toLowerCase())
+      }
+      if (!matched) {
+        matched = produtos.find(p =>
+          p.nome.toLowerCase().includes((name || '').toLowerCase()) ||
+          (name || '').toLowerCase().includes(p.nome.toLowerCase())
+        )
+      }
 
       // Match category
       let matchedGroupId = matched?.grupo_id || null
@@ -207,6 +220,7 @@ function ComprasPage({ onComplete }: any) {
       return {
         id: Math.random(),
         matchedId: matched?.id || null,
+        codigo: codigo || matched?.codigo || '',
         name: name || '',
         cidade: matchedCidade,
         qtd: qtd || '',
@@ -233,6 +247,7 @@ function ComprasPage({ onComplete }: any) {
       .map(r => ({
         produto_id: r.matchedId,
         nome_produto: r.name ? r.name.trim() : '',
+        codigo: r.codigo ? String(r.codigo).trim() : null,
         quantidade: parseInt(String(r.qtd).replace(/\D/g, '')) || 0,
         peso: parseFloat(String(r.peso).replace(',', '.')),
         custo_unitario: parseFloat(String(r.vl_fp).replace(',', '.')),
@@ -283,6 +298,7 @@ function ComprasPage({ onComplete }: any) {
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Produto (Excel)</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Código ERP</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Sistema</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Cidade</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">QTD (Vol)</th>
@@ -310,21 +326,37 @@ function ComprasPage({ onComplete }: any) {
                   ))}
                 </td>
                 <td className="px-6 py-4">
-                  <input 
+                  <input
                     type="text" value={row.name}
                     className="w-full bg-transparent outline-none text-sm font-semibold"
                     onChange={(e) => updateRow(row.id, 'name', e.target.value)}
                   />
                 </td>
                 <td className="px-6 py-4">
-                  <select 
-                    className="w-full bg-slate-100/50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500"
+                  <input
+                    type="text" value={row.codigo || ''}
+                    placeholder="—"
+                    className="w-24 bg-blue-50/50 border border-slate-200 rounded px-2 py-1 text-xs font-mono font-bold text-blue-700 outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={(e) => updateRow(row.id, 'codigo', e.target.value)}
+                  />
+                </td>
+                <td className="px-6 py-4">
+                  <select
+                    className="w-full bg-slate-100/50 border border-slate-200 rounded-lg pl-2 pr-7 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 truncate"
                     value={row.matchedId || ''}
-                    onChange={(e) => updateRow(row.id, 'matchedId', parseInt(e.target.value))}
+                    onChange={(e) => {
+                      const id = parseInt(e.target.value)
+                      updateRow(row.id, 'matchedId', id || null)
+                      // Preenche o código visível com o código do produto, se houver
+                      const match = produtos.find(p => p.id === id)
+                      if (match && match.codigo && !row.codigo) {
+                        updateRow(row.id, 'codigo', match.codigo)
+                      }
+                    }}
                   >
-                    <option value="">-- NOVO ITEM --</option>
+                    <option value="">— novo item —</option>
                     {produtos.map(p => (
-                      <option key={p.id} value={p.id}>{p.nome}</option>
+                      <option key={p.id} value={p.id}>{p.nome}{p.codigo ? ` [${p.codigo}]` : ''}</option>
                     ))}
                   </select>
                 </td>
@@ -367,7 +399,7 @@ function ComprasPage({ onComplete }: any) {
         </table>
         <div className="p-4 bg-slate-50 border-t flex justify-center">
             <button 
-              onClick={() => setRows([...rows, { id: Math.random(), matchedId: null, name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }])}
+              onClick={() => setRows([...rows, { id: Math.random(), matchedId: null, codigo: '', name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }])}
               className="text-[10px] font-black text-slate-400 hover:text-blue-600 uppercase tracking-widest"
             >
               + Adicionar Linha Manual
@@ -380,29 +412,48 @@ function ComprasPage({ onComplete }: any) {
 
 function ProdutosPage() {
   const [produtos, setProdutos] = useState<any[]>([])
+  const [grupos, setGrupos] = useState<any[]>([])
+  const [editando, setEditando] = useState<any | null>(null)
+
+  const carregar = () => {
+    axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
+  }
 
   useEffect(() => {
-    axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
+    carregar()
+    axios.get(`${API_URL}/grupos`).then(res => setGrupos(res.data))
   }, [])
 
   return (
     <div className="max-w-6xl mx-auto p-8">
-      <h2 className="text-3xl font-bold tracking-tight mb-8">Gestão de SKUs</h2>
+      <div className="flex items-center justify-between mb-8">
+        <h2 className="text-3xl font-bold tracking-tight">Gestão de SKUs</h2>
+        <p className="text-xs text-slate-500">
+          Clique em <span className="font-semibold text-blue-600">Editar</span> para definir o <span className="font-semibold">código ERP</span> usado no matching do CSV.
+        </p>
+      </div>
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Produto</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Código</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Custo Médio</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Margem</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estoque (Vol)</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Peso Total (Kg/L)</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Ações</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {produtos.length > 0 ? produtos.map(p => (
               <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
                 <td className="px-6 py-4 text-sm font-bold text-slate-900">{p.nome}</td>
+                <td className="px-6 py-4 text-xs font-mono">
+                  {p.codigo
+                    ? <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-bold tracking-wider">{p.codigo}</span>
+                    : <span className="text-slate-300 italic">—</span>}
+                </td>
                 <td className="px-6 py-4 text-sm text-slate-600 text-center">R$ {p.custo.toFixed(2)}</td>
                 <td className="px-6 py-4 text-center">
                   <span className={`px-2 py-1 rounded-full text-[10px] font-black ${
@@ -411,14 +462,160 @@ function ProdutosPage() {
                 </td>
                 <td className="px-6 py-4 text-sm text-center font-extrabold text-slate-500">{(p.estoque_qtd || 0).toFixed(0)} <span className="text-[10px] text-slate-400">UN</span></td>
                 <td className="px-6 py-4 text-sm text-center font-black text-blue-600">{(p.estoque_peso || 0).toFixed(1)} <span className="text-[10px] text-slate-400">Kg/L</span></td>
+                <td className="px-6 py-4 text-right">
+                  <button
+                    onClick={() => setEditando(p)}
+                    className="text-xs font-bold text-blue-600 hover:text-blue-700 hover:underline"
+                  >
+                    Editar
+                  </button>
+                </td>
               </tr>
             )) : (
               <tr>
-                <td colSpan={5} className="px-6 py-12 text-center text-slate-400 italic font-medium">Nenhum item em estoque. Comece fazendo uma Entrada de Compra.</td>
+                <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic font-medium">Nenhum item em estoque. Comece fazendo uma Entrada de Compra.</td>
               </tr>
             )}
           </tbody>
         </table>
+      </div>
+
+      {editando && (
+        <ProdutoEditModal
+          produto={editando}
+          grupos={grupos}
+          onClose={() => setEditando(null)}
+          onSaved={() => { setEditando(null); carregar(); }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
+  const [nome, setNome] = useState(produto.nome || '')
+  const [codigo, setCodigo] = useState(produto.codigo || '')
+  const [grupoId, setGrupoId] = useState<number | null>(produto.grupo_id || null)
+  const [custo, setCusto] = useState(String(produto.custo ?? ''))
+  const [precoVenda, setPrecoVenda] = useState(String(produto.preco_venda ?? ''))
+  const [salvando, setSalvando] = useState(false)
+  const [erro, setErro] = useState<string | null>(null)
+
+  const salvar = async () => {
+    setErro(null)
+    setSalvando(true)
+    try {
+      const payload: any = {
+        nome: nome.trim() || undefined,
+        codigo: codigo,   // string vazia é aceita: backend normaliza pra NULL
+        grupo_id: grupoId,
+        custo: parseFloat(custo.replace(',', '.')) || 0,
+        preco_venda: parseFloat(precoVenda.replace(',', '.')) || 0,
+      }
+      await axios.patch(`${API_URL}/produtos/${produto.id}`, payload)
+      onSaved()
+    } catch (e: any) {
+      setErro(e?.response?.data?.detail || 'Erro ao salvar.')
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-6">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">SKU {produto.sku}</p>
+            <h3 className="text-xl font-bold tracking-tight">Editar produto</h3>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Nome</label>
+            <input
+              type="text"
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+              Código ERP <span className="text-blue-600 normal-case font-semibold">(usado no matching do CSV)</span>
+            </label>
+            <input
+              type="text"
+              value={codigo}
+              onChange={(e) => setCodigo(e.target.value)}
+              placeholder="ex.: 1234, CORANT01, etc."
+              className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm"
+            />
+            <p className="text-[11px] text-slate-500 mt-1">Deixe vazio para não usar código. Deve ser único no sistema.</p>
+          </div>
+
+          <div>
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Grupo</label>
+            <select
+              value={grupoId ?? ''}
+              onChange={(e) => setGrupoId(e.target.value ? parseInt(e.target.value) : null)}
+              className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-white"
+            >
+              <option value="">— sem grupo —</option>
+              {grupos.map((g: any) => (
+                <option key={g.id} value={g.id}>{g.nome}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Custo (R$)</label>
+              <input
+                type="text"
+                value={custo}
+                onChange={(e) => setCusto(e.target.value)}
+                className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Preço Venda (R$)</label>
+              <input
+                type="text"
+                value={precoVenda}
+                onChange={(e) => setPrecoVenda(e.target.value)}
+                className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+              />
+            </div>
+          </div>
+        </div>
+
+        {erro && (
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-sm text-rose-700">
+            {erro}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={salvar}
+            disabled={salvando}
+            className="bg-blue-600 text-white px-5 py-2 rounded-xl font-bold text-sm hover:bg-blue-700 disabled:opacity-50 transition-all"
+          >
+            {salvando ? 'Salvando...' : 'Salvar'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -721,12 +918,12 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
             stroke="var(--claude-stone)" strokeOpacity="0.55" strokeDasharray="4 4" strokeWidth="1"
           />
           <text
-            x={W - padR - 2} y={yToPx(media) - 4}
-            textAnchor="end" fontSize="9"
+            x={padL + 4} y={yToPx(media) - 4}
+            textAnchor="start" fontSize="9"
             fill="var(--claude-stone)"
             fontFamily="JetBrains Mono, monospace"
           >
-            média {(media * 100).toFixed(1)}%
+            méd. {(media * 100).toFixed(1)}%
           </text>
         </>
       )}
@@ -1195,15 +1392,21 @@ function GroupProgress({ label, margemReal, metaMin, metaMax, faturamento, skusV
 
 function RelatoriosPage() {
   const [produtos, setProdutos] = useState<any[]>([])
+  const [grupos, setGrupos] = useState<any[]>([])
   const [salesItems, setSalesItems] = useState<any>({})
   const [salesPrices, setSalesPrices] = useState<any>({})
   const [submitting, setSubmitting] = useState(false)
   const [summary, setSummary] = useState<any>(null)
   const [copied, setCopied] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [importOpen, setImportOpen] = useState(false)
+
+  const carregarProdutos = () => {
+    axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
+  }
 
   useEffect(() => {
-    axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
+    carregarProdutos()
+    axios.get(`${API_URL}/grupos`).then(res => setGrupos(res.data))
   }, [])
 
   const handleQtyChange = (id: number, val: string) => {
@@ -1216,88 +1419,17 @@ function RelatoriosPage() {
     setSalesPrices({ ...salesPrices, [id]: price })
   }
 
-  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    const normalize = (txt: string) => 
-      txt.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase()
-
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const content = event.target?.result as string
-      const lines = content.split(/\r?\n/)
-      
-      // key: normalizedName -> {qty: number, total: number}
-      const importedData: Record<string, {qty: number, total: number}> = {}
-
-      lines.forEach(line => {
-        if (line.startsWith('Pedido;')) {
-          const parts = line.split(';')
-          if (parts.length > 12) {
-            const rawName = parts[4]?.trim()
-            const qtyStr = parts[10]?.replace(',', '.')
-            const totalStr = parts[12]?.replace(',', '.')
-            
-            const qty = parseFloat(qtyStr) || 0
-            const total = parseFloat(totalStr) || 0
-            
-            if (rawName && qty > 0) {
-              const name = normalize(rawName)
-              if (!importedData[name]) importedData[name] = { qty: 0, total: 0 }
-              importedData[name].qty += qty
-              importedData[name].total += total
-            }
-          }
-        }
-      })
-
-      // Link imported data to our products
-      const newSalesItems = { ...salesItems }
-      const newSalesPrices = { ...salesPrices }
-      let matchedCount = 0
-      const notFoundNames: string[] = []
-      
-      const csvNames = Object.keys(importedData)
-      const matchedCsvNames = new Set<string>()
-
-      produtos.forEach(p => {
-        const sysName = normalize(p.nome)
-        
-        let matchName = ""
-        if (importedData[sysName]) {
-          matchName = sysName
-        } else {
-          matchName = csvNames.find(cn => cn.includes(sysName) || sysName.includes(cn)) || ""
-          if (matchedCsvNames.has(matchName)) matchName = ""
-        }
-
-        if (matchName) {
-          const data = importedData[matchName]
-          newSalesItems[p.id] = data.qty
-          newSalesPrices[p.id] = data.total / data.qty
-          matchedCount++
-          matchedCsvNames.add(matchName)
-        }
-      })
-
-      csvNames.forEach(cn => {
-        if (!matchedCsvNames.has(cn)) notFoundNames.push(cn)
-      })
-
-      setSalesItems(newSalesItems)
-      setSalesPrices(newSalesPrices)
-      
-      let msg = `Importação concluída!\n\n✅ ${matchedCount} produtos vinculados.`
-      if (notFoundNames.length > 0) {
-        msg += `\n\n⚠️ ${notFoundNames.length} itens do CSV não vinculados (apenas exibindo os 5 primeiros):\n- ${notFoundNames.slice(0, 5).join('\n- ')}`
-      }
-      
-      alert(msg)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+  const handleImportConcluido = async (dataAlvo: string) => {
+    // Após o commit, busca a análise do dia e exibe no mesmo fluxo
+    // usado pelo fechamento manual.
+    try {
+      const res = await axios.get(`${API_URL}/fechamento/analise?data=${dataAlvo}`)
+      setSummary(res.data)
+    } catch (e) {
+      alert('Importação concluída, mas não consegui carregar a análise. Verifique na aba Histórico.')
     }
-
-    reader.readAsText(file, 'ISO-8859-1')
+    setImportOpen(false)
+    carregarProdutos()
   }
 
   const handleFechamento = async () => {
@@ -1375,20 +1507,13 @@ function RelatoriosPage() {
           <p className="text-slate-500">Lance as quantidades vendidas hoje para baixar o estoque ou importe o relatório CSV.</p>
         </div>
         <div className="flex gap-4">
-          <input 
-            type="file" 
-            accept=".csv" 
-            ref={fileInputRef} 
-            onChange={handleImportCSV} 
-            className="hidden" 
-          />
-          <button 
-            onClick={() => fileInputRef.current?.click()}
+          <button
+            onClick={() => setImportOpen(true)}
             className="bg-white text-blue-600 border border-blue-200 px-6 py-3 rounded-xl font-bold hover:bg-blue-50 transition-all flex items-center gap-2"
           >
             <Clipboard size={20} /> Importar CSV
           </button>
-          <button 
+          <button
             onClick={handleFechamento}
             disabled={submitting}
             className="bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all active:scale-95 flex items-center gap-2"
@@ -1397,6 +1522,15 @@ function RelatoriosPage() {
           </button>
         </div>
       </header>
+
+      {importOpen && (
+        <ImportCSVModal
+          grupos={grupos}
+          produtosExistentes={produtos}
+          onClose={() => setImportOpen(false)}
+          onCommitted={handleImportConcluido}
+        />
+      )}
 
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
         <table className="w-full text-left border-collapse">
@@ -1440,6 +1574,538 @@ function RelatoriosPage() {
   )
 }
 
+
+// ============================================================================
+// ImportCSVModal — upload + preview + resolução + commit
+// Fluxo: estado 'upload' → 'preview' → 'feito'
+// ============================================================================
+function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: any) {
+  const hoje = new Date().toISOString().slice(0, 10)
+  const [estado, setEstado] = useState<'upload' | 'preview'>('upload')
+  const [arquivo, setArquivo] = useState<File | null>(null)
+  const [dataAlvo, setDataAlvo] = useState<string>(hoje)
+  const [preview, setPreview] = useState<any | null>(null)
+  const [resolucoes, setResolucoes] = useState<Record<number, any>>({})
+  const [submitting, setSubmitting] = useState(false)
+  const [erro, setErro] = useState<string | null>(null)
+
+  const enviarUpload = async () => {
+    if (!arquivo) { setErro('Selecione um arquivo CSV.'); return }
+    if (!dataAlvo) { setErro('Selecione a data do fechamento.'); return }
+    setErro(null)
+    setSubmitting(true)
+    try {
+      const form = new FormData()
+      form.append('arquivo', arquivo)
+      form.append('data', dataAlvo)
+      const res = await axios.post(`${API_URL}/fechamento/importar-csv/preview`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setPreview(res.data)
+      // Pre-inicializa resoluções: erro → ignorar, conflito/sem_match → 'associar' em branco
+      const iniciais: Record<number, any> = {}
+      for (const l of res.data.linhas) {
+        if (l.status === 'erro') {
+          iniciais[l.idx] = { idx: l.idx, acao: 'ignorar' }
+        } else if (l.status !== 'ok') {
+          iniciais[l.idx] = { idx: l.idx, acao: 'ignorar' }
+        }
+      }
+      setResolucoes(iniciais)
+      setEstado('preview')
+    } catch (e: any) {
+      setErro(e?.response?.data?.detail || 'Erro ao processar o arquivo.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const atualizarResolucao = (idx: number, patch: any) => {
+    setResolucoes((prev) => ({ ...prev, [idx]: { ...(prev[idx] || { idx }), ...patch } }))
+  }
+
+  // Linhas "criar" sem custo > 0: bloqueia no front antes de bater no server,
+  // porque venda com custo=0 vira margem 100% (dado contábil errado).
+  const criarSemCusto = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'criar' && (!r.novo_custo || Number(r.novo_custo) <= 0)
+  ) as any[]
+  const criarSemCampos = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'criar' && (!r.novo_nome || !r.novo_grupo_id || !r.novo_preco_venda || !r.novo_custo)
+  ) as any[]
+  const associarSemProduto = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'associar' && !r.produto_id
+  ) as any[]
+  const corrigirSemCusto = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'corrigir_custo' && (!r.novo_custo || Number(r.novo_custo) <= 0)
+  ) as any[]
+  // Linhas status=sem_custo que o usuário ainda não decidiu (sem resolução
+  // salva no state) também bloqueiam — exigem escolha explícita.
+  const semCustoNaoResolvidas = (preview?.linhas || []).filter(
+    (l: any) => l.status === 'sem_custo' && !resolucoes[l.idx]
+  ) as any[]
+  const podeCommitar =
+    criarSemCusto.length === 0 &&
+    criarSemCampos.length === 0 &&
+    associarSemProduto.length === 0 &&
+    corrigirSemCusto.length === 0 &&
+    semCustoNaoResolvidas.length === 0
+
+  const motivoBloqueio = (() => {
+    if (podeCommitar) return ''
+    const partes: string[] = []
+    if (criarSemCampos.length) {
+      const detalhes = criarSemCampos.map((r: any) => {
+        const faltando = [
+          !r.novo_nome && 'nome',
+          !r.novo_grupo_id && 'grupo',
+          !r.novo_preco_venda && 'preço',
+          !r.novo_custo && 'custo',
+        ].filter(Boolean).join(', ')
+        return `linha ${r.idx}: ${faltando}`
+      }).join(' | ')
+      partes.push(`Criar com campos faltando — ${detalhes}`)
+    }
+    if (criarSemCusto.length && !criarSemCampos.length) {
+      partes.push(`${criarSemCusto.length} linha(s) criar com custo <= 0`)
+    }
+    if (associarSemProduto.length) {
+      partes.push(`${associarSemProduto.length} linha(s) associar sem produto`)
+    }
+    if (corrigirSemCusto.length) {
+      partes.push(`${corrigirSemCusto.length} linha(s) corrigir custo sem valor`)
+    }
+    if (semCustoNaoResolvidas.length) {
+      partes.push(`${semCustoNaoResolvidas.length} linha(s) "sem custo" não resolvidas`)
+    }
+    return partes.join(' · ')
+  })()
+
+  const commitar = async () => {
+    if (!preview) return
+    if (!podeCommitar) {
+      setErro(motivoBloqueio || 'Há pendências nas resoluções.')
+      return
+    }
+    setErro(null)
+    setSubmitting(true)
+    try {
+      const resolucoesArr = Object.values(resolucoes)
+      const payload = {
+        data_alvo: dataAlvo,
+        linhas: preview.linhas,
+        resolucoes: resolucoesArr,
+      }
+      await axios.post(`${API_URL}/fechamento/importar-csv/commit`, payload)
+      onCommitted(dataAlvo)
+    } catch (e: any) {
+      setErro(e?.response?.data?.detail || 'Erro ao finalizar a importação.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-6">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="p-6 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Fechamento via CSV · {estado === 'upload' ? '1 de 2' : '2 de 2'}</p>
+            <h3 className="text-2xl font-bold tracking-tight">
+              {estado === 'upload' ? 'Importar relatório de vendas' : 'Revisar e confirmar'}
+            </h3>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1">
+            <X size={22} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {estado === 'upload' && (
+            <UploadFase
+              arquivo={arquivo}
+              onArquivo={setArquivo}
+              dataAlvo={dataAlvo}
+              onDataAlvo={setDataAlvo}
+            />
+          )}
+          {estado === 'preview' && preview && (
+            <PreviewFase
+              preview={preview}
+              resolucoes={resolucoes}
+              onResolucao={atualizarResolucao}
+              produtosExistentes={produtosExistentes}
+              grupos={grupos}
+            />
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+          <div className="text-sm max-w-[60%]">
+            {erro && <span className="text-rose-600 font-semibold">{erro}</span>}
+            {!erro && estado === 'preview' && motivoBloqueio && (
+              <span className="text-amber-700 font-semibold text-xs">⚠ {motivoBloqueio}</span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            {estado === 'preview' && (
+              <button
+                onClick={() => { setEstado('upload'); setPreview(null); setResolucoes({}) }}
+                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+              >
+                Voltar
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+            >
+              Cancelar
+            </button>
+            {estado === 'upload' && (
+              <button
+                onClick={enviarUpload}
+                disabled={submitting || !arquivo}
+                className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 disabled:opacity-50 transition-all"
+              >
+                {submitting ? 'Processando...' : 'Processar CSV'}
+              </button>
+            )}
+            {estado === 'preview' && (
+              <button
+                onClick={commitar}
+                disabled={submitting || !podeCommitar}
+                className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 disabled:opacity-50 transition-all"
+                title={motivoBloqueio || ''}
+              >
+                {submitting ? 'Importando...' : (preview?.ja_existe_fechamento ? 'Substituir e importar' : 'Confirmar importação')}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function UploadFase({ arquivo, onArquivo, dataAlvo, onDataAlvo }: any) {
+  return (
+    <div className="space-y-5 max-w-md mx-auto py-4">
+      <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm text-slate-700">
+        <p>
+          <strong>Como funciona:</strong> o sistema lê o CSV do ERP (xRelVendaAnalitica),
+          identifica cada item pelo <strong>código ERP</strong> e depois pelo nome
+          (fallback), valida a aritmética e mostra um preview antes de gravar as
+          vendas. Se já existir fechamento do dia, ele será substituído.
+        </p>
+      </div>
+
+      <div>
+        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Arquivo CSV</label>
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          onChange={(e) => onArquivo(e.target.files?.[0] || null)}
+          className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 bg-white text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:text-xs file:font-bold"
+        />
+        {arquivo && (
+          <p className="text-[11px] text-slate-500 mt-1">
+            {arquivo.name} · {(arquivo.size / 1024).toFixed(1)} KB
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Data do fechamento</label>
+        <input
+          type="date"
+          value={dataAlvo}
+          onChange={(e) => onDataAlvo(e.target.value)}
+          className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 bg-white text-sm"
+        />
+        <p className="text-[11px] text-slate-500 mt-1">As vendas serão registradas neste dia. Dados em linhas com data diferente serão sinalizados no preview.</p>
+      </div>
+    </div>
+  )
+}
+
+function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, grupos }: any) {
+  const statusBadge = (status: string) => {
+    const map: Record<string, string> = {
+      ok: 'bg-emerald-100 text-emerald-700',
+      conflito: 'bg-amber-100 text-amber-700',
+      sem_match: 'bg-amber-100 text-amber-700',
+      sem_custo: 'bg-amber-100 text-amber-700',
+      erro: 'bg-rose-100 text-rose-700',
+    }
+    return map[status] || 'bg-slate-100 text-slate-700'
+  }
+  const statusLabel = (status: string) => {
+    const map: Record<string, string> = {
+      ok: '✓ ok',
+      conflito: 'conflito',
+      sem_match: 'sem match',
+      sem_custo: 'sem custo',
+      erro: 'erro',
+    }
+    return map[status] || status
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Resumo */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <MiniStat label="Linhas" valor={preview.total_linhas} cor="slate" />
+        <MiniStat label="OK" valor={preview.linhas_ok} cor="emerald" />
+        <MiniStat label="Pendentes" valor={preview.linhas_pendentes} cor="amber" />
+        <MiniStat label="Erros" valor={preview.linhas_erro} cor="rose" />
+        <MiniStat label="Receita" valor={`R$ ${preview.receita_total.toFixed(2)}`} cor="blue" />
+        <MiniStat label="SKUs" valor={preview.skus_distintos} cor="slate" />
+      </div>
+
+      {preview.ja_existe_fechamento && (
+        <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-900 flex items-start gap-2">
+          <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+          <span>
+            Já existe fechamento para <strong>{preview.data_alvo}</strong>. Ao confirmar,
+            <strong> vendas, ENTRADAS-espelho e SAÍDAS</strong> dos produtos deste dia
+            serão apagadas e regeneradas a partir do CSV. Movimentações manuais (Entrada
+            de Estoque) <em>não</em> são afetadas. Tem certeza que quer sobrescrever?
+          </span>
+        </div>
+      )}
+
+      {/* Tabela de linhas */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-left border-collapse text-xs">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200">
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider">#</th>
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider">Cód CSV</th>
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider">Produto (CSV)</th>
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider text-right">Qtd</th>
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider text-right">Preço</th>
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider text-right">Total</th>
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider text-center">Status</th>
+              <th className="px-3 py-2 font-black text-slate-400 uppercase tracking-wider">Ação / Match</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {preview.linhas.map((l: any) => (
+              <tr key={l.idx} className="align-top">
+                <td className="px-3 py-2 text-slate-400 font-mono">{l.idx}</td>
+                <td className="px-3 py-2 font-mono text-slate-600">{l.codigo_csv || '—'}</td>
+                <td className="px-3 py-2 font-semibold text-slate-900 max-w-xs">
+                  {l.nome_csv}
+                  {l.mensagens && l.mensagens.length > 0 && (
+                    <ul className="mt-1 space-y-0.5 text-[10px] text-slate-500 list-disc list-inside">
+                      {l.mensagens.map((m: string, i: number) => (
+                        <li key={i}>{m}</li>
+                      ))}
+                    </ul>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right font-mono">{l.quantidade.toFixed(2)}</td>
+                <td className="px-3 py-2 text-right font-mono">R$ {l.preco_unitario.toFixed(2)}</td>
+                <td className="px-3 py-2 text-right font-mono font-bold">R$ {l.total.toFixed(2)}</td>
+                <td className="px-3 py-2 text-center">
+                  <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-black ${statusBadge(l.status)}`}>
+                    {statusLabel(l.status)}
+                  </span>
+                </td>
+                <td className="px-3 py-2 min-w-[280px]">
+                  {l.status === 'ok' ? (
+                    <span className="text-[11px] text-emerald-700">→ {l.produto_nome}</span>
+                  ) : (
+                    <LinhaResolucao
+                      linha={l}
+                      resolucao={resolucoes[l.idx] || (
+                        l.status === 'sem_custo'
+                          ? { idx: l.idx, acao: 'corrigir_custo', produto_id: l.produto_id }
+                          : { idx: l.idx, acao: 'ignorar' }
+                      )}
+                      onChange={(patch: any) => onResolucao(l.idx, patch)}
+                      produtos={produtosExistentes}
+                      grupos={grupos}
+                    />
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function MiniStat({ label, valor, cor }: any) {
+  const mapa: Record<string, string> = {
+    slate: 'bg-slate-50 text-slate-700 border-slate-200',
+    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    amber: 'bg-amber-50 text-amber-700 border-amber-200',
+    rose: 'bg-rose-50 text-rose-700 border-rose-200',
+    blue: 'bg-blue-50 text-blue-700 border-blue-200',
+  }
+  return (
+    <div className={`p-3 rounded-xl border ${mapa[cor] || mapa.slate}`}>
+      <p className="text-[9px] font-black uppercase tracking-widest opacity-70">{label}</p>
+      <p className="text-lg font-black leading-tight mt-0.5">{valor}</p>
+    </div>
+  )
+}
+
+function LinhaResolucao({ linha, resolucao, onChange, produtos, grupos }: any) {
+  const acao = resolucao.acao || 'ignorar'
+
+  // Caso especial: produto existe mas está com custo=0. UI simplificada —
+  // só pede o custo (e o botão Ignorar como escape).
+  if (linha.status === 'sem_custo') {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex gap-1.5">
+          <BotaoAcao
+            ativo={acao === 'corrigir_custo'}
+            onClick={() => onChange({ acao: 'corrigir_custo', produto_id: linha.produto_id })}
+            label="Informar custo"
+          />
+          <BotaoAcao ativo={acao === 'ignorar'} onClick={() => onChange({ acao: 'ignorar' })} label="Ignorar" />
+        </div>
+
+        {acao === 'corrigir_custo' && (
+          <div className="p-2 bg-amber-50 rounded-lg border border-amber-200 space-y-1.5">
+            <p className="text-[10px] text-amber-900">
+              Produto: <strong>{linha.produto_nome}</strong>. Informe o custo unitário para gerar a venda.
+            </p>
+            <input
+              type="number" step="0.01" min="0.01"
+              value={resolucao.novo_custo ?? ''}
+              onChange={(e) => onChange({ novo_custo: parseFloat(e.target.value) || 0 })}
+              placeholder="Custo unitário *"
+              className={`w-full p-1.5 rounded border text-xs bg-white ${
+                (!resolucao.novo_custo || Number(resolucao.novo_custo) <= 0)
+                  ? 'border-rose-400 bg-rose-50'
+                  : 'border-slate-300'
+              }`}
+            />
+            <p className="text-[10px] text-slate-500">
+              <strong className="text-rose-600">Custo &gt; 0</strong> obrigatório. O valor será salvo no produto e usado como CMP.
+            </p>
+          </div>
+        )}
+
+        {acao === 'ignorar' && (
+          <p className="text-[10px] text-slate-500 italic">Esta linha não vai virar venda.</p>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex gap-1.5">
+        <BotaoAcao ativo={acao === 'associar'} onClick={() => onChange({ acao: 'associar' })} label="Associar" />
+        <BotaoAcao ativo={acao === 'criar'} onClick={() => onChange({
+          acao: 'criar',
+          novo_nome: resolucao.novo_nome ?? linha.nome_csv,
+          novo_codigo: resolucao.novo_codigo ?? linha.codigo_csv ?? '',
+          novo_preco_venda: resolucao.novo_preco_venda ?? linha.preco_unitario,
+        })} label="Criar" />
+        <BotaoAcao ativo={acao === 'ignorar'} onClick={() => onChange({ acao: 'ignorar' })} label="Ignorar" />
+      </div>
+
+      {acao === 'associar' && (
+        <select
+          value={resolucao.produto_id || ''}
+          onChange={(e) => onChange({ produto_id: e.target.value ? parseInt(e.target.value) : null })}
+          className="w-full p-1.5 rounded border border-slate-300 text-xs bg-white"
+        >
+          <option value="">— selecione um produto —</option>
+          {produtos.map((p: any) => (
+            <option key={p.id} value={p.id}>
+              {p.nome} {p.codigo ? `[${p.codigo}]` : ''}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {acao === 'criar' && (
+        <div className="p-2 bg-slate-50 rounded-lg border border-slate-200 space-y-1.5">
+          <input
+            type="text"
+            value={resolucao.novo_nome ?? linha.nome_csv}
+            onChange={(e) => onChange({ novo_nome: e.target.value })}
+            placeholder="Nome"
+            className="w-full p-1.5 rounded border border-slate-300 text-xs bg-white"
+          />
+          <div className="grid grid-cols-2 gap-1.5">
+            <input
+              type="text"
+              value={resolucao.novo_codigo ?? linha.codigo_csv ?? ''}
+              onChange={(e) => onChange({ novo_codigo: e.target.value })}
+              placeholder="Código ERP"
+              className="p-1.5 rounded border border-slate-300 text-xs bg-white font-mono"
+            />
+            <select
+              value={resolucao.novo_grupo_id ?? ''}
+              onChange={(e) => onChange({ novo_grupo_id: e.target.value ? parseInt(e.target.value) : null })}
+              className="p-1.5 rounded border border-slate-300 text-xs bg-white"
+            >
+              <option value="">— grupo —</option>
+              {grupos.map((g: any) => (
+                <option key={g.id} value={g.id}>{g.nome}</option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <input
+              type="number" step="0.01"
+              value={resolucao.novo_preco_venda ?? linha.preco_unitario}
+              onChange={(e) => onChange({ novo_preco_venda: parseFloat(e.target.value) || 0 })}
+              placeholder="Preço venda"
+              className="p-1.5 rounded border border-slate-300 text-xs bg-white"
+            />
+            <input
+              type="number" step="0.01" min="0.01"
+              value={resolucao.novo_custo ?? ''}
+              onChange={(e) => onChange({ novo_custo: parseFloat(e.target.value) || 0 })}
+              placeholder="Custo *"
+              className={`p-1.5 rounded border text-xs bg-white ${
+                (!resolucao.novo_custo || Number(resolucao.novo_custo) <= 0)
+                  ? 'border-rose-400 bg-rose-50'
+                  : 'border-slate-300'
+              }`}
+            />
+          </div>
+          <p className="text-[10px] text-slate-500">
+            Todos os campos obrigatórios. <strong className="text-rose-600">Custo &gt; 0</strong> é imprescindível — venda sem custo vira margem 100%.
+          </p>
+        </div>
+      )}
+
+      {acao === 'ignorar' && (
+        <p className="text-[10px] text-slate-500 italic">Esta linha não vai virar venda.</p>
+      )}
+    </div>
+  )
+}
+
+function BotaoAcao({ ativo, onClick, label }: any) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
+        ativo
+          ? 'bg-blue-600 text-white'
+          : 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-50'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
 
 
 function ProjecaoPage() {

@@ -19,6 +19,10 @@ class Produto(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     sku = Column(String, unique=True, index=True)
+    # `codigo` = abreviação externa (geralmente o ID do ERP no CSV de vendas).
+    # Usado como 1ª camada de matching na importação de Fechamento.
+    # Unique quando preenchido; NULL permitido (produtos legados sem código).
+    codigo = Column(String, unique=True, index=True, nullable=True)
     nome = Column(String, index=True)
     grupo_id = Column(Integer, ForeignKey("grupos.id"))
     custo = Column(Float)
@@ -246,3 +250,37 @@ class DREMensal(Base):
     # Meta
     fechado_em = Column(DateTime, server_default=func.now())
     regime_tributario = Column(String, nullable=True)  # snapshot do regime na apuração
+
+
+# ============================================================================
+# F7 — Integração PDV
+#
+# Webhook payloads chegam em POST /webhooks/pdv-vendas com header
+# X-PDV-Token (validado contra IntegracaoPDVConfig.token). Cada evento
+# processado vira um Venda + Movimentacao + atualiza VendaDiariaSKU.
+# O log guarda payload bruto + resultado pra auditoria/retry.
+# ============================================================================
+
+class IntegracaoPDVConfig(Base):
+    """Uma linha só (singleton). `ativa=True` habilita o webhook."""
+    __tablename__ = "integracao_pdv_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, nullable=False)  # valida header X-PDV-Token
+    nome_pdv = Column(String, nullable=True)  # "BemaCash", "Linx", etc
+    ativa = Column(Boolean, default=True)
+    criado_em = Column(DateTime, server_default=func.now())
+    atualizado_em = Column(DateTime, server_default=func.now())
+
+
+class IntegracaoPDVLog(Base):
+    """Log de cada evento recebido do PDV (sucesso ou erro)."""
+    __tablename__ = "integracao_pdv_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recebido_em = Column(DateTime, server_default=func.now(), index=True)
+    payload = Column(JSON)  # JSON bruto recebido
+    status = Column(String, index=True)  # ok | erro | duplicado
+    mensagem = Column(String, nullable=True)
+    venda_id = Column(Integer, ForeignKey("vendas.id"), nullable=True)  # FK se processou
+    idempotency_key = Column(String, index=True, nullable=True)  # dedupe por PDV

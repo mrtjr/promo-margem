@@ -398,3 +398,164 @@ def simular_cesta_recomendada(
     impacto["desconto_medio_ponderado"] = round(desconto_medio, 2)
     impacto["urgencia_filtro"] = apenas_urgencia or "todas"
     return impacto
+
+
+# ---------------------------------------------------------------------------
+# F5 — Agregação por grupo + narrativa (PRD §F4)
+# ---------------------------------------------------------------------------
+
+def _narrativa_grupo(
+    grupo_nome: str, qtd_skus: int, desconto_medio: float, margem_pos: float
+) -> str:
+    """
+    Gera frase padrão PRD:
+      "Promo sugerida: grupo Médio, 15% off em 30 SKUs → margem 17,8%"
+    """
+    if qtd_skus == 0:
+        return f"Grupo {grupo_nome}: nenhuma promoção sugerida (proteção de margem)."
+    if desconto_medio <= 0:
+        return (
+            f"Grupo {grupo_nome}: {qtd_skus} SKU(s) sem promoção recomendada "
+            f"(margem {margem_pos*100:.1f}% — monitorar)."
+        )
+    return (
+        f"Promo sugerida: grupo {grupo_nome}, {desconto_medio:.0f}% off em "
+        f"{qtd_skus} SKU(s) → margem {margem_pos*100:.1f}%"
+    )
+
+
+def agregar_por_grupo(
+    db: Session, recomendacoes: List[Recomendacao]
+) -> List[Dict]:
+    """
+    Consolida recomendações por grupo comercial. Retorna lista de dicts
+    compatíveis com schemas.SugestaoPorGrupo.
+
+    Para cada grupo:
+      - filtra SKUs com ação promocional (desconto_sugerido > 0)
+      - desconto médio ponderado por receita_periodo
+      - margem média ponderada pré/pós ação
+      - ação dominante = mais frequente
+      - narrativa = _narrativa_grupo(...)
+    """
+    # Mapa produto_id → grupo_id
+    produtos = db.query(models.Produto).all()
+    prod_grupo = {p.id: p.grupo_id for p in produtos}
+    grupos = {g.id: g for g in db.query(models.Grupo).all()}
+
+    # Agrupa
+    por_grupo: Dict[int, List[Recomendacao]] = {}
+    for r in recomendacoes:
+        gid = prod_grupo.get(r.produto_id)
+        if gid is None:
+            continue
+        por_grupo.setdefault(gid, []).append(r)
+
+    saida: List[Dict] = []
+    for gid, recs in por_grupo.items():
+        grupo = grupos.get(gid)
+        if not grupo:
+            continue
+
+        # SKUs com ação promocional
+        promocionais = [r for r in recs if r.desconto_sugerido and r.desconto_sugerido > 0]
+        qtd_skus = len(promocionais)
+
+        # Médias ponderadas (peso = receita_periodo)
+        peso_total = 0.0
+        desconto_pond = 0.0
+        margem_atual_pond = 0.0
+        margem_pos_pond = 0.0
+        for r in promocionais:
+            peso = max(r.contexto.get("receita_periodo", 0), 1.0)
+            desconto_pond += (r.desconto_sugerido or 0) * peso
+            margem_atual_pond += r.margem_atual * peso
+            margem_pos_pond += (r.margem_pos_acao or r.margem_atual) * peso
+            peso_total += peso
+
+        desconto_medio = (desconto_pond / peso_total) if peso_total > 0 else 0.0
+        margem_media_atual = (margem_atual_pond / peso_total) if peso_total > 0 else 0.0
+        margem_media_pos = (margem_pos_pond / peso_total) if peso_total > 0 else 0.0
+
+        # Ação dominante (frequência)
+        from collections import Counter
+        acoes = Counter(r.acao for r in recs)
+        acao_dominante = acoes.most_common(1)[0][0] if acoes else "monitorar"
+
+        narrativa = _narrativa_grupo(
+            grupo.nome, qtd_skus, desconto_medio, margem_media_pos
+        )
+
+        # Lista resumida de produtos promocionais (top 5 por desconto)
+        top_prods = sorted(
+            promocionais, key=lambda r: -(r.desconto_sugerido or 0)
+        )[:5]
+        produtos_resumo = [
+            {
+                "produto_id": r.produto_id,
+                "sku": r.sku,
+                "nome": r.nome,
+                "desconto": r.desconto_sugerido,
+                "margem_pos": r.margem_pos_acao,
+                "urgencia": r.urgencia,
+            }
+            for r in top_prods
+        ]
+
+        saida.append({
+            "grupo_id": gid,
+            "grupo_nome": grupo.nome,
+            "qtd_skus": qtd_skus,
+            "desconto_medio_pct": round(desconto_medio, 2),
+            "margem_media_atual": round(margem_media_atual, 4),
+            "margem_media_pos_acao": round(margem_media_pos, 4),
+            "impacto_pp": round((margem_media_pos - margem_media_atual) * 100, 2),
+            "acao_dominante": acao_dominante,
+            "narrativa": narrativa,
+            "produtos": produtos_resumo,
+        })
+
+    # Ordena por qtd_skus (grupos com mais sugestões primeiro), depois alfabético
+    saida.sort(key=lambda s: (-s["qtd_skus"], s["grupo_nome"]))
+    return saida
+
+
+def resumo_global(
+    db: Session, recomendacoes: List[Recomendacao]
+) -> Dict:
+    """
+    Resumo consolidado global + lista por_grupo. Estrutura compatível com
+    schemas.SugestaoResumoGlobal.
+    """
+    total = len(recomendacoes)
+    promocionais = [r for r in recomendacoes if r.desconto_sugerido and r.desconto_sugerido > 0]
+    com_promo = len(promocionais)
+
+    # Desconto médio ponderado
+    peso_total = 0.0
+    desconto_pond = 0.0
+    for r in promocionais:
+        peso = max(r.contexto.get("receita_periodo", 0), 1.0)
+        desconto_pond += (r.desconto_sugerido or 0) * peso
+        peso_total += peso
+    desconto_medio = (desconto_pond / peso_total) if peso_total > 0 else 0.0
+
+    # Margem consolidada (usa margin_engine)
+    sku_ids_promo = [r.produto_id for r in promocionais]
+    from . import margin_engine
+    produtos_all = db.query(models.Produto).all()
+    impacto = margin_engine.simulate_promotion_impact(
+        produtos_all, sku_ids_promo, desconto_medio
+    )
+
+    por_grupo = agregar_por_grupo(db, recomendacoes)
+
+    return {
+        "total_skus_analisados": total,
+        "skus_com_promo_sugerida": com_promo,
+        "desconto_medio_pct": round(desconto_medio, 2),
+        "margem_consolidada_atual": round(impacto["margem_atual"], 4),
+        "margem_consolidada_sugerida": round(impacto["nova_margem_estimada"], 4),
+        "impacto_pp": round(impacto["impacto_pp"], 2),
+        "por_grupo": por_grupo,
+    }

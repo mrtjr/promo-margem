@@ -7,20 +7,27 @@ from .. import models, schemas
 import uuid
 
 def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
-    # Determine which product
+    # Determine which product. Camadas de matching:
+    #   1) produto_id explícito  2) código ERP  3) nome exato
     produto = None
     if entrada.produto_id:
         produto = db.query(models.Produto).filter(models.Produto.id == entrada.produto_id).first()
-    
+
+    codigo_norm = (entrada.codigo or "").strip() or None
+    if not produto and codigo_norm:
+        produto = db.query(models.Produto).filter(models.Produto.codigo == codigo_norm).first()
+
     if not produto and entrada.nome_produto:
         # Check if already exists by name
         produto = db.query(models.Produto).filter(models.Produto.nome == entrada.nome_produto).first()
-        
+
         if not produto:
-            # Create new product automatically
+            # Create new product automatically. Aceita código se enviado —
+            # fica disponível para matching futuro (ex.: CSV do ERP).
             new_sku = f"AUTO-{uuid.uuid4().hex[:6].upper()}"
             produto = models.Produto(
                 sku=new_sku,
+                codigo=codigo_norm,
                 nome=entrada.nome_produto,
                 grupo_id=entrada.grupo_id or 1, # Default to first group if none
                 custo=entrada.custo_unitario,
@@ -32,7 +39,24 @@ def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
             db.commit()
             db.refresh(produto)
 
+    # Se casou por nome/id mas o usuário informou código e o produto ainda
+    # não tinha, aproveita pra adotar (sem quebrar unicidade).
+    if produto and codigo_norm and not produto.codigo:
+        conflito = db.query(models.Produto).filter(
+            models.Produto.codigo == codigo_norm,
+            models.Produto.id != produto.id,
+        ).first()
+        if not conflito:
+            produto.codigo = codigo_norm
+
     if produto:
+        # Se o produto estava inativo (soft-deleted por _desativar_se_orfao numa
+        # exclusão anterior), reativa agora que chegou nova ENTRADA. Sem isso,
+        # o produto soma estoque + movimentação mas continua invisível em
+        # GET /produtos (que filtra ativo=True) — some de "Gestão de SKUs".
+        if not produto.ativo:
+            produto.ativo = True
+
         # Calculate new weighted average cost based on Total Weight
         total_peso_novo = entrada.quantidade * entrada.peso
         

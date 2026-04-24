@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Header, Request, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
@@ -9,7 +9,21 @@ from datetime import date as date_type, timedelta
 
 from . import models, schemas, database, migrations
 from .database import engine, get_db
-from .services import margin_engine, sugestao_service, estoque_service, analise_service, forecast_service, recomendacao_service, categoria_service, serie_service, dre_seed, dre_service
+from .services import (
+    margin_engine,
+    sugestao_service,
+    estoque_service,
+    analise_service,
+    forecast_service,
+    recomendacao_service,
+    categoria_service,
+    serie_service,
+    dre_seed,
+    dre_service,
+    promocao_service,
+    pdv_service,
+    fechamento_csv_service,
+)
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
 models.Base.metadata.create_all(bind=engine)
@@ -271,6 +285,56 @@ async def list_produtos(
         q = q.filter(models.Produto.ativo == True)
     return q.all()
 
+
+@app.patch("/produtos/{produto_id}", response_model=schemas.Produto)
+async def atualizar_produto(
+    produto_id: int,
+    payload: schemas.ProdutoUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    Atualiza campos editáveis de um produto (nome, codigo, grupo, custo,
+    preco_venda, ativo). Todos opcionais.
+
+    Validações:
+      - `codigo` deve ser único (se preenchido). Vazio/whitespace vira NULL.
+      - Não altera `sku` (imutável), nem `estoque_qtd/peso` (movidos via entrada/venda).
+    """
+    prod = db.query(models.Produto).filter(models.Produto.id == produto_id).first()
+    if not prod:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+
+    # Normaliza código: strings vazias/whitespace viram None para não quebrar o UNIQUE
+    if payload.codigo is not None:
+        cod_norm = payload.codigo.strip() or None
+        if cod_norm is not None:
+            conflito = db.query(models.Produto).filter(
+                models.Produto.codigo == cod_norm,
+                models.Produto.id != produto_id,
+            ).first()
+            if conflito:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Código '{cod_norm}' já usado pelo SKU {conflito.sku} ({conflito.nome})",
+                )
+        prod.codigo = cod_norm
+
+    if payload.nome is not None:
+        prod.nome = payload.nome.strip()
+    if payload.grupo_id is not None:
+        prod.grupo_id = payload.grupo_id
+    if payload.custo is not None:
+        prod.custo = payload.custo
+    if payload.preco_venda is not None:
+        prod.preco_venda = payload.preco_venda
+    if payload.ativo is not None:
+        prod.ativo = payload.ativo
+
+    db.commit()
+    db.refresh(prod)
+    return prod
+
+
 @app.get("/grupos", response_model=List[schemas.Grupo])
 async def list_grupos(db: Session = Depends(get_db)):
     return db.query(models.Grupo).all()
@@ -332,6 +396,64 @@ async def analisar_fechamento_endpoint(
         raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
     analise = analise_service.analisar_fechamento(db, data_alvo, janela_dias=janela)
     return asdict(analise)
+
+@app.post("/fechamento/importar-csv/preview", response_model=schemas.CSVImportPreview)
+async def importar_csv_preview(
+    arquivo: UploadFile = File(...),
+    data: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """
+    1ª fase da importação de Fechamento via CSV (xRelVendaAnalitica).
+
+    Upload do CSV + data alvo (YYYY-MM-DD). Retorna preview com matching por
+    código/nome, validação aritmética e totais. Não grava nada — apenas exibe
+    o que aconteceria no commit.
+    """
+    try:
+        data_alvo = date_type.fromisoformat(data)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="data deve estar no formato YYYY-MM-DD")
+
+    conteudo = await arquivo.read()
+    if not conteudo:
+        raise HTTPException(status_code=400, detail="arquivo vazio")
+
+    try:
+        return fechamento_csv_service.build_preview(db, conteudo, data_alvo)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/fechamento/importar-csv/commit", response_model=schemas.CSVImportCommitResponse)
+async def importar_csv_commit(
+    req: schemas.CSVImportCommitRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    2ª fase: efetiva a importação. Recebe o preview completo + resoluções do
+    user (associar / criar / ignorar para linhas pendentes). Substitui o
+    fechamento do dia se já existir.
+    """
+    try:
+        data_alvo = date_type.fromisoformat(req.data_alvo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="data_alvo deve estar no formato YYYY-MM-DD")
+
+    # Transforma schemas Pydantic em dicts simples pro service
+    linhas_dicts = [l.model_dump() for l in req.linhas]
+    resolucoes_dicts = [r.model_dump() for r in req.resolucoes]
+
+    try:
+        return fechamento_csv_service.commit_importacao(
+            db,
+            linhas=linhas_dicts,
+            resolucoes=resolucoes_dicts,
+            data_alvo=data_alvo,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.get("/projecao/amanha", response_model=schemas.ProjecaoConsolidadaResponse)
 async def projecao_amanha(
@@ -604,4 +726,204 @@ async def dre_fechar(mes: Optional[str] = None, db: Session = Depends(get_db)):
         "lucro_liquido": snap.lucro_liquido,
         "margem_liquida_pct": snap.margem_liquida_pct,
         "fechado_em": snap.fechado_em.isoformat() if snap.fechado_em else None,
+    }
+
+
+# ============================================================================
+# F4 — Promoções (simulador → rascunho → ativa)
+# ============================================================================
+
+@app.get("/promocoes", response_model=List[schemas.PromocaoOut])
+async def listar_promocoes(
+    status: Optional[str] = None, db: Session = Depends(get_db)
+):
+    """Lista promoções. Filtro opcional por status (rascunho|ativa|encerrada)."""
+    if status and status not in ("rascunho", "ativa", "encerrada"):
+        raise HTTPException(status_code=400, detail="status inválido")
+    return promocao_service.listar_promocoes(db, status=status)
+
+
+@app.post("/promocoes", response_model=schemas.PromocaoOut)
+async def criar_promocao(req: schemas.PromocaoCreate, db: Session = Depends(get_db)):
+    """Cria promoção (rascunho por default). Calcula impacto_margem snapshot."""
+    try:
+        return promocao_service.criar_promocao(
+            db,
+            nome=req.nome,
+            grupo_id=req.grupo_id,
+            sku_ids=req.sku_ids,
+            desconto_pct=req.desconto_pct,
+            qtd_limite=req.qtd_limite,
+            data_inicio=req.data_inicio,
+            data_fim=req.data_fim,
+            status=req.status,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/promocoes/{promocao_id}/publicar", response_model=schemas.PromocaoOut)
+async def publicar_promocao(promocao_id: int, db: Session = Depends(get_db)):
+    """Rascunho → Ativa (exige data_inicio e data_fim)."""
+    try:
+        return promocao_service.publicar(db, promocao_id)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "não encontrada" in msg else 400
+        raise HTTPException(status_code=code, detail=msg)
+
+
+@app.post("/promocoes/{promocao_id}/encerrar", response_model=schemas.PromocaoOut)
+async def encerrar_promocao(promocao_id: int, db: Session = Depends(get_db)):
+    """Ativa → Encerrada."""
+    try:
+        return promocao_service.encerrar(db, promocao_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/promocoes/{promocao_id}")
+async def excluir_promocao(promocao_id: int, db: Session = Depends(get_db)):
+    try:
+        promocao_service.excluir(db, promocao_id)
+        return {"ok": True, "id": promocao_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/simular/grupo")
+async def simular_por_grupo(
+    req: schemas.SimulacaoPorGrupoRequest, db: Session = Depends(get_db)
+):
+    """
+    Simula aplicação do desconto em todos os SKUs ativos de um grupo.
+    Retorna impacto consolidado + lista de SKUs.
+    """
+    return promocao_service.simular_por_grupo(db, req.grupo_id, req.desconto_pct)
+
+
+# ============================================================================
+# F5 — Sugestões agregadas (por grupo + resumo global)
+# ============================================================================
+
+@app.get("/sugestao/por-grupo", response_model=List[schemas.SugestaoPorGrupo])
+async def sugestao_por_grupo(
+    data: Optional[str] = None,
+    janela: int = analise_service.JANELA_HISTORICO_DIAS,
+    db: Session = Depends(get_db),
+):
+    """
+    Recomendações consolidadas por grupo comercial, com narrativa pronta para
+    copiar no WhatsApp da equipe. Formato PRD:
+      "Promo sugerida: grupo Médio, 15% off em 30 SKUs → margem 17,8%"
+    """
+    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    if janela < 1 or janela > 365:
+        raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
+    recs = recomendacao_service.gerar_recomendacoes(db, data_alvo=data_alvo, janela_dias=janela)
+    return recomendacao_service.agregar_por_grupo(db, recs)
+
+
+@app.get("/sugestao/resumo", response_model=schemas.SugestaoResumoGlobal)
+async def sugestao_resumo_global(
+    data: Optional[str] = None,
+    janela: int = analise_service.JANELA_HISTORICO_DIAS,
+    db: Session = Depends(get_db),
+):
+    """
+    Resumo global + agregação por grupo. Combina todas as sugestões num único
+    impacto consolidado via margin_engine.
+    """
+    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    if janela < 1 or janela > 365:
+        raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
+    recs = recomendacao_service.gerar_recomendacoes(db, data_alvo=data_alvo, janela_dias=janela)
+    return recomendacao_service.resumo_global(db, recs)
+
+
+# ============================================================================
+# F7 — Integração PDV (webhook + config + logs)
+# ============================================================================
+
+@app.get("/pdv/config", response_model=schemas.PDVConfigOut)
+async def obter_pdv_config(db: Session = Depends(get_db)):
+    """Config do PDV (singleton). Cria com token novo se ainda não existir."""
+    return pdv_service.obter_ou_criar_config(db)
+
+
+@app.put("/pdv/config", response_model=schemas.PDVConfigOut)
+async def atualizar_pdv_config(cfg: schemas.PDVConfigIn, db: Session = Depends(get_db)):
+    """Atualiza nome/estado ativo do PDV. Token não é alterado aqui — use rotacionar."""
+    return pdv_service.atualizar_config(db, nome_pdv=cfg.nome_pdv, ativa=cfg.ativa)
+
+
+@app.post("/pdv/rotacionar-token", response_model=schemas.PDVConfigOut)
+async def rotacionar_pdv_token(db: Session = Depends(get_db)):
+    """Gera novo token (invalida o anterior imediatamente)."""
+    return pdv_service.rotacionar_token(db)
+
+
+@app.get("/pdv/logs", response_model=List[schemas.PDVLogOut])
+async def listar_pdv_logs(limit: int = 50, db: Session = Depends(get_db)):
+    """Últimos N logs de webhooks (default 50)."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit deve estar entre 1 e 500")
+    return pdv_service.listar_logs(db, limit=limit)
+
+
+@app.post("/webhooks/pdv-vendas")
+async def webhook_pdv_vendas(
+    evento: schemas.PDVVendaEvento,
+    request: Request,
+    x_pdv_token: Optional[str] = Header(default=None, alias="X-PDV-Token"),
+    db: Session = Depends(get_db),
+):
+    """
+    Webhook do PDV: recebe vendas em tempo real.
+
+    Header obrigatório: `X-PDV-Token: <token da config>`
+    Body: PDVVendaEvento (idempotency_key + itens).
+
+    Idempotência: se idempotency_key já foi processado com sucesso, retorna
+    status='duplicado' sem duplicar vendas.
+    """
+    # 1. Valida token
+    config = pdv_service.validar_token(db, x_pdv_token)
+    if not config:
+        raise HTTPException(status_code=401, detail="token inválido ou integração inativa")
+
+    # 2. Processa evento
+    try:
+        status, mensagem, venda_id = pdv_service.processar_evento(db, evento)
+    except Exception as e:
+        # Registra o log mesmo em falha inesperada
+        pdv_service.registrar_log(
+            db,
+            payload=evento.dict(),
+            status="erro",
+            mensagem=f"exceção: {e}",
+            venda_id=None,
+            idempotency_key=evento.idempotency_key,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # 3. Log de auditoria (sempre)
+    pdv_service.registrar_log(
+        db,
+        payload=evento.dict(),
+        status=status,
+        mensagem=mensagem,
+        venda_id=venda_id,
+        idempotency_key=evento.idempotency_key,
+    )
+
+    if status == "erro":
+        raise HTTPException(status_code=422, detail=mensagem)
+
+    return {
+        "ok": True,
+        "status": status,
+        "mensagem": mensagem,
+        "venda_id": venda_id,
+        "idempotency_key": evento.idempotency_key,
     }
