@@ -165,7 +165,7 @@ function ComprasPage({ onComplete }: any) {
   const [produtos, setProdutos] = useState<any[]>([])
   const [grupos, setGrupos] = useState<any[]>([])
   const [rows, setRows] = useState<any[]>([
-    { id: Date.now(), matchedId: null, name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }
+    { id: Date.now(), matchedId: null, codigo: '', name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }
   ])
   const [submitting, setSubmitting] = useState(false)
 
@@ -181,14 +181,27 @@ function ComprasPage({ onComplete }: any) {
     
     const newRows = lines.map(line => {
       const parts = line.split('\t').map(p => p.trim())
-      // Expected: Prod | Cid | Qtd | Peso | Valor | Categoria (Texto)
-      const [name, cidade, qtd, peso, vl_fp, cat_text] = parts
-      
-      // Auto-match product
-      const matched = produtos.find(p => 
-        p.nome.toLowerCase().includes((name || '').toLowerCase()) || 
-        (name || '').toLowerCase().includes(p.nome.toLowerCase())
-      )
+      // Formato aceito (7 colunas — código é opcional no final):
+      //   Prod | Cid | Qtd | Peso | Valor | Categoria | Código
+      // Detecta pelo nº de colunas; com 6 colunas usa o formato legado (sem código).
+      let name = '', cidade = '', qtd = '', peso = '', vl_fp = '', cat_text = '', codigo = ''
+      if (parts.length >= 7) {
+        [name, cidade, qtd, peso, vl_fp, cat_text, codigo] = parts
+      } else {
+        [name, cidade, qtd, peso, vl_fp, cat_text] = parts
+      }
+
+      // Auto-match: primeiro por código (se veio), depois por nome
+      let matched = null as any
+      if (codigo) {
+        matched = produtos.find(p => (p.codigo || '').toLowerCase() === codigo.toLowerCase())
+      }
+      if (!matched) {
+        matched = produtos.find(p =>
+          p.nome.toLowerCase().includes((name || '').toLowerCase()) ||
+          (name || '').toLowerCase().includes(p.nome.toLowerCase())
+        )
+      }
 
       // Match category
       let matchedGroupId = matched?.grupo_id || null
@@ -207,6 +220,7 @@ function ComprasPage({ onComplete }: any) {
       return {
         id: Math.random(),
         matchedId: matched?.id || null,
+        codigo: codigo || matched?.codigo || '',
         name: name || '',
         cidade: matchedCidade,
         qtd: qtd || '',
@@ -233,6 +247,7 @@ function ComprasPage({ onComplete }: any) {
       .map(r => ({
         produto_id: r.matchedId,
         nome_produto: r.name ? r.name.trim() : '',
+        codigo: r.codigo ? String(r.codigo).trim() : null,
         quantidade: parseInt(String(r.qtd).replace(/\D/g, '')) || 0,
         peso: parseFloat(String(r.peso).replace(',', '.')),
         custo_unitario: parseFloat(String(r.vl_fp).replace(',', '.')),
@@ -283,6 +298,7 @@ function ComprasPage({ onComplete }: any) {
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Status</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Produto (Excel)</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Código ERP</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Sistema</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Cidade</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">QTD (Vol)</th>
@@ -310,21 +326,37 @@ function ComprasPage({ onComplete }: any) {
                   ))}
                 </td>
                 <td className="px-6 py-4">
-                  <input 
+                  <input
                     type="text" value={row.name}
                     className="w-full bg-transparent outline-none text-sm font-semibold"
                     onChange={(e) => updateRow(row.id, 'name', e.target.value)}
                   />
                 </td>
                 <td className="px-6 py-4">
-                  <select 
+                  <input
+                    type="text" value={row.codigo || ''}
+                    placeholder="—"
+                    className="w-24 bg-blue-50/50 border border-slate-200 rounded px-2 py-1 text-xs font-mono font-bold text-blue-700 outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={(e) => updateRow(row.id, 'codigo', e.target.value)}
+                  />
+                </td>
+                <td className="px-6 py-4">
+                  <select
                     className="w-full bg-slate-100/50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500"
                     value={row.matchedId || ''}
-                    onChange={(e) => updateRow(row.id, 'matchedId', parseInt(e.target.value))}
+                    onChange={(e) => {
+                      const id = parseInt(e.target.value)
+                      updateRow(row.id, 'matchedId', id || null)
+                      // Preenche o código visível com o código do produto, se houver
+                      const match = produtos.find(p => p.id === id)
+                      if (match && match.codigo && !row.codigo) {
+                        updateRow(row.id, 'codigo', match.codigo)
+                      }
+                    }}
                   >
                     <option value="">-- NOVO ITEM --</option>
                     {produtos.map(p => (
-                      <option key={p.id} value={p.id}>{p.nome}</option>
+                      <option key={p.id} value={p.id}>{p.nome}{p.codigo ? ` [${p.codigo}]` : ''}</option>
                     ))}
                   </select>
                 </td>
@@ -367,7 +399,7 @@ function ComprasPage({ onComplete }: any) {
         </table>
         <div className="p-4 bg-slate-50 border-t flex justify-center">
             <button 
-              onClick={() => setRows([...rows, { id: Math.random(), matchedId: null, name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }])}
+              onClick={() => setRows([...rows, { id: Math.random(), matchedId: null, codigo: '', name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }])}
               className="text-[10px] font-black text-slate-400 hover:text-blue-600 uppercase tracking-widest"
             >
               + Adicionar Linha Manual
@@ -1592,8 +1624,31 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
     setResolucoes((prev) => ({ ...prev, [idx]: { ...(prev[idx] || { idx }), ...patch } }))
   }
 
+  // Linhas "criar" sem custo > 0: bloqueia no front antes de bater no server,
+  // porque venda com custo=0 vira margem 100% (dado contábil errado).
+  const criarSemCusto = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'criar' && (!r.novo_custo || Number(r.novo_custo) <= 0)
+  ) as any[]
+  const criarSemCampos = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'criar' && (!r.novo_nome || !r.novo_grupo_id || !r.novo_preco_venda || !r.novo_custo)
+  ) as any[]
+  const associarSemProduto = Object.values(resolucoes).filter((r: any) =>
+    r.acao === 'associar' && !r.produto_id
+  ) as any[]
+  const podeCommitar = criarSemCusto.length === 0 && criarSemCampos.length === 0 && associarSemProduto.length === 0
+
   const commitar = async () => {
     if (!preview) return
+    if (!podeCommitar) {
+      if (criarSemCusto.length) {
+        setErro(`${criarSemCusto.length} linha(s) 'criar' sem custo > 0. Informe o custo — uma venda sem custo vira margem 100%.`)
+      } else if (criarSemCampos.length) {
+        setErro(`${criarSemCampos.length} linha(s) 'criar' com campos faltando (nome/grupo/preço/custo).`)
+      } else {
+        setErro(`${associarSemProduto.length} linha(s) 'associar' sem produto selecionado.`)
+      }
+      return
+    }
     setErro(null)
     setSubmitting(true)
     try {
@@ -1681,8 +1736,9 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
             {estado === 'preview' && (
               <button
                 onClick={commitar}
-                disabled={submitting}
+                disabled={submitting || !podeCommitar}
                 className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 disabled:opacity-50 transition-all"
+                title={!podeCommitar ? 'Complete as resoluções pendentes (produto em associar, ou nome/grupo/preço/custo em criar).' : ''}
               >
                 {submitting ? 'Importando...' : (preview?.ja_existe_fechamento ? 'Substituir e importar' : 'Confirmar importação')}
               </button>
@@ -1913,14 +1969,20 @@ function LinhaResolucao({ linha, resolucao, onChange, produtos, grupos }: any) {
               className="p-1.5 rounded border border-slate-300 text-xs bg-white"
             />
             <input
-              type="number" step="0.01"
+              type="number" step="0.01" min="0.01"
               value={resolucao.novo_custo ?? ''}
               onChange={(e) => onChange({ novo_custo: parseFloat(e.target.value) || 0 })}
-              placeholder="Custo"
-              className="p-1.5 rounded border border-slate-300 text-xs bg-white"
+              placeholder="Custo *"
+              className={`p-1.5 rounded border text-xs bg-white ${
+                (!resolucao.novo_custo || Number(resolucao.novo_custo) <= 0)
+                  ? 'border-rose-400 bg-rose-50'
+                  : 'border-slate-300'
+              }`}
             />
           </div>
-          <p className="text-[10px] text-slate-500">Todos os campos são obrigatórios para criar.</p>
+          <p className="text-[10px] text-slate-500">
+            Todos os campos obrigatórios. <strong className="text-rose-600">Custo &gt; 0</strong> é imprescindível — venda sem custo vira margem 100%.
+          </p>
         </div>
       )}
 

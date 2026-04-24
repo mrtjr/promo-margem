@@ -87,6 +87,7 @@ class VendaCreate(BaseModel):
 class EntradaCreate(BaseModel):
     produto_id: Optional[int] = None
     nome_produto: Optional[str] = None
+    codigo: Optional[str] = None   # Código ERP — camada primária de matching
     quantidade: int # QTD
     peso: float # PESO
     custo_unitario: float # VL F/P

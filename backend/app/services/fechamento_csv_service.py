@@ -416,6 +416,41 @@ def commit_importacao(
                     f"Linha {l['idx']}: ação 'criar' exige {', '.join(faltando)}."
                 )
 
+    # PRÉ-RESOLUÇÃO: identifica o produto de cada linha ANTES de mexer no
+    # banco, e exige custo > 0. Regra do negócio: uma SAÍDA sem custo unitário
+    # registrado distorce a margem para 100%. Toda venda precisa de custo —
+    # vindo do CMP (entradas anteriores) ou informado no "criar".
+    produtos_sem_custo: List[str] = []
+    for l in linhas:
+        if l["status"] == "ok":
+            p = db.query(models.Produto).filter(models.Produto.id == l["produto_id"]).first()
+            if not p:
+                raise ValueError(f"Linha {l['idx']}: produto_id {l['produto_id']} não existe mais.")
+            if (p.custo or 0) <= 0:
+                produtos_sem_custo.append(f"{p.nome} (SKU {p.sku})")
+        else:
+            res = res_by_idx.get(l["idx"])
+            if not res or res["acao"] == "ignorar":
+                continue
+            if res["acao"] == "associar":
+                p = db.query(models.Produto).filter(models.Produto.id == res["produto_id"]).first()
+                if not p:
+                    raise ValueError(f"Linha {l['idx']}: produto_id {res['produto_id']} não existe.")
+                if (p.custo or 0) <= 0:
+                    produtos_sem_custo.append(f"{p.nome} (SKU {p.sku})")
+            elif res["acao"] == "criar":
+                if float(res.get("novo_custo") or 0) <= 0:
+                    produtos_sem_custo.append(f"{res.get('novo_nome') or l['nome_csv']} (novo)")
+
+    if produtos_sem_custo:
+        unicos = list(dict.fromkeys(produtos_sem_custo))
+        raise ValueError(
+            "Importação bloqueada: os produtos abaixo não têm custo unitário. "
+            "Uma SAÍDA sem custo gera margem 100% (dado contábil errado). "
+            "Registre primeiro uma Entrada de Estoque para definir o CMP "
+            "ou informe o custo ao criar via CSV: " + "; ".join(unicos)
+        )
+
     # Substitui fechamento do dia se necessário
     n_removidas = _apagar_fechamento_do_dia(db, data_alvo)
     if n_removidas:
