@@ -25,9 +25,19 @@ class ProdutoBase(BaseModel):
     estoque_qtd: float = 0
     estoque_peso: float = 0
     ativo: bool = True
+    codigo: Optional[str] = None  # abreviação externa (ERP). Unique quando preenchida.
 
 class ProdutoCreate(ProdutoBase):
     pass
+
+class ProdutoUpdate(BaseModel):
+    """Campos editáveis via PATCH /produtos/{id}. Tudo opcional."""
+    nome: Optional[str] = None
+    codigo: Optional[str] = None
+    grupo_id: Optional[int] = None
+    custo: Optional[float] = None
+    preco_venda: Optional[float] = None
+    ativo: Optional[bool] = None
 
 class Produto(ProdutoBase):
     id: int
@@ -352,3 +362,179 @@ class DREComparativoPonto(BaseModel):
     margem_bruta_pct: float
     ebitda_pct: float
     margem_liquida_pct: float
+
+
+# ============================================================================
+# F4 — Promoções (simulador → publicação)
+# ============================================================================
+
+class PromocaoCreate(BaseModel):
+    nome: str
+    grupo_id: Optional[int] = None
+    sku_ids: List[int]
+    desconto_pct: float
+    qtd_limite: Optional[int] = None
+    data_inicio: Optional[date] = None
+    data_fim: Optional[date] = None
+    status: str = "rascunho"  # rascunho | ativa | encerrada
+
+
+class PromocaoOut(BaseModel):
+    id: int
+    nome: str
+    grupo_id: Optional[int]
+    sku_ids: List[int]
+    desconto_pct: float
+    qtd_limite: Optional[int]
+    data_inicio: Optional[datetime]
+    data_fim: Optional[datetime]
+    status: str
+    impacto_margem_estimado: Optional[float]
+    criado_em: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class SimulacaoPorGrupoRequest(BaseModel):
+    """Simula uma promo aplicada a todos os SKUs de um grupo."""
+    grupo_id: int
+    desconto_pct: float
+
+
+# ============================================================================
+# F5 — Sugestões agregadas por grupo (engine)
+# ============================================================================
+
+class SugestaoPorGrupo(BaseModel):
+    grupo_id: int
+    grupo_nome: str
+    qtd_skus: int
+    desconto_medio_pct: float
+    margem_media_atual: float
+    margem_media_pos_acao: float
+    impacto_pp: float
+    acao_dominante: str  # ex: promover_moderado
+    narrativa: str  # "Promo sugerida: grupo Médio, 15% off em 30 SKUs → margem 17,8%"
+    produtos: List[Dict[str, Any]] = []  # lista resumida (id, sku, nome, desconto)
+
+
+class SugestaoResumoGlobal(BaseModel):
+    total_skus_analisados: int
+    skus_com_promo_sugerida: int
+    desconto_medio_pct: float
+    margem_consolidada_atual: float
+    margem_consolidada_sugerida: float
+    impacto_pp: float
+    por_grupo: List[SugestaoPorGrupo]
+
+
+# ============================================================================
+# F7 — Integração PDV (webhook)
+# ============================================================================
+
+class PDVVendaItem(BaseModel):
+    sku: str
+    quantidade: float
+    preco_venda: float
+
+
+class PDVVendaEvento(BaseModel):
+    """Payload do webhook POST /webhooks/pdv-vendas."""
+    idempotency_key: str  # chave única do PDV (numero da nota, cupom, etc)
+    data_venda: Optional[date] = None  # se None, usa hoje
+    itens: List[PDVVendaItem]
+    metadata: Optional[Dict[str, Any]] = None  # pdv_id, operador, cliente_cpf, etc
+
+
+class PDVConfigOut(BaseModel):
+    id: int
+    token: str
+    nome_pdv: Optional[str]
+    ativa: bool
+
+    class Config:
+        from_attributes = True
+
+
+class PDVConfigIn(BaseModel):
+    nome_pdv: Optional[str] = None
+    ativa: bool = True
+    # token é gerado pelo backend — não vem do cliente
+
+
+class PDVLogOut(BaseModel):
+    id: int
+    recebido_em: datetime
+    status: str
+    mensagem: Optional[str]
+    venda_id: Optional[int]
+    idempotency_key: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================================================
+# Importação de Fechamento via CSV (ERP)
+# ============================================================================
+
+class CSVLinhaResolucao(BaseModel):
+    """Ação que o usuário resolve numa linha pendente antes de commitar."""
+    idx: int  # índice da linha no preview
+    acao: str  # "associar" | "criar" | "ignorar"
+    produto_id: Optional[int] = None  # quando acao == "associar"
+    # Campos obrigatórios quando acao == "criar":
+    novo_codigo: Optional[str] = None
+    novo_nome: Optional[str] = None
+    novo_grupo_id: Optional[int] = None
+    novo_preco_venda: Optional[float] = None
+    novo_custo: Optional[float] = None
+
+
+class CSVLinhaPreview(BaseModel):
+    """Linha do CSV após parsing + matching. Usada no preview."""
+    idx: int
+    pedido: Optional[str] = None
+    codigo_csv: Optional[str] = None
+    nome_csv: str
+    quantidade: float
+    preco_unitario: float
+    total: float
+    data_csv: Optional[str] = None
+    # Resultado do matching
+    status: str  # "ok" | "conflito" | "sem_match" | "erro"
+    produto_id: Optional[int] = None   # se casou
+    produto_nome: Optional[str] = None
+    mensagens: List[str] = []          # avisos/erros específicos desta linha
+
+
+class CSVImportPreview(BaseModel):
+    """Retorno do POST /fechamento/importar-csv?modo=preview."""
+    data_alvo: str
+    total_linhas: int
+    linhas_ok: int
+    linhas_pendentes: int
+    linhas_erro: int
+    receita_total: float
+    qtd_total: float
+    skus_distintos: int
+    ja_existe_fechamento: bool       # se sim, commit vai substituir
+    linhas: List[CSVLinhaPreview]
+
+
+class CSVImportCommitRequest(BaseModel):
+    """Body do POST /fechamento/importar-csv?modo=commit."""
+    data_alvo: str                       # YYYY-MM-DD
+    linhas: List[CSVLinhaPreview]        # repassa o preview completo
+    resolucoes: List[CSVLinhaResolucao] = []  # decisões do user para pendentes
+
+
+class CSVImportCommitResponse(BaseModel):
+    data_alvo: str
+    vendas_criadas: int
+    vendas_removidas_antes: int          # se substituiu
+    produtos_criados: int
+    produtos_associados: int
+    linhas_ignoradas: int
+    mensagens: List[str] = []

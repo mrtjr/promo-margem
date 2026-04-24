@@ -1,4 +1,5 @@
 from typing import List
+from sqlalchemy.orm import Session
 from ..models import Produto
 
 def calculate_margin(preco_venda: float, custo: float) -> float:
@@ -62,10 +63,20 @@ def simulate_promotion_impact(
         status = "bloqueado"
     elif nova_margem < 0.175:
         status = "alerta"
-        
+
     return {
         "margem_atual": margem_atual,
         "nova_margem_estimada": nova_margem,
         "impacto_pp": impacto_pp,
         "status": status
     }
+
+
+def calcular_impacto(db: Session, sku_ids: List[int], desconto_pct: float) -> dict:
+    """
+    Wrapper de conveniência: busca todos produtos ativos e calcula impacto
+    aplicando o desconto apenas nos `sku_ids`. Usado pelo promocao_service
+    e pelos endpoints de simulação.
+    """
+    produtos = db.query(Produto).filter(Produto.ativo == True).all()
+    return simulate_promotion_impact(produtos, sku_ids, desconto_pct)
