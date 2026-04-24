@@ -141,10 +141,15 @@ def normalizar_nome(s: str) -> str:
 
 
 def _indices_produtos(db: Session) -> Tuple[Dict[str, models.Produto], Dict[str, models.Produto]]:
-    """Retorna (por_codigo, por_nome_normalizado). Inclui produtos inativos."""
+    """Retorna (por_codigo, por_nome_normalizado). APENAS produtos ativos.
+
+    Produtos soft-deleted (ativo=false) não devem ressuscitar silenciosamente
+    via SAÍDA de CSV — a reativação só acontece por ENTRADA explícita (ver
+    estoque_service.registrar_entrada). Incluir inativos aqui fazia o usuário
+    enxergar match em fantasma depois de "apagar histórico"."""
     por_codigo: Dict[str, models.Produto] = {}
     por_nome: Dict[str, models.Produto] = {}
-    for p in db.query(models.Produto).all():
+    for p in db.query(models.Produto).filter(models.Produto.ativo == True).all():
         if p.codigo:
             por_codigo[p.codigo.strip()] = p
         por_nome[normalizar_nome(p.nome)] = p
