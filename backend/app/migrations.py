@@ -282,6 +282,79 @@ def m_006_balanco_patrimonial(conn: Connection) -> str:
     return "ok: balanco_patrimonial criada"
 
 
+def m_007_movimentacao_quebra(conn: Connection) -> str:
+    """
+    Adiciona suporte ao tipo de movimentação QUEBRA (perda de estoque):
+      1. Coluna `movimentacoes.motivo` (NULLABLE) — vencimento|avaria|desvio|doacao
+      2. CHECK constraints: tipo válido, motivo válido, QUEBRA exige motivo
+      3. Índice (tipo, data) para consultas de histórico/DRE
+      4. Conta contábil 4.2 (Quebras e Perdas, tipo=CMV)
+      5. Coluna `dre_mensal.quebras` (snapshot do valor mensal)
+
+    Idempotente em todas as etapas — checa estado antes de alterar.
+    """
+    msgs: List[str] = []
+
+    # 1. Coluna motivo
+    if not _has_column(conn, "movimentacoes", "motivo"):
+        conn.execute(text("ALTER TABLE movimentacoes ADD COLUMN motivo VARCHAR"))
+        msgs.append("col motivo criada")
+    else:
+        msgs.append("col motivo já existe")
+
+    # 2. CHECK constraints (cada uma idempotente)
+    def _has_constraint(name: str) -> bool:
+        row = conn.execute(text(
+            "SELECT 1 FROM information_schema.table_constraints "
+            "WHERE table_name='movimentacoes' AND constraint_name=:n"
+        ), {"n": name}).first()
+        return row is not None
+
+    if not _has_constraint("mov_tipo_check"):
+        conn.execute(text(
+            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_tipo_check "
+            "CHECK (tipo IN ('ENTRADA','SAIDA','QUEBRA'))"
+        ))
+        msgs.append("check tipo criado")
+    if not _has_constraint("mov_motivo_valid"):
+        conn.execute(text(
+            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_motivo_valid "
+            "CHECK (motivo IS NULL OR motivo IN ('vencimento','avaria','desvio','doacao'))"
+        ))
+        msgs.append("check motivo criado")
+    if not _has_constraint("mov_quebra_exige_motivo"):
+        conn.execute(text(
+            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_quebra_exige_motivo "
+            "CHECK (tipo != 'QUEBRA' OR motivo IS NOT NULL)"
+        ))
+        msgs.append("check quebra-motivo criado")
+
+    # 3. Índice tipo+data
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_mov_tipo_data ON movimentacoes(tipo, data)"
+    ))
+
+    # 4. Conta contábil 4.2 (Quebras e Perdas)
+    existe_conta = conn.execute(text(
+        "SELECT 1 FROM contas_contabeis WHERE codigo='4.2'"
+    )).first()
+    if not existe_conta:
+        conn.execute(text(
+            "INSERT INTO contas_contabeis (codigo, nome, tipo, natureza, ativa) "
+            "VALUES ('4.2','Quebras e Perdas de Estoque','CMV','DEBITO',TRUE)"
+        ))
+        msgs.append("conta 4.2 criada")
+    else:
+        msgs.append("conta 4.2 já existe")
+
+    # 5. Coluna dre_mensal.quebras
+    if _has_table(conn, "dre_mensal") and not _has_column(conn, "dre_mensal", "quebras"):
+        conn.execute(text("ALTER TABLE dre_mensal ADD COLUMN quebras DOUBLE PRECISION DEFAULT 0"))
+        msgs.append("dre_mensal.quebras criada")
+
+    return "ok: " + ", ".join(msgs)
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
@@ -289,6 +362,7 @@ MIGRATIONS: List[Callable[[Connection], str]] = [
     m_004_soft_delete_produtos_custo_zero,
     m_005_produto_custo_nonneg,
     m_006_balanco_patrimonial,
+    m_007_movimentacao_quebra,
 ]
 
 

@@ -83,12 +83,15 @@ class Movimentacao(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     produto_id = Column(Integer, ForeignKey("produtos.id"))
-    tipo = Column(String)  # ENTRADA, SAIDA
+    # ENTRADA: compra/recebimento; SAIDA: venda; QUEBRA: perda de estoque
+    # (vencimento, avaria, desvio, doacao). QUEBRA exige `motivo` preenchido.
+    tipo = Column(String)
     quantidade = Column(Float)  # QTD (aceita decimais)
-    peso = Column(Float, nullable=True)  # PESO
-    custo_unitario = Column(Float)
+    peso = Column(Float, nullable=True)  # PESO (ENTRADA: unitário; SAIDA/QUEBRA: total)
+    custo_unitario = Column(Float)  # ENTRADA: custo de aquisição; SAIDA: preço venda; QUEBRA: CMP no momento
     cidade = Column(String, nullable=True)
     peso_medida = Column(String, nullable=True) # Legado/Info
+    motivo = Column(String, nullable=True)  # só preenchido quando tipo='QUEBRA'
     data = Column(DateTime, server_default=func.now())
 
     produto = relationship("Produto")
@@ -231,6 +234,7 @@ class DREMensal(Base):
     devolucoes = Column(Float, default=0)
     receita_liquida = Column(Float, default=0)
     cmv = Column(Float, default=0)
+    quebras = Column(Float, default=0)  # 4.2 — perdas de estoque (vencimento/avaria/desvio/doação)
     lucro_bruto = Column(Float, default=0)
     despesas_vendas = Column(Float, default=0)
     despesas_admin = Column(Float, default=0)

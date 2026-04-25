@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock } from 'lucide-react'
+import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock, Skull } from 'lucide-react'
 import axios from 'axios'
 
 // API base URL
@@ -96,6 +96,12 @@ function App() {
             icon={<History size={20} />}
             label="Histórico"
           />
+          <NavItem
+            isActive={currentPage === 'quebras'}
+            onClick={() => setCurrentPage('quebras')}
+            icon={<Skull size={20} />}
+            label="Quebras"
+          />
           <div className="pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40">Financeiro</div>
           <NavItem
             isActive={currentPage === 'dre'}
@@ -143,6 +149,7 @@ function App() {
             {currentPage === 'projecao' && <ProjecaoPage />}
             {currentPage === 'simulador' && <SimuladorPage />}
             {currentPage === 'historico' && <HistoricoPage />}
+            {currentPage === 'quebras' && <QuebrasPage />}
             {currentPage === 'dre' && <DREPage />}
             {currentPage === 'bp' && <BPPage />}
           </div>
@@ -1016,11 +1023,13 @@ function DashboardPage({ stats, onNavigate }: any) {
   const [saudeCategorias, setSaudeCategorias] = useState<any[]>([])
   const [projecao, setProjecao] = useState<any>(null)
   const [serie, setSerie] = useState<PontoSerie[]>([])
+  const [quebraResumo, setQuebraResumo] = useState<any>(null)
 
   useEffect(() => {
     axios.get(`${API_URL}/categorias/saude`).then(res => setSaudeCategorias(res.data)).catch(() => {})
     axios.get(`${API_URL}/projecao/amanha?top_n=0`).then(res => setProjecao(res.data)).catch(() => {})
     axios.get(`${API_URL}/margem/serie?dias=30`).then(res => setSerie(res.data)).catch(() => {})
+    axios.get(`${API_URL}/quebras/resumo`).then(res => setQuebraResumo(res.data)).catch(() => {})
   }, [])
 
   const marginPct = stats?.margem_semana ? (stats.margem_semana * 100).toFixed(1) : "0.0"
@@ -1079,7 +1088,7 @@ function DashboardPage({ stats, onNavigate }: any) {
       </header>
 
       {/* Stats Grid — Tremor-style: valor + delta + sparkline */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <KPICard
           title="Margem (dia)"
           value={ultMargem != null ? `${ultMargem.toFixed(1)}%` : '—'}
@@ -1109,6 +1118,16 @@ function DashboardPage({ stats, onNavigate }: any) {
           value={stats?.rupturas || 0}
           subValue={stats?.rupturas > 0 ? `${stats.rupturas}/${stats?.total_skus} zerados · repor` : `${stats?.total_skus || 0} SKUs · 0 zerados`}
           status={stats?.rupturas > 0 ? "alert" : "ok"}
+        />
+        <KPICard
+          title="Quebras (mês)"
+          value={quebraResumo
+            ? `R$ ${quebraResumo.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : '—'}
+          subValue={quebraResumo
+            ? `${(quebraResumo.pct_faturamento * 100).toFixed(2)}% do faturamento · ${quebraResumo.eventos} evento(s)`
+            : 'Sem dados'}
+          status={!quebraResumo ? 'neutral' : quebraResumo.pct_faturamento > 0.02 ? 'alert' : quebraResumo.pct_faturamento > 0.015 ? 'warn' : 'ok'}
         />
       </div>
 
@@ -2895,7 +2914,7 @@ function SimuladorPage() {
 type Movimentacao = {
   movimentacao_id: number
   venda_id: number | null
-  tipo: 'ENTRADA' | 'SAIDA'
+  tipo: 'ENTRADA' | 'SAIDA' | 'QUEBRA'
   produto_id: number | null
   produto_nome: string
   produto_sku: string | null
@@ -2904,6 +2923,7 @@ type Movimentacao = {
   custo_unitario: number
   valor_total: number
   cidade: string | null
+  motivo: string | null
   data: string | null
 }
 
@@ -2911,7 +2931,7 @@ function HistoricoPage() {
   const [movs, setMovs] = useState<Movimentacao[]>([])
   const [loading, setLoading] = useState(true)
   const [dias, setDias] = useState(30)
-  const [filtroTipo, setFiltroTipo] = useState<'' | 'ENTRADA' | 'SAIDA'>('')
+  const [filtroTipo, setFiltroTipo] = useState<'' | 'ENTRADA' | 'SAIDA' | 'QUEBRA'>('')
   const [confirmando, setConfirmando] = useState<Movimentacao | null>(null)
   const [excluindo, setExcluindo] = useState(false)
   const [reconciliando, setReconciliando] = useState(false)
@@ -2959,12 +2979,15 @@ function HistoricoPage() {
     try {
       if (confirmando.tipo === 'ENTRADA') {
         await axios.delete(`${API_URL}/entradas/${confirmando.movimentacao_id}`)
+      } else if (confirmando.tipo === 'QUEBRA') {
+        await axios.delete(`${API_URL}/quebras/${confirmando.movimentacao_id}`)
       } else if (confirmando.venda_id) {
         await axios.delete(`${API_URL}/vendas/${confirmando.venda_id}`)
       } else {
         throw new Error('Venda órfã — sem venda_id para deletar.')
       }
-      setToast({ tipo: 'ok', msg: `${confirmando.tipo === 'ENTRADA' ? 'Entrada' : 'Venda'} de ${confirmando.produto_nome} excluída. Estoque revertido.` })
+      const labelTipo = confirmando.tipo === 'ENTRADA' ? 'Entrada' : confirmando.tipo === 'QUEBRA' ? 'Quebra' : 'Venda'
+      setToast({ tipo: 'ok', msg: `${labelTipo} de ${confirmando.produto_nome} excluída. Estoque revertido.` })
       setConfirmando(null)
       await carregar()
     } catch (e: any) {
@@ -2978,8 +3001,10 @@ function HistoricoPage() {
   const totais = {
     entradas: movs.filter(m => m.tipo === 'ENTRADA').length,
     saidas: movs.filter(m => m.tipo === 'SAIDA').length,
+    quebras: movs.filter(m => m.tipo === 'QUEBRA').length,
     valorEntradas: movs.filter(m => m.tipo === 'ENTRADA').reduce((s, m) => s + m.valor_total, 0),
     valorSaidas: movs.filter(m => m.tipo === 'SAIDA').reduce((s, m) => s + m.valor_total, 0),
+    valorQuebras: movs.filter(m => m.tipo === 'QUEBRA').reduce((s, m) => s + m.valor_total, 0),
   }
 
   return (
@@ -3009,6 +3034,7 @@ function HistoricoPage() {
             <option value="">Todos os tipos</option>
             <option value="ENTRADA">Apenas entradas</option>
             <option value="SAIDA">Apenas saídas</option>
+            <option value="QUEBRA">Apenas quebras</option>
           </select>
           <select
             value={dias}
@@ -3024,7 +3050,7 @@ function HistoricoPage() {
       </header>
 
       {/* Sumário */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="claude-card p-4">
           <p className="section-label">Entradas</p>
           <p className="kpi-value text-2xl text-[color:var(--claude-sage)] mt-1">{totais.entradas}</p>
@@ -3035,12 +3061,17 @@ function HistoricoPage() {
           <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">{totais.saidas}</p>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorSaidas.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
         </div>
-        <div className="claude-card p-4 md:col-span-2">
+        <div className="claude-card p-4">
+          <p className="section-label">Quebras</p>
+          <p className="kpi-value text-2xl text-[color:var(--claude-amber)] mt-1">{totais.quebras}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorQuebras.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+        </div>
+        <div className="claude-card p-4">
           <p className="section-label">Fluxo líquido</p>
-          <p className={`kpi-value text-2xl mt-1 ${totais.valorSaidas - totais.valorEntradas >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
-            {totais.valorSaidas - totais.valorEntradas >= 0 ? '+' : ''}R$ {(totais.valorSaidas - totais.valorEntradas).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+          <p className={`kpi-value text-2xl mt-1 ${totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
+            {totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? '+' : ''}R$ {(totais.valorSaidas - totais.valorEntradas - totais.valorQuebras).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
           </p>
-          <p className="text-xs text-[color:var(--claude-stone)] mt-1">Receita − Custo de entradas na janela</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1">Receita − Custo entradas − Quebras</p>
         </div>
       </div>
 
@@ -3074,12 +3105,13 @@ function HistoricoPage() {
             <tbody className="divide-y divide-[color:var(--border)]">
               {movs.map(m => {
                 const isEntrada = m.tipo === 'ENTRADA'
-                const acentColor = isEntrada ? 'var(--claude-sage)' : 'var(--claude-coral)'
-                const Icon = isEntrada ? ArrowDownCircle : ArrowUpCircle
+                const isQuebra = m.tipo === 'QUEBRA'
+                const acentColor = isEntrada ? 'var(--claude-sage)' : isQuebra ? 'var(--claude-amber)' : 'var(--claude-coral)'
+                const Icon = isEntrada ? ArrowDownCircle : isQuebra ? Skull : ArrowUpCircle
                 const dataFmt = m.data
                   ? new Date(m.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
                   : '—'
-                const podeExcluir = isEntrada || m.venda_id !== null
+                const podeExcluir = isEntrada || isQuebra || m.venda_id !== null
                 return (
                   <tr key={`${m.tipo}-${m.movimentacao_id}`} className="hover:bg-[color:var(--claude-cream-deep)]/30 transition-colors">
                     <td className="px-4 py-3">
@@ -3087,6 +3119,9 @@ function HistoricoPage() {
                             style={{ color: acentColor }}>
                         <Icon size={14} /> {m.tipo}
                       </span>
+                      {isQuebra && m.motivo && (
+                        <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 capitalize">{m.motivo}</p>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <p className="text-sm font-medium text-[color:var(--claude-ink)] truncate max-w-[220px]">{m.produto_nome}</p>
@@ -3131,7 +3166,7 @@ function HistoricoPage() {
                 </div>
                 <div>
                   <p className="section-label">Confirmar exclusão</p>
-                  <h3 className="headline text-xl">Reverter {confirmando.tipo === 'ENTRADA' ? 'entrada' : 'venda'}?</h3>
+                  <h3 className="headline text-xl">Reverter {confirmando.tipo === 'ENTRADA' ? 'entrada' : confirmando.tipo === 'QUEBRA' ? 'quebra' : 'venda'}?</h3>
                 </div>
               </div>
               <button onClick={() => !excluindo && setConfirmando(null)}
@@ -3146,10 +3181,549 @@ function HistoricoPage() {
               <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">R$ {confirmando.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></p>
               <div className="mt-3 p-3 rounded-lg text-xs"
                    style={{ background: 'color-mix(in srgb, var(--claude-amber) 10%, transparent)', color: 'var(--claude-ink)' }}>
-                {confirmando.tipo === 'ENTRADA'
-                  ? <>⚠ Estoque cairá {confirmando.quantidade} un. Custo médio será recalculado a partir das entradas restantes.</>
-                  : <>↩ Estoque voltará +{confirmando.quantidade} un. Faturamento e margem do dia {confirmando.data?.slice(0, 10)} serão decrementados.</>
-                }
+                {confirmando.tipo === 'ENTRADA' && (
+                  <>⚠ Estoque cairá {confirmando.quantidade} un. Custo médio será recalculado a partir das entradas restantes.</>
+                )}
+                {confirmando.tipo === 'QUEBRA' && (
+                  <>↩ Estoque voltará +{confirmando.quantidade} un. Quebra do mês ({confirmando.data?.slice(0, 7)}) será decrementada do DRE (linha 4.2).</>
+                )}
+                {confirmando.tipo === 'SAIDA' && (
+                  <>↩ Estoque voltará +{confirmando.quantidade} un. Faturamento e margem do dia {confirmando.data?.slice(0, 10)} serão decrementados.</>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmando(null)}
+                disabled={excluindo}
+                className="px-4 py-2 text-sm rounded-lg border border-[color:var(--border)] text-[color:var(--claude-ink)] hover:bg-[color:var(--claude-cream-deep)] disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarExclusao}
+                disabled={excluindo}
+                className="px-4 py-2 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+                style={{ background: 'var(--claude-coral)' }}
+              >
+                {excluindo ? 'Excluindo…' : <><Trash2 size={14} /> Confirmar exclusão</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 claude-card px-4 py-3 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2"
+             style={{
+               borderLeftWidth: '4px',
+               borderLeftColor: toast.tipo === 'ok' ? 'var(--claude-sage)' : 'var(--claude-coral)'
+             }}>
+          {toast.tipo === 'ok' ? <Check size={16} className="text-[color:var(--claude-sage)]" /> : <AlertCircle size={16} className="text-[color:var(--claude-coral)]" />}
+          <p className="text-sm text-[color:var(--claude-ink)]">{toast.msg}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// QUEBRAS / PERDAS
+// ============================================================================
+
+const MOTIVOS_QUEBRA = [
+  { value: 'vencimento', label: 'Vencimento', desc: 'Produto venceu e não pode ser vendido' },
+  { value: 'avaria', label: 'Avaria', desc: 'Quebra física, embalagem danificada' },
+  { value: 'desvio', label: 'Desvio', desc: 'Furto, perda, sumiço inexplicado' },
+  { value: 'doacao', label: 'Doação', desc: 'Doado / dado de cortesia' },
+] as const
+
+type QuebraOut = {
+  movimentacao_id: number
+  produto_id: number
+  produto_nome: string
+  produto_sku: string | null
+  quantidade: number
+  peso: number
+  custo_unitario: number
+  valor_total: number
+  motivo: string
+  cidade: string | null
+  observacao: string | null
+  data: string | null
+}
+
+type QuebraResumo = {
+  mes: string
+  valor_total: number
+  quantidade_total: number
+  eventos: number
+  pct_faturamento: number
+  por_motivo: Array<{ motivo: string; quantidade: number; valor: number; eventos: number }>
+  top_produtos: Array<{ produto_id: number; produto_nome: string; produto_sku: string | null; quantidade: number; valor: number; eventos: number }>
+}
+
+function QuebrasPage() {
+  const [tab, setTab] = useState<'registrar' | 'historico'>('registrar')
+  const [produtos, setProdutos] = useState<any[]>([])
+  const [quebras, setQuebras] = useState<QuebraOut[]>([])
+  const [resumo, setResumo] = useState<QuebraResumo | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [salvando, setSalvando] = useState(false)
+  const [toast, setToast] = useState<{ tipo: 'ok' | 'erro'; msg: string } | null>(null)
+  const [confirmando, setConfirmando] = useState<QuebraOut | null>(null)
+  const [excluindo, setExcluindo] = useState(false)
+
+  // form state
+  const [busca, setBusca] = useState('')
+  const [produtoSelecionado, setProdutoSelecionado] = useState<any>(null)
+  const [quantidade, setQuantidade] = useState('')
+  const [peso, setPeso] = useState('')
+  const [motivo, setMotivo] = useState('vencimento')
+  const [cidade, setCidade] = useState<string>('')
+  const [filtroMotivo, setFiltroMotivo] = useState<string>('')
+  const [dias, setDias] = useState(30)
+
+  const carregar = async () => {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ dias: String(dias) })
+      if (filtroMotivo) params.append('motivo', filtroMotivo)
+      const [a, b] = await Promise.all([
+        axios.get(`${API_URL}/quebras?${params}`),
+        axios.get(`${API_URL}/quebras/resumo`),
+      ])
+      setQuebras(a.data)
+      setResumo(b.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data.filter((p: any) => p.ativo)))
+  }, [])
+
+  useEffect(() => { carregar() }, [dias, filtroMotivo])
+
+  const candidatos = busca.length >= 2
+    ? produtos.filter(p =>
+        p.nome?.toLowerCase().includes(busca.toLowerCase()) ||
+        p.sku?.toLowerCase().includes(busca.toLowerCase()) ||
+        p.codigo?.toLowerCase().includes(busca.toLowerCase())
+      ).slice(0, 6)
+    : []
+
+  const salvar = async () => {
+    if (!produtoSelecionado) {
+      setToast({ tipo: 'erro', msg: 'Selecione um produto.' })
+      return
+    }
+    const q = parseFloat(quantidade.replace(',', '.'))
+    if (!q || q <= 0) {
+      setToast({ tipo: 'erro', msg: 'Quantidade inválida.' })
+      return
+    }
+    if (q > produtoSelecionado.estoque_qtd) {
+      setToast({ tipo: 'erro', msg: `Estoque insuficiente. Disponível: ${produtoSelecionado.estoque_qtd}` })
+      return
+    }
+    const p = peso ? parseFloat(peso.replace(',', '.')) : null
+    setSalvando(true)
+    try {
+      const payload: any = {
+        produto_id: produtoSelecionado.id,
+        quantidade: q,
+        motivo,
+      }
+      if (p !== null && !Number.isNaN(p)) payload.peso = p
+      if (cidade) payload.cidade = cidade
+      const res = await axios.post(`${API_URL}/quebras`, payload)
+      setToast({
+        tipo: 'ok',
+        msg: `Quebra registrada: ${q} un. de ${produtoSelecionado.nome} (R$ ${res.data.valor_total.toFixed(2)}).`,
+      })
+      // limpa formulário
+      setProdutoSelecionado(null)
+      setBusca('')
+      setQuantidade('')
+      setPeso('')
+      // refresca produtos pra mostrar estoque atualizado
+      const r = await axios.get(`${API_URL}/produtos`)
+      setProdutos(r.data.filter((p: any) => p.ativo))
+      await carregar()
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao registrar quebra.' })
+    } finally {
+      setSalvando(false)
+      setTimeout(() => setToast(null), 5000)
+    }
+  }
+
+  const confirmarExclusao = async () => {
+    if (!confirmando) return
+    setExcluindo(true)
+    try {
+      await axios.delete(`${API_URL}/quebras/${confirmando.movimentacao_id}`)
+      setToast({ tipo: 'ok', msg: `Quebra de ${confirmando.produto_nome} revertida.` })
+      setConfirmando(null)
+      const r = await axios.get(`${API_URL}/produtos`)
+      setProdutos(r.data.filter((p: any) => p.ativo))
+      await carregar()
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao excluir.' })
+    } finally {
+      setExcluindo(false)
+      setTimeout(() => setToast(null), 4500)
+    }
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header>
+        <p className="section-label mb-1">Controle · perdas de estoque</p>
+        <h2 className="headline text-4xl tracking-editorial">Quebras e Perdas</h2>
+        <p className="text-[color:var(--claude-stone)] mt-1">
+          Registre vencimentos, avarias, desvios e doações. Reduz estoque sem contar como demanda; impacta a linha 4.2 do DRE.
+        </p>
+      </header>
+
+      {/* KPIs do mês */}
+      {resumo && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="claude-card p-4">
+            <p className="section-label">Valor perdido · {resumo.mes}</p>
+            <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">
+              R$ {resumo.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">{resumo.eventos} evento(s)</p>
+          </div>
+          <div className="claude-card p-4">
+            <p className="section-label">Quantidade total</p>
+            <p className="kpi-value text-2xl text-[color:var(--claude-ink)] mt-1 mono">
+              {resumo.quantidade_total.toLocaleString('pt-BR', {maximumFractionDigits: 2})}
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">unidades baixadas</p>
+          </div>
+          <div className="claude-card p-4">
+            <p className="section-label">% do faturamento</p>
+            <p className={`kpi-value text-2xl mt-1 ${resumo.pct_faturamento > 0.02 ? 'text-[color:var(--claude-coral)]' : 'text-[color:var(--claude-amber)]'}`}>
+              {(resumo.pct_faturamento * 100).toFixed(2)}%
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">benchmark ABRAS: 1,5–2%</p>
+          </div>
+          <div className="claude-card p-4">
+            <p className="section-label">Motivo dominante</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1 capitalize">
+              {resumo.por_motivo[0]?.motivo || '—'}
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">
+              {resumo.por_motivo[0]
+                ? `R$ ${resumo.por_motivo[0].valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+                : 'sem registros'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-[color:var(--border)]">
+        {(['registrar', 'historico'] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium capitalize border-b-2 transition-colors ${
+              tab === t
+                ? 'border-[color:var(--claude-coral)] text-[color:var(--claude-ink)]'
+                : 'border-transparent text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]'
+            }`}
+          >
+            {t === 'registrar' ? 'Registrar' : 'Histórico'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'registrar' && (
+        <div className="claude-card p-6 space-y-4">
+          {/* Produto */}
+          <div>
+            <label className="section-label">Produto</label>
+            {produtoSelecionado ? (
+              <div className="mt-1 flex items-center justify-between p-3 rounded-lg bg-[color:var(--claude-cream-deep)]/40 border border-[color:var(--border)]">
+                <div>
+                  <p className="text-sm font-medium text-[color:var(--claude-ink)]">{produtoSelecionado.nome}</p>
+                  <p className="text-xs text-[color:var(--claude-stone)] mono mt-0.5">
+                    {produtoSelecionado.sku} · estoque: {produtoSelecionado.estoque_qtd} un. · custo: R$ {produtoSelecionado.custo?.toFixed(2)}
+                  </p>
+                </div>
+                <button
+                  onClick={() => { setProdutoSelecionado(null); setBusca('') }}
+                  className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-coral)]"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            ) : (
+              <div className="relative mt-1">
+                <input
+                  type="text"
+                  value={busca}
+                  onChange={e => setBusca(e.target.value)}
+                  placeholder="Busque por nome, SKU ou código..."
+                  className="w-full px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm"
+                />
+                {candidatos.length > 0 && (
+                  <div className="absolute z-10 left-0 right-0 mt-1 claude-card max-h-72 overflow-y-auto">
+                    {candidatos.map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => { setProdutoSelecionado(p); setBusca(p.nome) }}
+                        className="w-full text-left px-3 py-2 hover:bg-[color:var(--claude-cream-deep)]/40 border-b border-[color:var(--border)] last:border-0"
+                      >
+                        <p className="text-sm font-medium text-[color:var(--claude-ink)]">{p.nome}</p>
+                        <p className="text-xs text-[color:var(--claude-stone)] mono">
+                          {p.sku} · estoque: {p.estoque_qtd} · custo: R$ {p.custo?.toFixed(2)}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Qtd + Peso */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="section-label">Quantidade</label>
+              <input
+                type="text"
+                value={quantidade}
+                onChange={e => setQuantidade(e.target.value)}
+                placeholder="ex: 5"
+                className="w-full mt-1 px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm mono"
+              />
+              {produtoSelecionado && quantidade && parseFloat(quantidade.replace(',', '.')) > 0 && (
+                <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">
+                  Valor: R$ {(parseFloat(quantidade.replace(',', '.')) * (produtoSelecionado.custo || 0)).toFixed(2)}
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="section-label">Peso (opcional)</label>
+              <input
+                type="text"
+                value={peso}
+                onChange={e => setPeso(e.target.value)}
+                placeholder="kg (deixe vazio para usar peso médio)"
+                className="w-full mt-1 px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm mono"
+              />
+            </div>
+          </div>
+
+          {/* Motivo */}
+          <div>
+            <label className="section-label">Motivo</label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-1">
+              {MOTIVOS_QUEBRA.map(m => (
+                <button
+                  key={m.value}
+                  onClick={() => setMotivo(m.value)}
+                  className={`p-3 rounded-lg border text-left transition-colors ${
+                    motivo === m.value
+                      ? 'border-[color:var(--claude-coral)] bg-[color:var(--claude-coral)]/5'
+                      : 'border-[color:var(--border)] hover:bg-[color:var(--claude-cream-deep)]/40'
+                  }`}
+                >
+                  <p className="text-sm font-medium text-[color:var(--claude-ink)]">{m.label}</p>
+                  <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 leading-tight">{m.desc}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cidade */}
+          <div>
+            <label className="section-label">Cidade (opcional)</label>
+            <select
+              value={cidade}
+              onChange={e => setCidade(e.target.value)}
+              className="w-full mt-1 px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm"
+            >
+              <option value="">—</option>
+              {CIDADES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+
+          {/* Botão */}
+          <div className="flex justify-end pt-2">
+            <button
+              onClick={salvar}
+              disabled={salvando || !produtoSelecionado || !quantidade}
+              className="px-5 py-2.5 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+              style={{ background: 'var(--claude-coral)' }}
+            >
+              {salvando ? 'Registrando…' : <><Skull size={14} /> Registrar quebra</>}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'historico' && (
+        <>
+          {/* Filtros */}
+          <div className="flex gap-2 items-center justify-end">
+            <select
+              value={filtroMotivo}
+              onChange={(e) => setFiltroMotivo(e.target.value)}
+              className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+            >
+              <option value="">Todos os motivos</option>
+              {MOTIVOS_QUEBRA.map(m => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+            <select
+              value={dias}
+              onChange={(e) => setDias(Number(e.target.value))}
+              className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+            >
+              <option value={7}>7 dias</option>
+              <option value={30}>30 dias</option>
+              <option value={90}>90 dias</option>
+              <option value={365}>1 ano</option>
+            </select>
+          </div>
+
+          {/* Tabela */}
+          <div className="claude-card overflow-hidden">
+            {loading ? (
+              <div className="p-12 flex justify-center">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[color:var(--claude-coral)]"></div>
+              </div>
+            ) : quebras.length === 0 ? (
+              <div className="p-12 text-center">
+                <Skull className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={32} />
+                <p className="serif italic text-[color:var(--claude-stone)]">Nenhuma quebra no período.</p>
+                <p className="text-xs text-[color:var(--claude-stone)]/70 mt-1">Bom sinal! Continue de olho no estoque.</p>
+              </div>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-[color:var(--border)] bg-[color:var(--claude-cream-deep)]/40">
+                    <th className="px-4 py-3 section-label">Data</th>
+                    <th className="px-4 py-3 section-label">Produto</th>
+                    <th className="px-4 py-3 section-label">Motivo</th>
+                    <th className="px-4 py-3 section-label text-right">Qtd</th>
+                    <th className="px-4 py-3 section-label text-right">Custo unit.</th>
+                    <th className="px-4 py-3 section-label text-right">Valor perdido</th>
+                    <th className="px-4 py-3 section-label">Cidade</th>
+                    <th className="px-4 py-3 section-label text-center">Ação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[color:var(--border)]">
+                  {quebras.map(q => {
+                    const dataFmt = q.data
+                      ? new Date(q.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+                      : '—'
+                    return (
+                      <tr key={q.movimentacao_id} className="hover:bg-[color:var(--claude-cream-deep)]/30 transition-colors">
+                        <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)] mono">{dataFmt}</td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium text-[color:var(--claude-ink)] truncate max-w-[220px]">{q.produto_nome}</p>
+                          {q.produto_sku && <p className="text-[10px] text-[color:var(--claude-stone)] mono">{q.produto_sku}</p>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wide capitalize"
+                                style={{
+                                  background: 'color-mix(in srgb, var(--claude-amber) 18%, transparent)',
+                                  color: 'var(--claude-ink)',
+                                }}>
+                            {q.motivo}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{q.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</td>
+                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-stone)]">R$ {q.custo_unitario.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right mono text-sm font-semibold text-[color:var(--claude-coral)]">
+                          R$ {q.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)]">{q.cidade || '—'}</td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            onClick={() => setConfirmando(q)}
+                            title="Reverter quebra (devolve estoque)"
+                            className="p-1.5 rounded-lg text-[color:var(--claude-stone)] hover:text-[color:var(--claude-coral)] hover:bg-[color:var(--claude-coral)]/10 transition-colors"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Top produtos perdidos */}
+          {resumo && resumo.top_produtos.length > 0 && (
+            <div className="claude-card p-6">
+              <p className="section-label mb-3">Top produtos com mais perda · {resumo.mes}</p>
+              <div className="space-y-2">
+                {resumo.top_produtos.slice(0, 5).map((p, i) => (
+                  <div key={p.produto_id} className="flex items-center justify-between py-2 border-b border-[color:var(--border)] last:border-0">
+                    <div className="flex items-center gap-3">
+                      <span className="w-6 h-6 rounded-full bg-[color:var(--claude-cream-deep)] text-xs font-bold flex items-center justify-center">{i + 1}</span>
+                      <div>
+                        <p className="text-sm font-medium text-[color:var(--claude-ink)]">{p.produto_nome}</p>
+                        <p className="text-[10px] text-[color:var(--claude-stone)] mono">{p.produto_sku || '—'} · {p.eventos} evento(s)</p>
+                      </div>
+                    </div>
+                    <p className="mono text-sm font-semibold text-[color:var(--claude-coral)]">
+                      R$ {p.valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Modal confirmação */}
+      {confirmando && (
+        <div className="fixed inset-0 bg-[color:var(--claude-ink)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+             onClick={() => !excluindo && setConfirmando(null)}>
+          <div className="claude-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                     style={{ background: 'color-mix(in srgb, var(--claude-coral) 15%, transparent)' }}>
+                  <AlertTriangle size={20} className="text-[color:var(--claude-coral)]" />
+                </div>
+                <div>
+                  <p className="section-label">Confirmar exclusão</p>
+                  <h3 className="headline text-xl">Reverter quebra?</h3>
+                </div>
+              </div>
+              <button onClick={() => !excluindo && setConfirmando(null)}
+                      className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-sm text-[color:var(--claude-ink)] mb-5">
+              <p><span className="text-[color:var(--claude-stone)]">Produto:</span> <span className="font-medium">{confirmando.produto_nome}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Motivo:</span> <span className="capitalize">{confirmando.motivo}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Quantidade:</span> <span className="mono">{confirmando.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">R$ {confirmando.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></p>
+              <div className="mt-3 p-3 rounded-lg text-xs"
+                   style={{ background: 'color-mix(in srgb, var(--claude-amber) 10%, transparent)', color: 'var(--claude-ink)' }}>
+                ↩ Estoque voltará +{confirmando.quantidade} un. CMP do produto será recalculado. Linha 4.2 do DRE será decrementada.
               </div>
             </div>
 
@@ -3210,6 +3784,7 @@ type DREMensal = {
   devolucoes: number
   receita_liquida: number
   cmv: number
+  quebras: number
   lucro_bruto: number
   margem_bruta_pct: number
   despesas_vendas: number
@@ -3230,6 +3805,8 @@ type DRECompPonto = {
   mes: string
   receita_bruta: number
   receita_liquida: number
+  cmv: number
+  quebras: number
   lucro_bruto: number
   ebitda: number
   lucro_liquido: number

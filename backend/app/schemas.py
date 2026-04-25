@@ -234,7 +234,7 @@ class NarrativaFechamentoResponse(BaseModel):
 class MovimentacaoHistoricoItem(BaseModel):
     movimentacao_id: int
     venda_id: Optional[int] = None
-    tipo: str                           # ENTRADA | SAIDA
+    tipo: str                           # ENTRADA | SAIDA | QUEBRA
     produto_id: Optional[int] = None
     produto_nome: str
     produto_sku: Optional[str] = None
@@ -243,7 +243,69 @@ class MovimentacaoHistoricoItem(BaseModel):
     custo_unitario: float
     valor_total: float
     cidade: Optional[str] = None
+    motivo: Optional[str] = None        # vencimento|avaria|desvio|doacao (só QUEBRA)
     data: Optional[str] = None
+
+
+# ============================================================================
+# Quebras / Perdas
+# ============================================================================
+
+MOTIVOS_QUEBRA_VALIDOS = ("vencimento", "avaria", "desvio", "doacao")
+
+
+class QuebraCreate(BaseModel):
+    produto_id: int
+    quantidade: float                       # > 0
+    peso: Optional[float] = None            # peso total da quebra (opcional, default = qtd × peso_medio)
+    motivo: str                             # obrigatório: ver MOTIVOS_QUEBRA_VALIDOS
+    cidade: Optional[str] = None
+    observacao: Optional[str] = None
+
+
+class QuebraBulkRequest(BaseModel):
+    quebras: List[QuebraCreate]
+
+
+class QuebraOut(BaseModel):
+    movimentacao_id: int
+    produto_id: int
+    produto_nome: str
+    produto_sku: Optional[str] = None
+    quantidade: float
+    peso: float
+    custo_unitario: float                   # CMP no momento da quebra
+    valor_total: float                      # qtd × custo_unitario
+    motivo: str
+    cidade: Optional[str] = None
+    observacao: Optional[str] = None
+    data: Optional[str] = None
+
+
+class QuebraResumoMotivo(BaseModel):
+    motivo: str
+    quantidade: float
+    valor: float
+    eventos: int
+
+
+class QuebraResumoProduto(BaseModel):
+    produto_id: int
+    produto_nome: str
+    produto_sku: Optional[str] = None
+    quantidade: float
+    valor: float
+    eventos: int
+
+
+class QuebraResumoMes(BaseModel):
+    mes: str                                # YYYY-MM
+    valor_total: float
+    quantidade_total: float
+    eventos: int
+    pct_faturamento: float                  # valor / receita_bruta_mes
+    por_motivo: List[QuebraResumoMotivo]
+    top_produtos: List[QuebraResumoProduto] # top 10
 
 
 class ExclusaoResponse(BaseModel):
@@ -332,6 +394,7 @@ class DREMensalOut(BaseModel):
     receita_liquida: float
 
     cmv: float
+    quebras: float = 0
     lucro_bruto: float
     margem_bruta_pct: float
 
@@ -363,6 +426,7 @@ class DREComparativoPonto(BaseModel):
     margem_bruta_pct: float
     ebitda_pct: float
     margem_liquida_pct: float
+    quebras: float = 0
 
 
 # ============================================================================

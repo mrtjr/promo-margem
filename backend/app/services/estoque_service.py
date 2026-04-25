@@ -284,11 +284,15 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
     Semântica de `Movimentacao.peso`:
       - ENTRADA: peso unitário (peso contribuído = qtd × peso)
       - SAIDA:   peso total baixado da venda (peso consumido = peso)
+      - QUEBRA:  peso total perdido (peso consumido = peso)
 
     CMP = Σ(peso_entrada_i × custo_unit_i) / Σ(peso_entrada_i)
     Se não sobrar entrada, CMP=0.
 
-    Retorna dict {qtd, peso, custo, entradas, saidas} com o estado recalculado.
+    QUEBRA reduz estoque (qtd e peso) mas NÃO altera CMP — o produto perdido
+    sai pelo CMP atual, não muda a média ponderada das entradas remanescentes.
+
+    Retorna dict {qtd, peso, custo, entradas, saidas, quebras} com o estado.
     """
     entradas = db.query(models.Movimentacao).filter(
         models.Movimentacao.produto_id == produto.id,
@@ -297,6 +301,10 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
     saidas = db.query(models.Movimentacao).filter(
         models.Movimentacao.produto_id == produto.id,
         models.Movimentacao.tipo == "SAIDA",
+    ).all()
+    quebras = db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == produto.id,
+        models.Movimentacao.tipo == "QUEBRA",
     ).all()
 
     # Soma ENTRADAS
@@ -316,9 +324,14 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
     qtd_saida = sum((s.quantidade or 0) for s in saidas)
     peso_saida = sum((s.peso or 0) for s in saidas)
 
+    # Soma QUEBRAS (peso já total — mesma semântica de SAIDA)
+    qtd_quebra = sum((q.quantidade or 0) for q in quebras)
+    peso_quebra = sum((q.peso or 0) for q in quebras)
+
     # Estoque efetivo
-    produto.estoque_qtd = max(0.0, qtd_entrada - qtd_saida)
-    produto.estoque_peso = max(0.0, peso_entrada - peso_saida)
+    produto.estoque_qtd = max(0.0, qtd_entrada - qtd_saida - qtd_quebra)
+    produto.estoque_peso = max(0.0, peso_entrada - peso_saida - peso_quebra)
+    # CMP inalterado por QUEBRA — só depende das ENTRADAS
     produto.custo = (valor_entrada / peso_entrada) if peso_entrada > 0 else 0.0
 
     return {
@@ -327,6 +340,7 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
         "custo": produto.custo,
         "entradas": len(entradas),
         "saidas": len(saidas),
+        "quebras": len(quebras),
     }
 
 
@@ -689,6 +703,7 @@ def listar_historico_movimentacoes(
             "custo_unitario": mov.custo_unitario or 0,
             "valor_total": (mov.quantidade or 0) * (mov.custo_unitario or 0),
             "cidade": mov.cidade,
+            "motivo": mov.motivo,
             "data": mov.data.isoformat() if mov.data else None,
         })
     return resultado

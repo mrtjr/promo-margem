@@ -64,6 +64,16 @@ Pipeline em duas fases — **preview** e **commit** — para o relatório `xRelV
 - **Configuração tributária** — regime, alíquota e PIS/COFINS ajustáveis.
 - **Fechar mês** — congela DRE, gera snapshot.
 
+### 💀 Quebras e Perdas · *novo em v0.11*
+Tipo de movimentação dedicado para perdas de estoque, separado de venda:
+- **4 motivos** padronizados — `vencimento`, `avaria`, `desvio`, `doacao` — validados por CHECK constraint no banco.
+- **Custo congelado no momento** — `custo_unitario` da `Movimentacao` recebe o CMP atual; reversão recalcula CMP a partir das ENTRADAs remanescentes (espelho de `excluir_entrada`).
+- **Não polui demanda** — quebra reduz estoque mas **não** cria `Venda` nem `VendaDiariaSKU`, mantendo forecast e ABC-XYZ limpos.
+- **Linha 4.2 do DRE** — `Lucro Bruto = Receita Líquida − CMV − Quebras` com conta contábil dedicada (`4.2 Quebras e Perdas de Estoque`, tipo CMV/DEBITO).
+- **UI dedicada** — formulário rápido (busca produto → qtd → motivo cartão), histórico filtrável, KPIs do mês (valor perdido, % faturamento vs benchmark ABRAS 1,5–2%, top 5 produtos com mais perda).
+- **Bulk transacional** — endpoint `/quebras/bulk` aceita lote com rollback total em qualquer falha.
+- **Dashboard** — KPI "Quebras (mês)" com semáforo verde <1,5% / âmbar 1,5–2% / vermelho >2%.
+
 ### 🧾 Balanço Patrimonial (BP) · *novo em v0.10*
 Módulo completo de BP mensal seguindo **Lei 6.404/76 art. 178 + CPC 26 (R1) + NBC TG 26 (R4)**:
 - **~65 campos** organizados em Ativo Circulante, Realizável a Longo Prazo, Investimentos, Imobilizado, Intangível, Passivo Circulante, Passivo Não Circulante e Patrimônio Líquido.
@@ -305,9 +315,10 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 - [x] **Fase 8** — DRE mensal + Simples Nacional
 - [x] **Fase 9** — Promoções (ciclo de vida + simulação)
 - [x] **Fase 10** — Balanço Patrimonial (BP) mensal + indicadores + ciclo rascunho/fechado/auditado
-- [ ] **Fase 11** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
-- [ ] **Fase 12** — Engine de promoção automática (gatilhos por margem/giro)
-- [ ] **Fase 13** — DFC (Demonstração de Fluxo de Caixa) + DMPL ligadas ao BP
+- [x] **Fase 11** — Quebras/Perdas como tipo de movimentação + linha 4.2 do DRE
+- [ ] **Fase 12** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
+- [ ] **Fase 13** — Engine de promoção automática (gatilhos por margem/giro)
+- [ ] **Fase 14** — DFC (Demonstração de Fluxo de Caixa) + DMPL ligadas ao BP
 
 ---
 
@@ -323,6 +334,28 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 ## Releases
 
 Histórico de versões publicadas. Cada release tem tag `vX.Y.Z` no GitHub e nota de release detalhada em [Releases](../../releases).
+
+### v0.11.0 — Quebras e Perdas · *2026-04-25*
+> Tipo de movimentação dedicado para perdas de estoque, integrado ao DRE como linha 4.2 — sem contaminar histórico de demanda.
+
+**Adicionado**
+- 💀 `Movimentacao.tipo='QUEBRA'` com coluna `motivo` (vencimento / avaria / desvio / doacao) protegida por CHECK constraint.
+- 📋 `quebra_service` completo — `registrar_quebra`, `registrar_quebra_bulk` (transacional), `excluir_quebra`, `listar_quebras`, `resumo_mes`, `total_quebras_mes`.
+- 🔌 5 endpoints REST — `POST /quebras`, `POST /quebras/bulk`, `GET /quebras`, `GET /quebras/resumo`, `DELETE /quebras/{id}`.
+- 📒 Conta contábil `4.2 Quebras e Perdas de Estoque` (tipo CMV / DEBITO) seedada no plano de contas padrão.
+- 🧮 DRE: nova linha 4.2 entre CMV e Lucro Bruto. `Lucro Bruto = Receita Líquida − CMV − Quebras`.
+- 📊 `DREMensal.quebras` persistido no snapshot mensal.
+- 🖼️ Página `/quebras` no frontend — formulário (busca produto, qtd, peso opcional, 4 cartões de motivo) + histórico com filtros + 4 KPIs mensais + top 5 produtos.
+- 🎯 KPI "Quebras (mês)" no Dashboard com semáforo (benchmark ABRAS 1,5–2%).
+- 📜 Histórico de Movimentações ganhou filtro/badge/exclusão para tipo QUEBRA.
+- 📜 Migração idempotente `m_007_movimentacao_quebra` adiciona coluna, 3 CHECK constraints, índice `ix_mov_tipo_data`, conta 4.2 e `dre_mensal.quebras`.
+- 🧪 7 cenários de teste E2E (`test_quebra_e2e.py`) cobrindo registro, validações, isolamento da demanda, DRE, reversão, bulk transacional, resumo.
+
+**Garantias**
+- QUEBRA reduz `estoque_qtd` e `estoque_peso`, mas **não** cria `Venda` nem `VendaDiariaSKU` → forecast e ABC-XYZ permanecem íntegros.
+- `custo_unitario` é congelado no momento da quebra (CMP atual) → DRE soma direto do log sem recálculo.
+- Reversão (`excluir_quebra`) é espelho exato de `excluir_entrada`: deleta movimentação, recalcula estoque/CMP a partir do log restante, reativa produto se necessário.
+- CMP não muda quando há QUEBRA — só ENTRADAs alimentam a média ponderada.
 
 ### v0.10.0 — Balanço Patrimonial · *2026-04-25*
 > Módulo contábil completo de BP mensal seguindo padrões brasileiros (Lei 6.404/76 + CPC 26).

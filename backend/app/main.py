@@ -24,6 +24,7 @@ from .services import (
     pdv_service,
     fechamento_csv_service,
     bp_service,
+    quebra_service,
 )
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
@@ -38,7 +39,7 @@ except Exception as e:
     print(f"[migrations] FAIL: {e}")
     raise
 
-app = FastAPI(title="PromoMargem API", version="0.1.0")
+app = FastAPI(title="PromoMargem API", version="0.11.0")
 
 @app.on_event("startup")
 async def startup_event():
@@ -187,8 +188,8 @@ async def historico_movimentacoes(
     """
     if dias < 1 or dias > 365:
         raise HTTPException(status_code=400, detail="dias deve estar entre 1 e 365")
-    if tipo and tipo not in ("ENTRADA", "SAIDA"):
-        raise HTTPException(status_code=400, detail="tipo deve ser ENTRADA ou SAIDA")
+    if tipo and tipo not in ("ENTRADA", "SAIDA", "QUEBRA"):
+        raise HTTPException(status_code=400, detail="tipo deve ser ENTRADA, SAIDA ou QUEBRA")
     return estoque_service.listar_historico_movimentacoes(db, dias=dias, tipo=tipo, produto_id=produto_id)
 
 
@@ -214,6 +215,97 @@ async def excluir_venda_endpoint(venda_id: int, db: Session = Depends(get_db)):
     """
     try:
         detalhe = estoque_service.excluir_venda(db, venda_id)
+        return {"ok": True, "detalhe": detalhe}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# QUEBRAS / PERDAS
+# ============================================================================
+
+@app.post("/quebras", response_model=schemas.QuebraOut, status_code=201)
+async def registrar_quebra_endpoint(
+    payload: schemas.QuebraCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    Registra uma quebra/perda de estoque.
+
+    Decrementa estoque (qtd + peso), cria Movimentacao tipo='QUEBRA' com
+    custo_unitario congelado = produto.custo no momento. Não cria Venda nem
+    afeta histórico de demanda. Reflete na linha 4.2 do DRE do mês corrente.
+    """
+    try:
+        return quebra_service.registrar_quebra(db, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/quebras/bulk", response_model=List[schemas.QuebraOut], status_code=201)
+async def registrar_quebra_bulk_endpoint(
+    payload: schemas.QuebraBulkRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Registra várias quebras numa transação. Se qualquer item falhar, faz
+    rollback do lote inteiro.
+    """
+    try:
+        return quebra_service.registrar_quebra_bulk(db, payload.quebras)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/quebras", response_model=List[schemas.QuebraOut])
+async def listar_quebras_endpoint(
+    dias: int = 30,
+    motivo: Optional[str] = None,
+    produto_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista quebras dos últimos `dias`. Filtros: motivo, produto_id.
+    """
+    if dias < 1 or dias > 365:
+        raise HTTPException(status_code=400, detail="dias deve estar entre 1 e 365")
+    if motivo and motivo not in schemas.MOTIVOS_QUEBRA_VALIDOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"motivo invalido. Use: {', '.join(schemas.MOTIVOS_QUEBRA_VALIDOS)}",
+        )
+    return quebra_service.listar_quebras(db, dias=dias, motivo=motivo, produto_id=produto_id)
+
+
+@app.get("/quebras/resumo", response_model=schemas.QuebraResumoMes)
+async def resumo_quebras_endpoint(
+    mes: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Resumo de quebras do mês. `mes` em YYYY-MM. Default: mês corrente.
+    Retorna totais, breakdown por motivo e top produtos.
+    """
+    if mes:
+        try:
+            partes = mes.split("-")
+            mes_ref = date_type(int(partes[0]), int(partes[1]), 1)
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail="mes deve estar no formato YYYY-MM")
+    else:
+        hoje = date_type.today()
+        mes_ref = hoje.replace(day=1)
+    return quebra_service.resumo_mes(db, mes_ref)
+
+
+@app.delete("/quebras/{movimentacao_id}", response_model=schemas.ExclusaoResponse)
+async def excluir_quebra_endpoint(movimentacao_id: int, db: Session = Depends(get_db)):
+    """
+    Exclui uma quebra: devolve qtd + peso ao estoque, recalcula CMP do produto.
+    Espelho de excluir_entrada.
+    """
+    try:
+        detalhe = quebra_service.excluir_quebra(db, movimentacao_id)
         return {"ok": True, "detalhe": detalhe}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -23,6 +23,7 @@ PLANO_CONTAS_PADRAO = [
     ("3.3",   "Descontos Comerciais",            "DEDUCAO",    "DEBITO"),
 
     ("4.1",   "CMV - Custo Mercadoria Vendida",  "CMV",        "DEBITO"),
+    ("4.2",   "Quebras e Perdas de Estoque",     "CMV",        "DEBITO"),
 
     ("5.1.1", "Comissão de Vendas",              "DESP_VENDA", "DEBITO"),
     ("5.1.2", "Frete de Saída",                  "DESP_VENDA", "DEBITO"),
