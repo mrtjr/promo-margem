@@ -540,3 +540,160 @@ class CSVImportCommitResponse(BaseModel):
     produtos_associados: int
     linhas_ignoradas: int
     mensagens: List[str] = []
+
+
+# ============================================================================
+# Balanço Patrimonial (BP)
+# ============================================================================
+
+class BalancoPatrimonialIn(BaseModel):
+    """
+    Payload de upsert. Todos os valores de conta são opcionais (default 0).
+    Totais e indicador_fechamento_ok são IGNORADOS se vierem no payload —
+    sempre recalculados pelo backend a partir das linhas.
+    """
+    empresa_id: Optional[int] = None
+    competencia: date                        # qualquer date dentro do mês
+    data_referencia: Optional[date] = None   # default: último dia do mês de competencia
+    moeda: str = "BRL"
+    observacoes: Optional[str] = None
+
+    # Ativo Circulante
+    caixa_e_equivalentes: float = 0
+    bancos_conta_movimento: float = 0
+    aplicacoes_financeiras_curto_prazo: float = 0
+    clientes_contas_a_receber: float = 0
+    adiantamentos_a_fornecedores: float = 0
+    impostos_a_recuperar: float = 0
+    estoque: float = 0
+    despesas_antecipadas: float = 0
+    outros_ativos_circulantes: float = 0
+
+    # Realizável LP
+    clientes_longo_prazo: float = 0
+    depositos_judiciais: float = 0
+    impostos_a_recuperar_longo_prazo: float = 0
+    emprestimos_concedidos: float = 0
+    outros_realizaveis_longo_prazo: float = 0
+
+    # Investimentos
+    participacoes_societarias: float = 0
+    propriedades_para_investimento: float = 0
+    outros_investimentos: float = 0
+
+    # Imobilizado
+    maquinas_e_equipamentos: float = 0
+    veiculos: float = 0
+    moveis_e_utensilios: float = 0
+    imoveis: float = 0
+    computadores_e_perifericos: float = 0
+    benfeitorias: float = 0
+    depreciacao_acumulada: float = 0
+
+    # Intangível
+    marcas_e_patentes: float = 0
+    softwares: float = 0
+    licencas: float = 0
+    goodwill: float = 0
+    amortizacao_acumulada: float = 0
+
+    # Passivo Circulante
+    fornecedores: float = 0
+    salarios_a_pagar: float = 0
+    encargos_sociais_a_pagar: float = 0
+    impostos_e_taxas_a_recolher: float = 0
+    emprestimos_financiamentos_curto_prazo: float = 0
+    parcelamentos_curto_prazo: float = 0
+    adiantamentos_de_clientes: float = 0
+    dividendos_a_pagar: float = 0
+    provisoes_curto_prazo: float = 0
+    outras_obrigacoes_circulantes: float = 0
+
+    # Passivo Não Circulante
+    emprestimos_financiamentos_longo_prazo: float = 0
+    debentures: float = 0
+    parcelamentos_longo_prazo: float = 0
+    provisoes_longo_prazo: float = 0
+    contingencias: float = 0
+    outras_obrigacoes_longo_prazo: float = 0
+
+    # Patrimônio Líquido
+    capital_social: float = 0
+    reservas_de_capital: float = 0
+    ajustes_de_avaliacao_patrimonial: float = 0
+    reservas_de_lucros: float = 0
+    lucros_acumulados: float = 0
+    prejuizos_acumulados: float = 0
+    acoes_ou_quotas_em_tesouraria: float = 0
+
+
+class BalancoPatrimonialOut(BalancoPatrimonialIn):
+    """Retorno completo: payload + totais calculados + metadata."""
+    id: int
+    status: str
+    data_referencia: date
+
+    # Totais calculados
+    total_ativo_circulante: float = 0
+    total_realizavel_longo_prazo: float = 0
+    total_investimentos: float = 0
+    total_imobilizado: float = 0
+    total_intangivel: float = 0
+    total_ativo_nao_circulante: float = 0
+    total_ativo: float = 0
+    total_passivo_circulante: float = 0
+    total_passivo_nao_circulante: float = 0
+    total_passivo: float = 0
+    total_patrimonio_liquido: float = 0
+
+    indicador_fechamento_ok: bool = False
+    diferenca_balanceamento: float = 0  # ativo - (passivo + pl); 0 = balanceado
+
+    criado_em: Optional[datetime] = None
+    atualizado_em: Optional[datetime] = None
+    fechado_em: Optional[datetime] = None
+    auditado_em: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class IndicadoresBPOut(BaseModel):
+    """Índices financeiros derivados do BP."""
+    competencia: str  # YYYY-MM
+    # Liquidez
+    liquidez_corrente: float           # AC / PC
+    liquidez_seca: float               # (AC - Estoque) / PC
+    liquidez_imediata: float           # (Caixa + Bancos + AplicCP) / PC
+    # Estrutura de capital
+    endividamento_geral: float         # (PC + PNC) / Ativo
+    composicao_endividamento: float    # PC / (PC + PNC)
+    imobilizacao_pl: float             # Imobilizado / PL
+    # Operacional
+    capital_giro_liquido: float        # AC - PC
+    # Meta
+    equacao_fundamental_ok: bool
+
+
+class BPComparativoPonto(BaseModel):
+    """Ponto da série histórica (para gráficos 12 meses)."""
+    competencia: str  # YYYY-MM
+    status: str
+    total_ativo: float
+    total_passivo: float
+    total_patrimonio_liquido: float
+    liquidez_corrente: float
+    endividamento_geral: float
+
+
+class BPListagemItem(BaseModel):
+    """Item compacto para listagem (histórico)."""
+    id: int
+    competencia: str
+    data_referencia: str
+    status: str
+    total_ativo: float
+    total_passivo: float
+    total_patrimonio_liquido: float
+    indicador_fechamento_ok: bool
+    atualizado_em: Optional[datetime] = None

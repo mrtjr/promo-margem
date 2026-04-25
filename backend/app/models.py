@@ -284,3 +284,129 @@ class IntegracaoPDVLog(Base):
     mensagem = Column(String, nullable=True)
     venda_id = Column(Integer, ForeignKey("vendas.id"), nullable=True)  # FK se processou
     idempotency_key = Column(String, index=True, nullable=True)  # dedupe por PDV
+
+
+# ============================================================================
+# Balanço Patrimonial (BP)
+#
+# Demonstração estática da posição patrimonial em uma data de referência.
+# Estrutura segue Lei 6.404/76 art. 178 + CPC 26 (R1).
+#
+# Equação fundamental: ATIVO = PASSIVO + PATRIMÔNIO LÍQUIDO
+#
+# MVP: preenchimento manual. Totais de grupos e indicador_fechamento_ok
+# são recalculados no backend a cada upsert (não vêm do cliente).
+#
+# Contas redutoras (depreciacao_acumulada, amortizacao_acumulada,
+# prejuizos_acumulados, acoes_ou_quotas_em_tesouraria) são armazenadas
+# como valores POSITIVOS e SUBTRAÍDAS nos cálculos de total.
+#
+# Ciclo de vida: rascunho → fechado → auditado (apenas avança).
+# Reabrir permitido de `fechado` → `rascunho`; `auditado` é imutável.
+# ============================================================================
+
+class BalancoPatrimonial(Base):
+    __tablename__ = "balanco_patrimonial"
+
+    id = Column(Integer, primary_key=True, index=True)
+    empresa_id = Column(Integer, nullable=True, index=True)  # single-tenant hoje; preparado para futuro
+    competencia = Column(Date, nullable=False, index=True)   # 1º dia do mês de referência
+    data_referencia = Column(Date, nullable=False)           # data efetiva (ex: 31/03/2026)
+    status = Column(String, nullable=False, default="rascunho")  # rascunho | fechado | auditado
+    moeda = Column(String, nullable=False, default="BRL")
+    observacoes = Column(String, nullable=True)
+
+    # ========== ATIVO CIRCULANTE ==========
+    caixa_e_equivalentes = Column(Float, default=0)
+    bancos_conta_movimento = Column(Float, default=0)
+    aplicacoes_financeiras_curto_prazo = Column(Float, default=0)
+    clientes_contas_a_receber = Column(Float, default=0)
+    adiantamentos_a_fornecedores = Column(Float, default=0)
+    impostos_a_recuperar = Column(Float, default=0)
+    estoque = Column(Float, default=0)
+    despesas_antecipadas = Column(Float, default=0)
+    outros_ativos_circulantes = Column(Float, default=0)
+    total_ativo_circulante = Column(Float, default=0)
+
+    # ========== ATIVO NÃO CIRCULANTE — Realizável a Longo Prazo ==========
+    clientes_longo_prazo = Column(Float, default=0)
+    depositos_judiciais = Column(Float, default=0)
+    impostos_a_recuperar_longo_prazo = Column(Float, default=0)
+    emprestimos_concedidos = Column(Float, default=0)
+    outros_realizaveis_longo_prazo = Column(Float, default=0)
+    total_realizavel_longo_prazo = Column(Float, default=0)
+
+    # ========== ATIVO NÃO CIRCULANTE — Investimentos ==========
+    participacoes_societarias = Column(Float, default=0)
+    propriedades_para_investimento = Column(Float, default=0)
+    outros_investimentos = Column(Float, default=0)
+    total_investimentos = Column(Float, default=0)
+
+    # ========== ATIVO NÃO CIRCULANTE — Imobilizado ==========
+    maquinas_e_equipamentos = Column(Float, default=0)
+    veiculos = Column(Float, default=0)
+    moveis_e_utensilios = Column(Float, default=0)
+    imoveis = Column(Float, default=0)
+    computadores_e_perifericos = Column(Float, default=0)
+    benfeitorias = Column(Float, default=0)
+    depreciacao_acumulada = Column(Float, default=0)  # redutora: armazena positivo, subtrai no total
+    total_imobilizado = Column(Float, default=0)
+
+    # ========== ATIVO NÃO CIRCULANTE — Intangível ==========
+    marcas_e_patentes = Column(Float, default=0)
+    softwares = Column(Float, default=0)
+    licencas = Column(Float, default=0)
+    goodwill = Column(Float, default=0)
+    amortizacao_acumulada = Column(Float, default=0)  # redutora
+    total_intangivel = Column(Float, default=0)
+
+    total_ativo_nao_circulante = Column(Float, default=0)
+    total_ativo = Column(Float, default=0)
+
+    # ========== PASSIVO CIRCULANTE ==========
+    fornecedores = Column(Float, default=0)
+    salarios_a_pagar = Column(Float, default=0)
+    encargos_sociais_a_pagar = Column(Float, default=0)
+    impostos_e_taxas_a_recolher = Column(Float, default=0)
+    emprestimos_financiamentos_curto_prazo = Column(Float, default=0)
+    parcelamentos_curto_prazo = Column(Float, default=0)
+    adiantamentos_de_clientes = Column(Float, default=0)
+    dividendos_a_pagar = Column(Float, default=0)
+    provisoes_curto_prazo = Column(Float, default=0)
+    outras_obrigacoes_circulantes = Column(Float, default=0)
+    total_passivo_circulante = Column(Float, default=0)
+
+    # ========== PASSIVO NÃO CIRCULANTE ==========
+    emprestimos_financiamentos_longo_prazo = Column(Float, default=0)
+    debentures = Column(Float, default=0)
+    parcelamentos_longo_prazo = Column(Float, default=0)
+    provisoes_longo_prazo = Column(Float, default=0)
+    contingencias = Column(Float, default=0)
+    outras_obrigacoes_longo_prazo = Column(Float, default=0)
+    total_passivo_nao_circulante = Column(Float, default=0)
+
+    total_passivo = Column(Float, default=0)
+
+    # ========== PATRIMÔNIO LÍQUIDO ==========
+    capital_social = Column(Float, default=0)
+    reservas_de_capital = Column(Float, default=0)
+    ajustes_de_avaliacao_patrimonial = Column(Float, default=0)
+    reservas_de_lucros = Column(Float, default=0)
+    lucros_acumulados = Column(Float, default=0)
+    prejuizos_acumulados = Column(Float, default=0)           # redutora
+    acoes_ou_quotas_em_tesouraria = Column(Float, default=0)  # redutora
+    total_patrimonio_liquido = Column(Float, default=0)
+
+    # Validação da equação fundamental (ativo == passivo + PL, tolerância 0.01)
+    indicador_fechamento_ok = Column(Boolean, default=False)
+
+    # Metadata
+    criado_em = Column(DateTime, server_default=func.now())
+    atualizado_em = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    fechado_em = Column(DateTime, nullable=True)
+    auditado_em = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('empresa_id', 'competencia', name='uq_bp_empresa_competencia'),
+        Index('ix_bp_competencia_status', 'competencia', 'status'),
+    )

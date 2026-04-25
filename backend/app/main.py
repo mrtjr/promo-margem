@@ -23,6 +23,7 @@ from .services import (
     promocao_service,
     pdv_service,
     fechamento_csv_service,
+    bp_service,
 )
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
@@ -727,6 +728,89 @@ async def dre_fechar(mes: Optional[str] = None, db: Session = Depends(get_db)):
         "margem_liquida_pct": snap.margem_liquida_pct,
         "fechado_em": snap.fechado_em.isoformat() if snap.fechado_em else None,
     }
+
+
+# ============================================================================
+# Balanço Patrimonial (BP) — preenchimento manual (MVP)
+# ============================================================================
+
+@app.get("/bp", response_model=schemas.BalancoPatrimonialOut)
+async def bp_obter(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    BP do mês. Se não existir, cria rascunho vazio (todos zeros).
+    Aceita YYYY-MM ou YYYY-MM-DD.
+    """
+    competencia = _parse_mes(mes)
+    bp = bp_service.obter_ou_criar_rascunho(db, competencia)
+    return bp_service.serializar(bp)
+
+
+@app.get("/bp/listar", response_model=List[schemas.BPListagemItem])
+async def bp_listar(ano: Optional[int] = None, db: Session = Depends(get_db)):
+    """Histórico compacto. Filtro opcional por ano."""
+    return bp_service.listar_bps(db, ano=ano)
+
+
+@app.get("/bp/comparativo", response_model=List[schemas.BPComparativoPonto])
+async def bp_comparativo(
+    ate: Optional[str] = None, meses: int = 12, db: Session = Depends(get_db)
+):
+    """Série histórica para gráficos (12 meses default)."""
+    if meses < 1 or meses > 60:
+        raise HTTPException(status_code=400, detail="meses deve estar entre 1 e 60")
+    ate_mes = _parse_mes(ate)
+    return bp_service.comparativo_bp(db, ate_mes, meses=meses)
+
+
+@app.get("/bp/indicadores", response_model=schemas.IndicadoresBPOut)
+async def bp_indicadores(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """Índices financeiros derivados do BP (liquidez, endividamento, CGL)."""
+    competencia = _parse_mes(mes)
+    bp = bp_service.buscar_bp(db, competencia)
+    if not bp:
+        raise HTTPException(status_code=404, detail="BP não encontrado para o mês")
+    return bp_service.indicadores(bp)
+
+
+@app.post("/bp", response_model=schemas.BalancoPatrimonialOut)
+async def bp_upsert(payload: schemas.BalancoPatrimonialIn, db: Session = Depends(get_db)):
+    """
+    Cria ou atualiza BP em rascunho. Totais e indicador são recalculados.
+    Rejeita se status atual = fechado ou auditado.
+    """
+    bp = bp_service.upsert_bp(db, payload.dict())
+    return bp_service.serializar(bp)
+
+
+@app.post("/bp/fechar", response_model=schemas.BalancoPatrimonialOut)
+async def bp_fechar(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """Valida equação fundamental e fecha. Retorna 422 se não balancear."""
+    competencia = _parse_mes(mes)
+    bp = bp_service.fechar_bp(db, competencia)
+    return bp_service.serializar(bp)
+
+
+@app.post("/bp/auditar", response_model=schemas.BalancoPatrimonialOut)
+async def bp_auditar(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """Audita BP fechado (imutável depois disso)."""
+    competencia = _parse_mes(mes)
+    bp = bp_service.auditar_bp(db, competencia)
+    return bp_service.serializar(bp)
+
+
+@app.post("/bp/reabrir", response_model=schemas.BalancoPatrimonialOut)
+async def bp_reabrir(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """Reabre BP fechado para rascunho. Auditado é imutável."""
+    competencia = _parse_mes(mes)
+    bp = bp_service.reabrir_bp(db, competencia)
+    return bp_service.serializar(bp)
+
+
+@app.delete("/bp/{bp_id}")
+async def bp_excluir(bp_id: int, db: Session = Depends(get_db)):
+    """Exclui BP. Só permite se status=rascunho."""
+    bp_service.excluir_bp(db, bp_id)
+    return {"ok": True, "id": bp_id}
 
 
 # ============================================================================
