@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock, Skull } from 'lucide-react'
+import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock, Skull, Wand2, ChevronDown, ChevronRight } from 'lucide-react'
 import axios from 'axios'
 
 // API base URL
@@ -91,6 +91,12 @@ function App() {
             label="Simulador"
           />
           <NavItem
+            isActive={currentPage === 'promo_engine'}
+            onClick={() => setCurrentPage('promo_engine')}
+            icon={<Wand2 size={20} />}
+            label="Promo Inteligente"
+          />
+          <NavItem
             isActive={currentPage === 'historico'}
             onClick={() => setCurrentPage('historico')}
             icon={<History size={20} />}
@@ -134,7 +140,7 @@ function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-hidden flex flex-col">
-        {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp'].includes(currentPage) ? (
+        {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp', 'promo_engine'].includes(currentPage) ? (
           <div className="flex items-center justify-center h-full">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[color:var(--claude-coral)]"></div>
           </div>
@@ -148,6 +154,7 @@ function App() {
             {currentPage === 'briefing' && <BriefingPage />}
             {currentPage === 'projecao' && <ProjecaoPage />}
             {currentPage === 'simulador' && <SimuladorPage />}
+            {currentPage === 'promo_engine' && <SimuladorPage initialTab="engine" />}
             {currentPage === 'historico' && <HistoricoPage />}
             {currentPage === 'quebras' && <QuebrasPage />}
             {currentPage === 'dre' && <DREPage />}
@@ -462,7 +469,16 @@ function ProdutosPage() {
           <tbody className="divide-y divide-slate-100">
             {produtos.length > 0 ? produtos.map(p => (
               <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                <td className="px-6 py-4 text-sm font-bold text-slate-900">{p.nome}</td>
+                <td className="px-6 py-4 text-sm font-bold text-slate-900">
+                  <span className="flex items-center gap-1.5">
+                    {p.nome}
+                    {p.bloqueado_engine && (
+                      <span title="Excluído do Engine de Promoção (blacklist)" className="inline-flex items-center text-rose-500">
+                        <Lock size={12} />
+                      </span>
+                    )}
+                  </span>
+                </td>
                 <td className="px-6 py-4 text-xs font-mono">
                   {p.codigo
                     ? <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-bold tracking-wider">{p.codigo}</span>
@@ -512,6 +528,7 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
   const [grupoId, setGrupoId] = useState<number | null>(produto.grupo_id || null)
   const [custo, setCusto] = useState(String(produto.custo ?? ''))
   const [precoVenda, setPrecoVenda] = useState(String(produto.preco_venda ?? ''))
+  const [bloqueadoEngine, setBloqueadoEngine] = useState<boolean>(!!produto.bloqueado_engine)
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
@@ -525,6 +542,7 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
         grupo_id: grupoId,
         custo: parseFloat(custo.replace(',', '.')) || 0,
         preco_venda: parseFloat(precoVenda.replace(',', '.')) || 0,
+        bloqueado_engine: bloqueadoEngine,
       }
       await axios.patch(`${API_URL}/produtos/${produto.id}`, payload)
       onSaved()
@@ -606,6 +624,26 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
                 className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
               />
             </div>
+          </div>
+
+          {/* Blacklist do Engine de Promoção */}
+          <div className="p-3 rounded-lg border border-slate-200 bg-slate-50">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={bloqueadoEngine}
+                onChange={(e) => setBloqueadoEngine(e.target.checked)}
+                className="mt-0.5 accent-rose-600 cursor-pointer"
+              />
+              <div className="flex-1">
+                <p className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <Lock size={13} className="text-rose-600" /> Excluir do Engine de Promoção
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                  Quando marcado, o solver de "Promo Inteligente" nunca vai propor este SKU em promoção. Útil para loss-leaders, contratos com fornecedor ou produtos com margem já gerenciada.
+                </p>
+              </div>
+            </label>
           </div>
         </div>
 
@@ -2797,7 +2835,8 @@ function ClassBadge({ label, count, color }: any) {
   )
 }
 
-function SimuladorPage() {
+function SimuladorPage({ initialTab = 'manual' }: { initialTab?: 'manual' | 'engine' }) {
+  const [tab, setTab] = useState<'manual' | 'engine'>(initialTab)
   const [produtos, setProdutos] = useState<any[]>([])
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [discount, setDiscount] = useState(10)
@@ -2817,14 +2856,42 @@ function SimuladorPage() {
   }
 
   const toggleSelection = (id: number) => {
-    setSelectedIds(prev => 
+    setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     )
   }
 
   return (
-    <div className="max-w-6xl mx-auto p-8 space-y-8">
-      <h2 className="text-3xl font-bold tracking-tight">Simulador de Promoção</h2>
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header>
+        <p className="section-label mb-1">Promoção · cenários</p>
+        <h2 className="headline text-4xl tracking-editorial">Simulador</h2>
+        <p className="text-[color:var(--claude-stone)] mt-1">
+          Escolha entre montar a cesta manualmente ou deixar o engine propor 3 cestas a partir de uma meta.
+        </p>
+      </header>
+
+      <div className="flex gap-1 border-b border-[color:var(--border)]">
+        {([
+          { v: 'manual', label: 'Manual' },
+          { v: 'engine', label: 'Engine (orientado a meta)' },
+        ] as const).map(t => (
+          <button
+            key={t.v}
+            onClick={() => setTab(t.v as any)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              tab === t.v
+                ? 'border-[color:var(--claude-coral)] text-[color:var(--claude-ink)]'
+                : 'border-transparent text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'engine' && <EnginePromocaoPanel />}
+      {tab === 'manual' && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
@@ -2904,7 +2971,438 @@ function SimuladorPage() {
           )}
         </div>
       </div>
+      )}
     </div>
+  )
+}
+
+// ============================================================================
+// EnginePromocaoPanel — solver inverso (meta → 3 cestas rankeadas)
+// ============================================================================
+
+type CestaItem = {
+  id: number
+  produto_id: number
+  produto_nome: string
+  produto_sku: string | null
+  classe_abc: string | null
+  classe_xyz: string | null
+  desconto_pct: number
+  preco_atual: number
+  preco_promo: number
+  margem_atual: number
+  margem_pos_acao: number
+  qtd_baseline: number
+  qtd_projetada: number
+  receita_projetada: number
+  lucro_marginal: number
+  beta_usado: number
+  qualidade_elasticidade: string
+  cobertura_pos_promo_dias: number | null
+  risco_stockout_pct: number | null
+  flag_risco: string | null
+  ordem_entrada: number
+}
+
+type CestaPromocao = {
+  id: number
+  perfil: 'conservador' | 'balanceado' | 'agressivo'
+  meta_margem_pct: number
+  janela_dias: number
+  status: string
+  margem_atual: number | null
+  margem_projetada: number | null
+  lucro_semanal_projetado: number | null
+  receita_projetada: number | null
+  qtd_skus: number
+  desconto_medio_pct: number | null
+  motivo_falha: string | null
+  promocao_id: number | null
+  criado_em: string | null
+  decidido_em: string | null
+  itens: CestaItem[]
+  atinge_meta: boolean
+}
+
+type EngineResponse = {
+  cestas: CestaPromocao[]
+  candidatos_total: number
+  candidatos_bloqueados: number
+  candidatos_promo_ativa: number
+  elasticidades_recalculadas: boolean
+  aviso: string | null
+}
+
+const PERFIL_LABELS: Record<string, { label: string; desc: string; color: string }> = {
+  conservador: { label: 'Conservador', desc: 'Desconto até 10%, margem mantida', color: 'sage' },
+  balanceado: { label: 'Balanceado', desc: 'Ponto ótimo do solver', color: 'coral' },
+  agressivo: { label: 'Agressivo', desc: 'Maximiza volume, sacrifica 1pp', color: 'amber' },
+}
+
+function EnginePromocaoPanel() {
+  const [meta, setMeta] = useState(17.5)
+  const [janela, setJanela] = useState(7)
+  const [maxSkus, setMaxSkus] = useState(15)
+  const [response, setResponse] = useState<EngineResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [aprovando, setAprovando] = useState<number | null>(null)
+  const [expanded, setExpanded] = useState<number | null>(null)
+  const [toast, setToast] = useState<{ tipo: 'ok' | 'erro'; msg: string } | null>(null)
+
+  const propor = async () => {
+    setLoading(true)
+    setResponse(null)
+    try {
+      const res = await axios.post(`${API_URL}/promocoes/engine/propor`, {
+        meta_margem_pct: meta / 100,
+        janela_dias: janela,
+        max_skus_por_cesta: maxSkus,
+      })
+      setResponse(res.data)
+      // Expande a cesta balanceada por padrão se atingiu meta
+      const balanceada = res.data.cestas.find((c: CestaPromocao) => c.perfil === 'balanceado')
+      if (balanceada) setExpanded(balanceada.id)
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao gerar propostas' })
+      setTimeout(() => setToast(null), 5000)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const aprovar = async (cesta: CestaPromocao) => {
+    setAprovando(cesta.id)
+    try {
+      const r = await axios.post(`${API_URL}/promocoes/engine/aprovar/${cesta.id}`, {})
+      setToast({
+        tipo: 'ok',
+        msg: `Cesta ${cesta.perfil} aprovada como Promoção #${r.data.id} (rascunho). Publique em Promoções.`,
+      })
+      // Re-busca pra atualizar status
+      await propor()
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao aprovar' })
+    } finally {
+      setAprovando(null)
+      setTimeout(() => setToast(null), 5500)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Inputs */}
+      <div className="claude-card p-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div>
+            <label className="section-label">Meta de margem semanal</label>
+            <div className="flex items-center gap-3 mt-2">
+              <input
+                type="range" min="14" max="22" step="0.5"
+                value={meta} onChange={e => setMeta(parseFloat(e.target.value))}
+                className="flex-1 accent-[color:var(--claude-coral)]"
+              />
+              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{meta.toFixed(1)}%</span>
+            </div>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+              Faixa saudável: 17–19%. Meta determina quão agressivo o solver pode ser.
+            </p>
+          </div>
+          <div>
+            <label className="section-label">Janela da promoção</label>
+            <div className="flex items-center gap-3 mt-2">
+              <input
+                type="range" min="3" max="14" step="1"
+                value={janela} onChange={e => setJanela(parseInt(e.target.value))}
+                className="flex-1 accent-[color:var(--claude-coral)]"
+              />
+              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{janela}d</span>
+            </div>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+              7d cobre ciclo semanal padrão. 14d para escoar encalhado.
+            </p>
+          </div>
+          <div>
+            <label className="section-label">Máx SKUs por cesta</label>
+            <div className="flex items-center gap-3 mt-2">
+              <input
+                type="range" min="3" max="25" step="1"
+                value={maxSkus} onChange={e => setMaxSkus(parseInt(e.target.value))}
+                className="flex-1 accent-[color:var(--claude-coral)]"
+              />
+              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{maxSkus}</span>
+            </div>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+              Cestas menores = comunicação mais simples ao cliente.
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={propor}
+            disabled={loading}
+            className="px-5 py-2.5 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+            style={{ background: 'var(--claude-coral)' }}
+          >
+            {loading ? 'Calculando…' : <><Wand2 size={16} /> Gerar 3 propostas</>}
+          </button>
+        </div>
+      </div>
+
+      {/* Aviso */}
+      {response?.aviso && (
+        <div className="claude-card p-4 flex items-start gap-3" style={{ borderLeftWidth: '4px', borderLeftColor: 'var(--claude-amber)' }}>
+          <AlertCircle className="text-[color:var(--claude-amber)] flex-shrink-0 mt-0.5" size={18} />
+          <p className="text-sm text-[color:var(--claude-ink)]">{response.aviso}</p>
+        </div>
+      )}
+
+      {/* Sumário de candidatos */}
+      {response && (
+        <div className="grid grid-cols-3 gap-4">
+          <div className="claude-card p-3 text-center">
+            <p className="section-label">Candidatos elegíveis</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-sage)] mt-1 mono">
+              {response.candidatos_total - response.candidatos_bloqueados - response.candidatos_promo_ativa}
+            </p>
+          </div>
+          <div className="claude-card p-3 text-center">
+            <p className="section-label">Bloqueados (blacklist)</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-stone)] mt-1 mono">{response.candidatos_bloqueados}</p>
+          </div>
+          <div className="claude-card p-3 text-center">
+            <p className="section-label">Já em promoção ativa</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-stone)] mt-1 mono">{response.candidatos_promo_ativa}</p>
+          </div>
+        </div>
+      )}
+
+      {/* 3 cestas lado-a-lado */}
+      {response?.cestas && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {response.cestas.map(c => (
+            <CestaCard
+              key={c.id}
+              cesta={c}
+              expanded={expanded === c.id}
+              onToggle={() => setExpanded(prev => prev === c.id ? null : c.id)}
+              onAprovar={() => aprovar(c)}
+              aprovando={aprovando === c.id}
+            />
+          ))}
+        </div>
+      )}
+
+      {!response && !loading && (
+        <div className="claude-card p-12 text-center">
+          <Wand2 className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={36} />
+          <p className="serif italic text-[color:var(--claude-stone)]">
+            Defina a meta e clique em "Gerar 3 propostas" para o engine propor cestas.
+          </p>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 claude-card px-4 py-3 flex items-center gap-2 max-w-md"
+             style={{
+               borderLeftWidth: '4px',
+               borderLeftColor: toast.tipo === 'ok' ? 'var(--claude-sage)' : 'var(--claude-coral)'
+             }}>
+          {toast.tipo === 'ok'
+            ? <Check size={16} className="text-[color:var(--claude-sage)]" />
+            : <AlertCircle size={16} className="text-[color:var(--claude-coral)]" />}
+          <p className="text-sm text-[color:var(--claude-ink)]">{toast.msg}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CestaCard({
+  cesta, expanded, onToggle, onAprovar, aprovando,
+}: {
+  cesta: CestaPromocao
+  expanded: boolean
+  onToggle: () => void
+  onAprovar: () => void
+  aprovando: boolean
+}) {
+  const meta = PERFIL_LABELS[cesta.perfil] || { label: cesta.perfil, desc: '', color: 'stone' }
+  const colorVar = meta.color === 'sage' ? 'var(--claude-sage)' : meta.color === 'coral' ? 'var(--claude-coral)' : 'var(--claude-amber)'
+  const aprovavel = cesta.status === 'proposta' && cesta.qtd_skus > 0
+  const ja_aprovada = cesta.status === 'aprovada'
+
+  return (
+    <div className="claude-card overflow-hidden flex flex-col">
+      <div className="p-4 border-b border-[color:var(--border)]" style={{ borderLeftWidth: '4px', borderLeftColor: colorVar }}>
+        <div className="flex items-start justify-between mb-1">
+          <div>
+            <p className="section-label" style={{ color: colorVar }}>{meta.label}</p>
+            <p className="text-[10px] text-[color:var(--claude-stone)]">{meta.desc}</p>
+          </div>
+          {ja_aprovada && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide"
+                  style={{ background: 'var(--claude-sage)', color: 'white' }}>
+              Aprovada
+            </span>
+          )}
+          {cesta.status === 'descartada' && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide bg-[color:var(--claude-stone)]/20 text-[color:var(--claude-stone)]">
+              Descartada
+            </span>
+          )}
+        </div>
+
+        {cesta.qtd_skus === 0 ? (
+          <div className="mt-3 p-3 rounded-lg bg-[color:var(--claude-stone)]/5 text-xs text-[color:var(--claude-stone)] italic">
+            {cesta.motivo_falha === 'meta_inalcancavel'
+              ? 'Meta inalcançável com candidatos atuais. Reduza a meta ou revise blacklist.'
+              : cesta.motivo_falha === 'sem_candidatos'
+              ? 'Nenhum SKU elegível.'
+              : 'Sem proposta gerada.'}
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              <div>
+                <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Margem proj.</p>
+                <p className="kpi-value text-xl mono" style={{ color: cesta.atinge_meta ? 'var(--claude-sage)' : 'var(--claude-coral)' }}>
+                  {cesta.margem_projetada != null ? (cesta.margem_projetada * 100).toFixed(1) : '—'}%
+                </p>
+                <p className="text-[10px] text-[color:var(--claude-stone)] mono">
+                  meta {(cesta.meta_margem_pct * 100).toFixed(1)}%
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Lucro semanal</p>
+                <p className="kpi-value text-xl mono text-[color:var(--claude-ink)]">
+                  +R$ {(cesta.lucro_semanal_projetado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                </p>
+                <p className="text-[10px] text-[color:var(--claude-stone)] mono">
+                  receita R$ {(cesta.receita_projetada || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-3 text-xs">
+              <div>
+                <span className="text-[color:var(--claude-stone)]">SKUs:</span>{' '}
+                <span className="mono font-semibold">{cesta.qtd_skus}</span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Desconto médio:</span>{' '}
+                <span className="mono font-semibold">{cesta.desconto_medio_pct?.toFixed(1)}%</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Botões */}
+      <div className="flex border-b border-[color:var(--border)]">
+        <button
+          onClick={onToggle}
+          disabled={cesta.qtd_skus === 0}
+          className="flex-1 px-3 py-2 text-xs font-medium text-[color:var(--claude-stone)] hover:bg-[color:var(--claude-cream-deep)]/40 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+        >
+          {expanded ? <><ChevronDown size={14} /> Ocultar SKUs</> : <><ChevronRight size={14} /> Ver SKUs</>}
+        </button>
+        <button
+          onClick={onAprovar}
+          disabled={!aprovavel || aprovando}
+          className="flex-1 px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ background: colorVar }}
+        >
+          {aprovando ? 'Aprovando…' : ja_aprovada ? 'Aprovada' : 'Aprovar'}
+        </button>
+      </div>
+
+      {/* Detalhes expandidos */}
+      {expanded && cesta.itens.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-[color:var(--claude-cream-deep)]/40 text-left">
+                <th className="px-2 py-1 section-label">SKU</th>
+                <th className="px-2 py-1 section-label text-right">Desc</th>
+                <th className="px-2 py-1 section-label text-right">Margem</th>
+                <th className="px-2 py-1 section-label text-right">+Lucro</th>
+                <th className="px-2 py-1 section-label text-center">Risco</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[color:var(--border)]">
+              {cesta.itens.map(it => (
+                <CestaItemRow key={it.id} item={it} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CestaItemRow({ item }: { item: CestaItem }) {
+  const [open, setOpen] = useState(false)
+  const corRisco = item.flag_risco === 'verde' ? 'var(--claude-sage)' : item.flag_risco === 'amarelo' ? 'var(--claude-amber)' : 'var(--claude-coral)'
+
+  return (
+    <>
+      <tr className="hover:bg-[color:var(--claude-cream-deep)]/30 cursor-pointer" onClick={() => setOpen(o => !o)}>
+        <td className="px-2 py-1.5">
+          <p className="font-medium text-[color:var(--claude-ink)] truncate max-w-[140px]" title={item.produto_nome}>{item.produto_nome}</p>
+          <p className="text-[10px] text-[color:var(--claude-stone)] mono">
+            {item.produto_sku || '—'}
+            {item.classe_abc && item.classe_xyz && ` · ${item.classe_abc}-${item.classe_xyz}`}
+          </p>
+        </td>
+        <td className="px-2 py-1.5 text-right mono font-semibold">{item.desconto_pct.toFixed(0)}%</td>
+        <td className="px-2 py-1.5 text-right mono">
+          <span className="text-[color:var(--claude-stone)]">{(item.margem_atual * 100).toFixed(0)}</span>
+          <span className="text-[color:var(--claude-stone)]/60">→</span>
+          <span style={{ color: item.margem_pos_acao >= 0.10 ? 'var(--claude-ink)' : 'var(--claude-coral)' }}>{(item.margem_pos_acao * 100).toFixed(0)}%</span>
+        </td>
+        <td className="px-2 py-1.5 text-right mono font-semibold text-[color:var(--claude-sage)]">
+          +R$ {item.lucro_marginal.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+        </td>
+        <td className="px-2 py-1.5 text-center">
+          <span className="inline-block w-2 h-2 rounded-full" style={{ background: corRisco }} />
+        </td>
+      </tr>
+      {open && (
+        <tr className="bg-[color:var(--claude-cream-deep)]/30">
+          <td colSpan={5} className="px-3 py-2 text-[11px] text-[color:var(--claude-stone)]">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Preço:</span>{' '}
+                <span className="mono">R$ {item.preco_atual.toFixed(2)} → R$ {item.preco_promo.toFixed(2)}</span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Qtd projetada:</span>{' '}
+                <span className="mono">{item.qtd_projetada.toFixed(0)} ({item.qtd_baseline.toFixed(1)}/dia × fator)</span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Elasticidade β:</span>{' '}
+                <span className="mono">{item.beta_usado.toFixed(2)}</span>
+                <span className="ml-1 text-[10px] uppercase px-1.5 py-0.5 rounded"
+                      style={{
+                        background: item.qualidade_elasticidade === 'alta' ? 'color-mix(in srgb, var(--claude-sage) 20%, transparent)' :
+                                    item.qualidade_elasticidade === 'media' ? 'color-mix(in srgb, var(--claude-amber) 20%, transparent)' :
+                                    'color-mix(in srgb, var(--claude-stone) 20%, transparent)',
+                      }}>
+                  {item.qualidade_elasticidade}
+                </span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Cobertura pós-promo:</span>{' '}
+                <span className="mono">
+                  {item.cobertura_pos_promo_dias != null ? `${item.cobertura_pos_promo_dias.toFixed(1)}d` : '∞'}
+                  {item.risco_stockout_pct != null && ` (risco ${(item.risco_stockout_pct * 100).toFixed(0)}%)`}
+                </span>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

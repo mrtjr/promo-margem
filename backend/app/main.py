@@ -25,6 +25,8 @@ from .services import (
     fechamento_csv_service,
     bp_service,
     quebra_service,
+    elasticidade_service,
+    engine_promocao_service,
 )
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
@@ -39,7 +41,7 @@ except Exception as e:
     print(f"[migrations] FAIL: {e}")
     raise
 
-app = FastAPI(title="PromoMargem API", version="0.11.0")
+app = FastAPI(title="PromoMargem API", version="0.12.0")
 
 @app.on_event("startup")
 async def startup_event():
@@ -93,6 +95,22 @@ async def startup_event():
             )
     except Exception as e:
         print(f"[startup] DRE seed falhou (ignorando): {e}")
+
+    # Engine de Promoção: recalcula cache de elasticidades respeitando TTL 7d
+    # + expira propostas antigas (24h+).
+    try:
+        info = elasticidade_service.recalcular_todas(db, force=False)
+        if info["recalculados"] > 0:
+            print(
+                f"[startup] Elasticidades: {info['recalculados']} recalculadas "
+                f"(alta={info['qualidade_alta']}, media={info['qualidade_media']}, "
+                f"baixa={info['qualidade_baixa']}, prior={info['qualidade_prior']})"
+            )
+        n_expiradas = engine_promocao_service.expirar_propostas_antigas(db)
+        if n_expiradas > 0:
+            print(f"[startup] Engine: {n_expiradas} proposta(s) expiradas (TTL 24h)")
+    except Exception as e:
+        print(f"[startup] Engine de Promoção falhou (ignorando): {e}")
 
     db.close()
 
@@ -976,6 +994,136 @@ async def simular_por_grupo(
     Retorna impacto consolidado + lista de SKUs.
     """
     return promocao_service.simular_por_grupo(db, req.grupo_id, req.desconto_pct)
+
+
+# ============================================================================
+# Engine de Promoção orientada a meta (v0.12)
+# ============================================================================
+
+@app.post("/promocoes/engine/propor", response_model=schemas.EngineProporResponse)
+async def engine_propor(
+    req: schemas.EngineProporRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Solver inverso: você informa META de margem semanal e o engine propõe
+    3 cestas (conservador/balanceado/agressivo). Cada cesta tem SKUs com
+    desconto, projeção de impacto e risco de stockout.
+
+    Persiste as 3 cestas em status='proposta' — usuário aprova uma e as
+    outras viram 'descartada' automaticamente.
+    """
+    try:
+        cestas, contadores = engine_promocao_service.gerar_propostas(
+            db,
+            meta_margem_pct=req.meta_margem_pct,
+            janela_dias=req.janela_dias,
+            max_skus_por_cesta=req.max_skus_por_cesta,
+            perfis=req.perfis,
+            margem_minima_sku_pct=req.margem_minima_sku_pct,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    cestas_out = [engine_promocao_service.serializar_cesta(db, c) for c in cestas]
+    nenhuma_atinge = all(not c.get("atinge_meta") for c in cestas_out)
+    aviso = None
+    if nenhuma_atinge:
+        aviso = (
+            "Nenhuma cesta atingiu a meta solicitada. "
+            "Considere reduzir a meta, aumentar a janela ou revisar o blacklist."
+        )
+    elif contadores["candidatos_validos"] < 3:
+        aviso = "Poucos candidatos válidos — resultado pode estar limitado."
+
+    return {
+        "cestas": cestas_out,
+        "candidatos_total": contadores["candidatos_total"],
+        "candidatos_bloqueados": contadores["candidatos_bloqueados"],
+        "candidatos_promo_ativa": contadores["candidatos_promo_ativa"],
+        "elasticidades_recalculadas": False,  # já roda no startup
+        "aviso": aviso,
+    }
+
+
+@app.get("/promocoes/engine/propostas", response_model=List[schemas.CestaPromocaoOut])
+async def engine_listar_propostas(db: Session = Depends(get_db)):
+    """Lista cestas em status='proposta' (não decididas)."""
+    return engine_promocao_service.listar_propostas_ativas(db)
+
+
+@app.get("/promocoes/engine/propostas/{cesta_id}", response_model=schemas.CestaPromocaoOut)
+async def engine_detalhe_proposta(cesta_id: int, db: Session = Depends(get_db)):
+    cesta = engine_promocao_service.buscar_cesta(db, cesta_id)
+    if not cesta:
+        raise HTTPException(status_code=404, detail="Cesta não encontrada")
+    return cesta
+
+
+@app.post("/promocoes/engine/aprovar/{cesta_id}", response_model=schemas.PromocaoOut)
+async def engine_aprovar(
+    cesta_id: int,
+    req: schemas.EngineAprovarRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Aprova cesta: cria Promocao(rascunho), descarta as outras 2 do mesmo run.
+    Para publicar, usar POST /promocoes/{id}/publicar normalmente.
+    """
+    try:
+        return engine_promocao_service.aprovar_cesta(
+            db,
+            cesta_id=cesta_id,
+            nome=req.nome,
+            data_inicio=req.data_inicio,
+            data_fim=req.data_fim,
+        )
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "não encontrada" in msg else 400
+        raise HTTPException(status_code=code, detail=msg)
+
+
+@app.post("/promocoes/engine/descartar/{cesta_id}", response_model=schemas.CestaPromocaoOut)
+async def engine_descartar(
+    cesta_id: int,
+    req: schemas.EngineDescartarRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        cesta = engine_promocao_service.descartar_proposta(db, cesta_id, req.motivo)
+        return engine_promocao_service.serializar_cesta(db, cesta)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "não encontrada" in msg else 400
+        raise HTTPException(status_code=code, detail=msg)
+
+
+@app.get("/promocoes/engine/elasticidades", response_model=List[schemas.ElasticidadeOut])
+async def engine_listar_elasticidades(
+    qualidade: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Audit/debug: lista elasticidades cacheadas.
+    Filtro `qualidade`: alta|media|baixa|prior.
+    """
+    if qualidade and qualidade not in ("alta", "media", "baixa", "prior"):
+        raise HTTPException(status_code=400, detail="qualidade deve ser alta|media|baixa|prior")
+    return elasticidade_service.listar_elasticidades(db, qualidade=qualidade)
+
+
+@app.post("/admin/recalcular-elasticidades")
+async def admin_recalcular_elasticidades(
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Força recálculo do cache de elasticidades. `force=true` ignora TTL.
+    Roda automaticamente no startup com force=False.
+    """
+    info = elasticidade_service.recalcular_todas(db, force=force)
+    return {"ok": True, "detalhe": info}
 
 
 # ============================================================================

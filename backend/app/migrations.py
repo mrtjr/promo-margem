@@ -355,6 +355,123 @@ def m_007_movimentacao_quebra(conn: Connection) -> str:
     return "ok: " + ", ".join(msgs)
 
 
+def m_008_engine_promocao(conn: Connection) -> str:
+    """
+    Suporte ao Engine de Promoção orientada a meta (v0.12):
+      1. Coluna `produtos.bloqueado_engine` (BOOLEAN, default FALSE) — blacklist
+      2. Tabela `elasticidade_sku` — cache de elasticidades-preço por SKU
+      3. Tabela `cestas_promocao` — propostas geradas pelo solver
+      4. Tabela `cesta_itens` — SKUs de cada cesta com desconto e projeções
+
+    Idempotente em todas as etapas.
+    """
+    msgs: List[str] = []
+
+    # 1. Produto.bloqueado_engine
+    if not _has_column(conn, "produtos", "bloqueado_engine"):
+        conn.execute(text(
+            "ALTER TABLE produtos ADD COLUMN bloqueado_engine BOOLEAN DEFAULT FALSE NOT NULL"
+        ))
+        msgs.append("col produtos.bloqueado_engine criada")
+    else:
+        msgs.append("col bloqueado_engine já existe")
+
+    # 2. Tabela elasticidade_sku
+    if not _has_table(conn, "elasticidade_sku"):
+        conn.execute(text(
+            """
+            CREATE TABLE elasticidade_sku (
+              produto_id INTEGER PRIMARY KEY REFERENCES produtos(id) ON DELETE CASCADE,
+              beta DOUBLE PRECISION NOT NULL,
+              r2 DOUBLE PRECISION,
+              n_observacoes INTEGER NOT NULL DEFAULT 0,
+              cv_preco DOUBLE PRECISION,
+              qualidade VARCHAR(10) NOT NULL,
+              fonte VARCHAR(20) NOT NULL,
+              recalculado_em TIMESTAMP DEFAULT NOW(),
+              CHECK (qualidade IN ('alta','media','baixa','prior')),
+              CHECK (fonte IN ('regressao','prior_abc_xyz')),
+              CHECK (beta >= -3.0 AND beta <= -0.3)
+            )
+            """
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_elasticidade_qualidade ON elasticidade_sku(qualidade)"
+        ))
+        msgs.append("tabela elasticidade_sku criada")
+    else:
+        msgs.append("elasticidade_sku já existe")
+
+    # 3. Tabela cestas_promocao
+    if not _has_table(conn, "cestas_promocao"):
+        conn.execute(text(
+            """
+            CREATE TABLE cestas_promocao (
+              id SERIAL PRIMARY KEY,
+              perfil VARCHAR(20) NOT NULL,
+              meta_margem_pct DOUBLE PRECISION NOT NULL,
+              janela_dias INTEGER NOT NULL,
+              status VARCHAR(15) NOT NULL,
+              margem_atual DOUBLE PRECISION,
+              margem_projetada DOUBLE PRECISION,
+              lucro_semanal_projetado DOUBLE PRECISION,
+              receita_projetada DOUBLE PRECISION,
+              qtd_skus INTEGER NOT NULL DEFAULT 0,
+              desconto_medio_pct DOUBLE PRECISION,
+              motivo_falha VARCHAR(50),
+              promocao_id INTEGER REFERENCES promocoes(id) ON DELETE SET NULL,
+              criado_em TIMESTAMP DEFAULT NOW(),
+              decidido_em TIMESTAMP,
+              motivo_descarte TEXT,
+              CHECK (perfil IN ('conservador','balanceado','agressivo')),
+              CHECK (status IN ('proposta','aprovada','descartada','expirada'))
+            )
+            """
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_cesta_status ON cestas_promocao(status, criado_em DESC)"
+        ))
+        msgs.append("tabela cestas_promocao criada")
+    else:
+        msgs.append("cestas_promocao já existe")
+
+    # 4. Tabela cesta_itens
+    if not _has_table(conn, "cesta_itens"):
+        conn.execute(text(
+            """
+            CREATE TABLE cesta_itens (
+              id SERIAL PRIMARY KEY,
+              cesta_id INTEGER NOT NULL REFERENCES cestas_promocao(id) ON DELETE CASCADE,
+              produto_id INTEGER NOT NULL REFERENCES produtos(id),
+              desconto_pct DOUBLE PRECISION NOT NULL,
+              preco_atual DOUBLE PRECISION NOT NULL,
+              preco_promo DOUBLE PRECISION NOT NULL,
+              margem_atual DOUBLE PRECISION NOT NULL,
+              margem_pos_acao DOUBLE PRECISION NOT NULL,
+              qtd_baseline DOUBLE PRECISION NOT NULL,
+              qtd_projetada DOUBLE PRECISION NOT NULL,
+              receita_projetada DOUBLE PRECISION NOT NULL,
+              lucro_marginal DOUBLE PRECISION NOT NULL,
+              beta_usado DOUBLE PRECISION NOT NULL,
+              qualidade_elasticidade VARCHAR(10) NOT NULL,
+              cobertura_pos_promo_dias DOUBLE PRECISION,
+              risco_stockout_pct DOUBLE PRECISION,
+              flag_risco VARCHAR(10),
+              ordem_entrada INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(cesta_id, produto_id)
+            )
+            """
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_cesta_item_cesta ON cesta_itens(cesta_id)"
+        ))
+        msgs.append("tabela cesta_itens criada")
+    else:
+        msgs.append("cesta_itens já existe")
+
+    return "ok: " + ", ".join(msgs)
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
@@ -363,6 +480,7 @@ MIGRATIONS: List[Callable[[Connection], str]] = [
     m_005_produto_custo_nonneg,
     m_006_balanco_patrimonial,
     m_007_movimentacao_quebra,
+    m_008_engine_promocao,
 ]
 
 

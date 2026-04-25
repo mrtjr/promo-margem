@@ -64,6 +64,25 @@ Pipeline em duas fases — **preview** e **commit** — para o relatório `xRelV
 - **Configuração tributária** — regime, alíquota e PIS/COFINS ajustáveis.
 - **Fechar mês** — congela DRE, gera snapshot.
 
+### 🪄 Engine de Promoção orientado a meta · *novo em v0.12*
+Inverte o simulador: você informa a **meta de margem semanal** e o engine propõe **3 cestas rankeadas** (conservador, balanceado, agressivo) com SKUs, descontos sugeridos, projeções e risco de stockout — pronto pra aprovar.
+
+- **Elasticidade-preço por SKU** — regressão log-log sobre `VendaDiariaSKU` (90 dias). Quando dados são insuficientes (CV de preço <3% ou <10 obs), cai num **prior por classe ABC-XYZ** (de -0,8 para A-X até -2,2 para C-Z). Cache em `ElasticidadeSKU` com TTL 7d, recalculado no startup.
+- **Solver greedy multi-perfil** — para cada (SKU, nível de desconto), avalia contribuição marginal de lucro × risco de stockout × restrições de margem. Adiciona em ordem decrescente de score até atingir meta global. Sem dependências externas (numpy/pulp/ortools).
+- **3 perfis distintos**:
+  - **Conservador** maximiza lucro com `desconto_max=10%`
+  - **Balanceado** maximiza lucro irrestrito (default)
+  - **Agressivo** maximiza volume (sacrifica até 1pp de margem)
+- **Restrições do solver**:
+  - `desconto ≤ teto do grupo` (`Grupo.desconto_maximo_permitido`)
+  - `margem_pos_acao ≥ 5%` (piso técnico)
+  - `risco_stockout < 30%` (≥30% bloqueia o SKU; 15-30% = flag amarela)
+  - SKU não está em `Promocao(ativa)` cobrindo hoje
+  - SKU não tem `produtos.bloqueado_engine=TRUE` (**blacklist** editável por SKU na tela Produtos)
+- **Janela ideal heurística** — 7 dias default; estende a 14d se cobertura >14d (escoar encalhado); reduz a 3d se forecast com confiança baixa.
+- **Lifecycle**: `proposta → aprovada (cria Promocao rascunho) | descartada (manual) | expirada (24h+)`. Aprovar uma cesta automaticamente descarta as outras 2 do mesmo run. Auditoria completa em `cestas_promocao` + `cesta_itens`.
+- **UI** — aba "Engine" no Simulador + entrada de menu **Promo Inteligente** (atalho). 3 cards lado-a-lado com KPIs (margem proj, lucro semanal, SKUs, desconto médio); drawer expansível com cada SKU mostrando β, qualidade da elasticidade, cobertura pós-promo, risco. Toggle de blacklist no modal de edição de produto.
+
 ### 💀 Quebras e Perdas · *novo em v0.11*
 Tipo de movimentação dedicado para perdas de estoque, separado de venda:
 - **4 motivos** padronizados — `vencimento`, `avaria`, `desvio`, `doacao` — validados por CHECK constraint no banco.
@@ -316,8 +335,8 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 - [x] **Fase 9** — Promoções (ciclo de vida + simulação)
 - [x] **Fase 10** — Balanço Patrimonial (BP) mensal + indicadores + ciclo rascunho/fechado/auditado
 - [x] **Fase 11** — Quebras/Perdas como tipo de movimentação + linha 4.2 do DRE
-- [ ] **Fase 12** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
-- [ ] **Fase 13** — Engine de promoção automática (gatilhos por margem/giro)
+- [x] **Fase 12** — Engine de promoção orientada a meta (solver inverso + elasticidade + 3 perfis + blacklist)
+- [ ] **Fase 13** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
 - [ ] **Fase 14** — DFC (Demonstração de Fluxo de Caixa) + DMPL ligadas ao BP
 
 ---
@@ -334,6 +353,29 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 ## Releases
 
 Histórico de versões publicadas. Cada release tem tag `vX.Y.Z` no GitHub e nota de release detalhada em [Releases](../../releases).
+
+### v0.12.0 — Engine de Promoção orientada a meta · *2026-04-25*
+> Solver inverso: meta de margem semanal → 3 cestas de SKUs com desconto, projeção e risco de stockout. Tudo aprovável em 1 clique.
+
+**Adicionado**
+- 🪄 `engine_promocao_service` (~570 linhas) — solver greedy multi-perfil (conservador / balanceado / agressivo).
+- 📈 `elasticidade_service` — regressão log-log sobre `VendaDiariaSKU` com fallback bayesiano por classe ABC-XYZ. Cache em `ElasticidadeSKU` com TTL 7d.
+- 🚫 Coluna `produtos.bloqueado_engine` (BOOLEAN) — **blacklist** editável SKU a SKU na tela Produtos.
+- 🗃️ Tabelas `cestas_promocao` + `cesta_itens` — propostas persistidas com status `proposta → aprovada | descartada | expirada`.
+- 🔌 7 endpoints REST: `POST /promocoes/engine/propor`, `GET /promocoes/engine/propostas`, `GET /promocoes/engine/propostas/{id}`, `POST /promocoes/engine/aprovar/{id}`, `POST /promocoes/engine/descartar/{id}`, `GET /promocoes/engine/elasticidades`, `POST /admin/recalcular-elasticidades`.
+- 🖼️ Aba **Engine** no Simulador + entrada de menu **Promo Inteligente** (atalho). 3 cards de cesta com KPIs e drawer expansível por SKU mostrando β, qualidade da elasticidade, cobertura pós-promo, risco de stockout.
+- 🔒 Toggle "Excluir do Engine de Promoção" no modal de edição de produto + ícone de cadeado na listagem de SKUs blacklistados.
+- ⚙️ Recálculo automático de elasticidades no startup (respeita TTL); auto-expiração de propostas com >24h.
+- 📜 Migração idempotente `m_008_engine_promocao` cria 3 tabelas, coluna blacklist, índices e CHECK constraints (qualidade, fonte, status, perfil, beta clamped).
+- 🧪 8 cenários de teste E2E (`test_engine_promocao_e2e.py`): regressão de elasticidade, fallback no prior, meta respeitada, descarte por stockout, blacklist + teto, aprovar→Promocao, perfis distintos, meta inalcançável.
+
+**Garantias**
+- Solver não inventa nada — reaproveita `forecast_service`, `analise_service`, `recomendacao_service`, `margin_engine` (1 ponto de verdade pra margem global).
+- `Lucro Bruto` continua respeitando `Receita Líquida − CMV − Quebras` no DRE; engine apenas projeta lucro futuro de promoção, não altera DRE atual.
+- Aprovar cesta cria `Promocao(rascunho)` — não publica automaticamente. Usuário ainda passa pelo `POST /promocoes/{id}/publicar` antes da promoção entrar em vigor.
+- Descartar uma cesta não cria efeito colateral; aprovação é idempotente (chamar 2x retorna mesma `Promocao`).
+- Sem dependências novas: regressão linear em Python puro, sem `numpy`/`scipy`/`pulp`/`ortools`.
+- Backend é fonte única de verdade para β e cestas; cliente nunca calcula nada — só renderiza.
 
 ### v0.11.0 — Quebras e Perdas · *2026-04-25*
 > Tipo de movimentação dedicado para perdas de estoque, integrado ao DRE como linha 4.2 — sem contaminar histórico de demanda.

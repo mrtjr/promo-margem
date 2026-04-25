@@ -30,6 +30,10 @@ class Produto(Base):
     estoque_qtd = Column(Float, default=0) # Total volumes (QTD)
     estoque_peso = Column(Float, default=0) # Total weight (PESO TOTAL)
     ativo = Column(Boolean, default=True)
+    # Blacklist do Engine de Promoção (v0.12). Quando TRUE, o solver pula este
+    # SKU mesmo que ele entre em todas as outras restrições. Útil para
+    # loss-leaders, contratos com fornecedor, etc.
+    bloqueado_engine = Column(Boolean, default=False, nullable=False)
 
     grupo = relationship("Grupo", back_populates="produtos")
 
@@ -413,4 +417,94 @@ class BalancoPatrimonial(Base):
     __table_args__ = (
         UniqueConstraint('empresa_id', 'competencia', name='uq_bp_empresa_competencia'),
         Index('ix_bp_competencia_status', 'competencia', 'status'),
+    )
+
+
+# ============================================================================
+# Engine de Promoção orientada a meta (v0.12)
+# ============================================================================
+
+class ElasticidadeSKU(Base):
+    """
+    Cache de elasticidade-preço por SKU.
+
+    beta < 0 sempre: queda de preço aumenta demanda. Clamp [-3.0, -0.3] no banco.
+    Calculado por regressão log-log sobre VendaDiariaSKU quando há variação
+    de preço suficiente; senão cai num prior por classe ABC-XYZ.
+    """
+    __tablename__ = "elasticidade_sku"
+
+    produto_id = Column(Integer, ForeignKey("produtos.id"), primary_key=True)
+    beta = Column(Float, nullable=False)
+    r2 = Column(Float, nullable=True)
+    n_observacoes = Column(Integer, default=0, nullable=False)
+    cv_preco = Column(Float, nullable=True)
+    qualidade = Column(String(10), nullable=False)  # alta|media|baixa|prior
+    fonte = Column(String(20), nullable=False)      # regressao|prior_abc_xyz
+    recalculado_em = Column(DateTime, server_default=func.now())
+
+    produto = relationship("Produto")
+
+
+class CestaPromocao(Base):
+    """
+    Proposta gerada pelo solver. NÃO é Promocao definitiva — ainda precisa
+    aprovação. Lifecycle: proposta → (aprovada → cria Promocao) | descartada | expirada.
+    """
+    __tablename__ = "cestas_promocao"
+
+    id = Column(Integer, primary_key=True, index=True)
+    perfil = Column(String(20), nullable=False)  # conservador|balanceado|agressivo
+    meta_margem_pct = Column(Float, nullable=False)
+    janela_dias = Column(Integer, nullable=False)
+    status = Column(String(15), nullable=False)  # proposta|aprovada|descartada|expirada
+
+    # Resultado projetado
+    margem_atual = Column(Float, nullable=True)
+    margem_projetada = Column(Float, nullable=True)
+    lucro_semanal_projetado = Column(Float, nullable=True)
+    receita_projetada = Column(Float, nullable=True)
+    qtd_skus = Column(Integer, default=0, nullable=False)
+    desconto_medio_pct = Column(Float, nullable=True)
+
+    # Caso solver não consiga atingir meta
+    motivo_falha = Column(String(50), nullable=True)
+
+    # Auditoria
+    promocao_id = Column(Integer, ForeignKey("promocoes.id"), nullable=True)
+    criado_em = Column(DateTime, server_default=func.now())
+    decidido_em = Column(DateTime, nullable=True)
+    motivo_descarte = Column(String, nullable=True)
+
+    itens = relationship("CestaItem", back_populates="cesta", cascade="all, delete-orphan")
+
+
+class CestaItem(Base):
+    """SKU dentro de uma cesta com desconto + projeções calculadas pelo solver."""
+    __tablename__ = "cesta_itens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cesta_id = Column(Integer, ForeignKey("cestas_promocao.id", ondelete="CASCADE"), nullable=False)
+    produto_id = Column(Integer, ForeignKey("produtos.id"), nullable=False)
+    desconto_pct = Column(Float, nullable=False)
+    preco_atual = Column(Float, nullable=False)
+    preco_promo = Column(Float, nullable=False)
+    margem_atual = Column(Float, nullable=False)
+    margem_pos_acao = Column(Float, nullable=False)
+    qtd_baseline = Column(Float, nullable=False)
+    qtd_projetada = Column(Float, nullable=False)
+    receita_projetada = Column(Float, nullable=False)
+    lucro_marginal = Column(Float, nullable=False)
+    beta_usado = Column(Float, nullable=False)
+    qualidade_elasticidade = Column(String(10), nullable=False)
+    cobertura_pos_promo_dias = Column(Float, nullable=True)
+    risco_stockout_pct = Column(Float, nullable=True)
+    flag_risco = Column(String(10), nullable=True)  # verde|amarelo|vermelho
+    ordem_entrada = Column(Integer, default=0, nullable=False)
+
+    cesta = relationship("CestaPromocao", back_populates="itens")
+    produto = relationship("Produto")
+
+    __table_args__ = (
+        UniqueConstraint('cesta_id', 'produto_id', name='uq_cesta_produto'),
     )
