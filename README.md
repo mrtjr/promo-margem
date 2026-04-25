@@ -64,6 +64,16 @@ Pipeline em duas fases — **preview** e **commit** — para o relatório `xRelV
 - **Configuração tributária** — regime, alíquota e PIS/COFINS ajustáveis.
 - **Fechar mês** — congela DRE, gera snapshot.
 
+### 🧾 Balanço Patrimonial (BP) · *novo em v0.10*
+Módulo completo de BP mensal seguindo **Lei 6.404/76 art. 178 + CPC 26 (R1) + NBC TG 26 (R4)**:
+- **~65 campos** organizados em Ativo Circulante, Realizável a Longo Prazo, Investimentos, Imobilizado, Intangível, Passivo Circulante, Passivo Não Circulante e Patrimônio Líquido.
+- **Contas redutoras** armazenadas em positivo e subtraídas no cálculo (depreciação acumulada, amortização acumulada, prejuízos acumulados, ações em tesouraria).
+- **Equação fundamental** `ATIVO = PASSIVO + PL` validada a cada save (tolerância 0,01).
+- **Ciclo de vida** — `rascunho → fechado → auditado` (estado auditado é imutável).
+- **7 indicadores** automáticos — Liquidez Corrente/Seca/Imediata, Endividamento Geral, Composição do Endividamento, Imobilização do PL, Capital de Giro Líquido.
+- **Comparativo histórico** — série de 12 meses.
+- **UI com 6 abas** — Resumo, Ativo, Passivo, PL, Indicadores, Histórico.
+
 ### 🎯 Promoções
 - Cadastro com período de vigência, SKUs alvo, desconto.
 - Estados: **rascunho → publicada → encerrada**.
@@ -144,6 +154,7 @@ promo-margem/
 │           ├── sugestao_service.py         # briefing IA + chat
 │           ├── promocao_service.py         # ciclo de vida da promoção
 │           ├── dre_service.py              # cascata mensal + simples
+│           ├── bp_service.py                # balanço patrimonial + indicadores
 │           ├── pdv_service.py              # webhook + idempotência PDV
 │           └── margin_engine.py            # núcleo do cálculo de margem
 │
@@ -161,6 +172,7 @@ promo-margem/
 | `m_003_produto_codigo` | Adiciona `produtos.codigo` (UNIQUE parcial) |
 | `m_004_soft_delete_produtos_custo_zero` | Soft-delete de produtos órfãos pré-validação |
 | `m_005_produto_custo_nonneg` | CHECK CONSTRAINT `custo >= 0` |
+| `m_006_balanco_patrimonial` | Cria tabela `balanco_patrimonial` (~65 campos + metadata + CHECK status) |
 
 ---
 
@@ -202,6 +214,19 @@ promo-margem/
 | GET | `/contas` | Plano de contas |
 | GET / PUT | `/tributario` | Regime + alíquota |
 
+### Balanço Patrimonial
+| Método | Rota | Descrição |
+|---|---|---|
+| GET | `/bp?mes=YYYY-MM` | Retorna BP do mês (auto-cria rascunho) |
+| GET | `/bp/listar?ano=YYYY` | Listagem compacta de todos os BPs do ano |
+| GET | `/bp/comparativo?ate=...&meses=12` | Série histórica para gráfico |
+| GET | `/bp/indicadores?mes=...` | 7 indicadores financeiros calculados |
+| POST | `/bp` | Upsert do rascunho (totais recalculados pelo backend) |
+| POST | `/bp/fechar?mes=...` | Valida balanceamento e fecha o BP |
+| POST | `/bp/auditar?mes=...` | Marca como auditado (estado imutável) |
+| POST | `/bp/reabrir?mes=...` | Reabre BP fechado para rascunho |
+| DELETE | `/bp/{bp_id}` | Exclui BP (somente rascunho) |
+
 ### Promoções
 | Método | Rota | Descrição |
 |---|---|---|
@@ -231,6 +256,7 @@ promo-margem/
 | `historico_margem` | Snapshot por dia/semana/mês |
 | `promocoes` | Promoções + SKUs alvo |
 | `dre_lancamento` · `dre_conta` · `dre_config_tributaria` | DRE |
+| `balanco_patrimonial` | BP mensal (~65 campos + totais + status + indicadores) |
 | `integracao_pdv_config` · `integracao_pdv_log` | Webhook PDV |
 
 ---
@@ -278,8 +304,10 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 - [x] **Fase 7** — Histórico + exclusão reversível + reconciliação
 - [x] **Fase 8** — DRE mensal + Simples Nacional
 - [x] **Fase 9** — Promoções (ciclo de vida + simulação)
-- [ ] **Fase 10** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
-- [ ] **Fase 11** — Engine de promoção automática (gatilhos por margem/giro)
+- [x] **Fase 10** — Balanço Patrimonial (BP) mensal + indicadores + ciclo rascunho/fechado/auditado
+- [ ] **Fase 11** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
+- [ ] **Fase 12** — Engine de promoção automática (gatilhos por margem/giro)
+- [ ] **Fase 13** — DFC (Demonstração de Fluxo de Caixa) + DMPL ligadas ao BP
 
 ---
 
@@ -289,6 +317,43 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 - **Idempotência onde possível** — re-importar CSV, reconciliar, reaplicar migrações = mesmo resultado.
 - **Fail safe sobre dados sujos** — produto sem custo bloqueia importação; CHECK constraints evitam corrupção; soft-delete preserva referências.
 - **Nada de magic** — sem Alembic, sem ORMs no frontend. Raw SQL onde melhora legibilidade.
+
+---
+
+## Releases
+
+Histórico de versões publicadas. Cada release tem tag `vX.Y.Z` no GitHub e nota de release detalhada em [Releases](../../releases).
+
+### v0.10.0 — Balanço Patrimonial · *2026-04-25*
+> Módulo contábil completo de BP mensal seguindo padrões brasileiros (Lei 6.404/76 + CPC 26).
+
+**Adicionado**
+- 🧾 Tabela `balanco_patrimonial` com ~65 campos (Ativo Circulante, Realizável LP, Investimentos, Imobilizado, Intangível, Passivo Circulante, Passivo Não Circulante, PL).
+- 🔢 Recálculo automático de totais e validação `ATIVO = PASSIVO + PL` (tolerância 0,01).
+- ♻️ Ciclo de vida `rascunho → fechado → auditado` com estados imutáveis após auditoria.
+- 📐 7 indicadores financeiros automáticos (Liquidez Corrente/Seca/Imediata, Endividamento Geral, Composição Endividamento, Imobilização do PL, Capital de Giro Líquido).
+- 📈 Comparativo histórico de 12 meses + listagem por ano.
+- 🖼️ UI no Financeiro com 6 abas (Resumo, Ativo, Passivo, PL, Indicadores, Histórico).
+- 🛠️ 9 endpoints REST (`/bp`, `/bp/listar`, `/bp/comparativo`, `/bp/indicadores`, `/bp/fechar`, `/bp/auditar`, `/bp/reabrir`, `DELETE /bp/{id}`).
+- 📜 Migração idempotente `m_006_balanco_patrimonial`.
+
+**Convenções**
+- Contas redutoras (depreciação, amortização, prejuízos, ações em tesouraria) gravadas em **positivo** e subtraídas pelo motor — frontend exibe com sinal negativo.
+- Backend é **fonte única de verdade** para totais — valores enviados pelo cliente são ignorados e recalculados.
+
+### v0.9.x — Estabilização do CSV
+- `fix(fechamento-csv)`: re-import idempotente com ENTRADA-espelho preservada
+- `fix(fechamento-csv)`: tratamento definitivo de produtos sem custo
+- `fix(fechamento)`: matching CSV ignora produtos soft-deleted
+
+### v0.9.0 — DRE + Promoções + Histórico
+- Cascata DRE mensal com Simples Nacional 8%
+- Ciclo de vida de promoções (rascunho → publicada → encerrada)
+- Histórico unificado de movimentações com exclusão reversível
+- Reconciliação global a partir do audit log
+
+### v0.8.x e anteriores
+Fases 1-7: setup, importação produtos/grupos, dashboard, simulador, engine de recomendação + IA, fechamento via CSV (preview/commit), exclusão reversível.
 
 ---
 

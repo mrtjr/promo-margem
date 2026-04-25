@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus } from 'lucide-react'
+import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock } from 'lucide-react'
 import axios from 'axios'
 
 // API base URL
@@ -103,6 +103,12 @@ function App() {
             icon={<PieChart size={20} />}
             label="DRE"
           />
+          <NavItem
+            isActive={currentPage === 'bp'}
+            onClick={() => setCurrentPage('bp')}
+            icon={<Scale size={20} />}
+            label="Balanço Patrimonial"
+          />
         </nav>
 
         <div className="p-4 border-t border-white/5">
@@ -122,7 +128,7 @@ function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-hidden flex flex-col">
-        {loading && !['chat', 'compras', 'produtos', 'dashboard'].includes(currentPage) ? (
+        {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp'].includes(currentPage) ? (
           <div className="flex items-center justify-center h-full">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[color:var(--claude-coral)]"></div>
           </div>
@@ -138,6 +144,7 @@ function App() {
             {currentPage === 'simulador' && <SimuladorPage />}
             {currentPage === 'historico' && <HistoricoPage />}
             {currentPage === 'dre' && <DREPage />}
+            {currentPage === 'bp' && <BPPage />}
           </div>
         )}
       </main>
@@ -3902,6 +3909,800 @@ function AliquotaRow({ label, valor, editando, onChange }: { label: string; valo
       ) : (
         <p className="col-span-2 text-sm font-mono tabular-nums">{(valor * 100).toFixed(2)}% <span className="text-[color:var(--claude-ink)]/40">({valor.toFixed(4)})</span></p>
       )}
+    </div>
+  )
+}
+
+// ============================================================================
+// Balanço Patrimonial (BP)
+// ============================================================================
+
+type BPStatus = 'rascunho' | 'fechado' | 'auditado'
+
+type BP = {
+  id: number
+  empresa_id: number | null
+  competencia: string
+  data_referencia: string
+  status: BPStatus
+  moeda: string
+  observacoes: string | null
+
+  // Ativo Circulante
+  caixa_e_equivalentes: number
+  bancos_conta_movimento: number
+  aplicacoes_financeiras_curto_prazo: number
+  clientes_contas_a_receber: number
+  adiantamentos_a_fornecedores: number
+  impostos_a_recuperar: number
+  estoque: number
+  despesas_antecipadas: number
+  outros_ativos_circulantes: number
+  total_ativo_circulante: number
+
+  // Realizável LP
+  clientes_longo_prazo: number
+  depositos_judiciais: number
+  impostos_a_recuperar_longo_prazo: number
+  emprestimos_concedidos: number
+  outros_realizaveis_longo_prazo: number
+  total_realizavel_longo_prazo: number
+
+  // Investimentos
+  participacoes_societarias: number
+  propriedades_para_investimento: number
+  outros_investimentos: number
+  total_investimentos: number
+
+  // Imobilizado
+  maquinas_e_equipamentos: number
+  veiculos: number
+  moveis_e_utensilios: number
+  imoveis: number
+  computadores_e_perifericos: number
+  benfeitorias: number
+  depreciacao_acumulada: number
+  total_imobilizado: number
+
+  // Intangível
+  marcas_e_patentes: number
+  softwares: number
+  licencas: number
+  goodwill: number
+  amortizacao_acumulada: number
+  total_intangivel: number
+
+  total_ativo_nao_circulante: number
+  total_ativo: number
+
+  // Passivo Circulante
+  fornecedores: number
+  salarios_a_pagar: number
+  encargos_sociais_a_pagar: number
+  impostos_e_taxas_a_recolher: number
+  emprestimos_financiamentos_curto_prazo: number
+  parcelamentos_curto_prazo: number
+  adiantamentos_de_clientes: number
+  dividendos_a_pagar: number
+  provisoes_curto_prazo: number
+  outras_obrigacoes_circulantes: number
+  total_passivo_circulante: number
+
+  // Passivo Não Circulante
+  emprestimos_financiamentos_longo_prazo: number
+  debentures: number
+  parcelamentos_longo_prazo: number
+  provisoes_longo_prazo: number
+  contingencias: number
+  outras_obrigacoes_longo_prazo: number
+  total_passivo_nao_circulante: number
+
+  total_passivo: number
+
+  // PL
+  capital_social: number
+  reservas_de_capital: number
+  ajustes_de_avaliacao_patrimonial: number
+  reservas_de_lucros: number
+  lucros_acumulados: number
+  prejuizos_acumulados: number
+  acoes_ou_quotas_em_tesouraria: number
+  total_patrimonio_liquido: number
+
+  indicador_fechamento_ok: boolean
+  diferenca_balanceamento: number
+
+  criado_em?: string | null
+  atualizado_em?: string | null
+  fechado_em?: string | null
+  auditado_em?: string | null
+}
+
+type BPIndicadores = {
+  competencia: string
+  liquidez_corrente: number
+  liquidez_seca: number
+  liquidez_imediata: number
+  endividamento_geral: number
+  composicao_endividamento: number
+  imobilizacao_pl: number
+  capital_giro_liquido: number
+  equacao_fundamental_ok: boolean
+}
+
+type BPCompPonto = {
+  competencia: string
+  status: string
+  total_ativo: number
+  total_passivo: number
+  total_patrimonio_liquido: number
+  liquidez_corrente: number
+  endividamento_geral: number
+}
+
+type BPListItem = {
+  id: number
+  competencia: string
+  data_referencia: string
+  status: BPStatus
+  total_ativo: number
+  total_passivo: number
+  total_patrimonio_liquido: number
+  indicador_fechamento_ok: boolean
+  atualizado_em?: string | null
+}
+
+type BPTab = 'resumo' | 'ativo' | 'passivo' | 'pl' | 'indicadores' | 'historico'
+
+function BPPage() {
+  const [tab, setTab] = useState<BPTab>('resumo')
+  const [mes, setMes] = useState(mesHojeString())
+  const [bp, setBp] = useState<BP | null>(null)
+  const [comparativo, setComparativo] = useState<BPCompPonto[]>([])
+  const [indicadores, setIndicadores] = useState<BPIndicadores | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [salvando, setSalvando] = useState(false)
+  const [dirty, setDirty] = useState(false)
+
+  const fetchBP = async () => {
+    setLoading(true)
+    try {
+      const [a, b] = await Promise.all([
+        axios.get(`${API_URL}/bp?mes=${mes}`),
+        axios.get(`${API_URL}/bp/comparativo?ate=${mes}&meses=12`),
+      ])
+      setBp(a.data)
+      setComparativo(b.data)
+      // Indicadores só se existir BP
+      try {
+        const ind = await axios.get(`${API_URL}/bp/indicadores?mes=${mes}`)
+        setIndicadores(ind.data)
+      } catch {
+        setIndicadores(null)
+      }
+      setDirty(false)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchBP() }, [mes])
+
+  const editavel = bp?.status === 'rascunho'
+
+  const atualizarCampo = (campo: keyof BP, valor: number) => {
+    if (!bp || !editavel) return
+    setBp({ ...bp, [campo]: valor })
+    setDirty(true)
+  }
+
+  const salvarRascunho = async () => {
+    if (!bp) return
+    setSalvando(true)
+    try {
+      const payload: any = {
+        empresa_id: bp.empresa_id,
+        competencia: `${mes}-01`,
+        data_referencia: bp.data_referencia,
+        moeda: bp.moeda,
+        observacoes: bp.observacoes,
+      }
+      const camposNumericos: (keyof BP)[] = [
+        'caixa_e_equivalentes','bancos_conta_movimento','aplicacoes_financeiras_curto_prazo',
+        'clientes_contas_a_receber','adiantamentos_a_fornecedores','impostos_a_recuperar',
+        'estoque','despesas_antecipadas','outros_ativos_circulantes',
+        'clientes_longo_prazo','depositos_judiciais','impostos_a_recuperar_longo_prazo',
+        'emprestimos_concedidos','outros_realizaveis_longo_prazo',
+        'participacoes_societarias','propriedades_para_investimento','outros_investimentos',
+        'maquinas_e_equipamentos','veiculos','moveis_e_utensilios','imoveis',
+        'computadores_e_perifericos','benfeitorias','depreciacao_acumulada',
+        'marcas_e_patentes','softwares','licencas','goodwill','amortizacao_acumulada',
+        'fornecedores','salarios_a_pagar','encargos_sociais_a_pagar',
+        'impostos_e_taxas_a_recolher','emprestimos_financiamentos_curto_prazo',
+        'parcelamentos_curto_prazo','adiantamentos_de_clientes','dividendos_a_pagar',
+        'provisoes_curto_prazo','outras_obrigacoes_circulantes',
+        'emprestimos_financiamentos_longo_prazo','debentures','parcelamentos_longo_prazo',
+        'provisoes_longo_prazo','contingencias','outras_obrigacoes_longo_prazo',
+        'capital_social','reservas_de_capital','ajustes_de_avaliacao_patrimonial',
+        'reservas_de_lucros','lucros_acumulados','prejuizos_acumulados',
+        'acoes_ou_quotas_em_tesouraria',
+      ]
+      camposNumericos.forEach(c => { payload[c] = Number(bp[c] ?? 0) })
+      const res = await axios.post(`${API_URL}/bp`, payload)
+      setBp(res.data)
+      setDirty(false)
+    } catch (e: any) {
+      alert('Falha ao salvar: ' + (e.response?.data?.detail || e.message))
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  const fecharBP = async () => {
+    if (dirty) {
+      if (!confirm('Há alterações não salvas. Salvar antes de fechar?')) return
+      await salvarRascunho()
+    }
+    try {
+      const res = await axios.post(`${API_URL}/bp/fechar?mes=${mes}`)
+      setBp(res.data)
+      alert('BP fechado com sucesso.')
+      fetchBP()
+    } catch (e: any) {
+      const d = e.response?.data?.detail
+      if (d && typeof d === 'object' && d.diferenca !== undefined) {
+        alert(`BP não balanceia.\n\nAtivo: R$ ${d.total_ativo.toLocaleString('pt-BR')}\nPassivo + PL: R$ ${(d.total_passivo + d.total_patrimonio_liquido).toLocaleString('pt-BR')}\nDiferença: R$ ${d.diferenca.toLocaleString('pt-BR')}`)
+      } else {
+        alert('Falha ao fechar: ' + (d || e.message))
+      }
+    }
+  }
+
+  const auditarBP = async () => {
+    if (!confirm('Auditar BP torna-o imutável. Confirmar?')) return
+    try {
+      const res = await axios.post(`${API_URL}/bp/auditar?mes=${mes}`)
+      setBp(res.data)
+      alert('BP auditado.')
+    } catch (e: any) {
+      alert('Falha: ' + (e.response?.data?.detail || e.message))
+    }
+  }
+
+  const reabrirBP = async () => {
+    if (!confirm('Reabrir volta o BP para rascunho editável. Confirmar?')) return
+    try {
+      const res = await axios.post(`${API_URL}/bp/reabrir?mes=${mes}`)
+      setBp(res.data)
+      fetchBP()
+    } catch (e: any) {
+      alert('Falha: ' + (e.response?.data?.detail || e.message))
+    }
+  }
+
+  return (
+    <div className="p-8 max-w-[1400px] mx-auto">
+      <div className="flex items-baseline justify-between mb-6">
+        <div>
+          <h1 className="headline text-[40px] leading-none tracking-editorial">Balanço Patrimonial</h1>
+          <p className="text-sm text-[color:var(--claude-ink)]/60 mt-2">
+            Posição patrimonial em uma data. Estrutura Lei 6.404/76 + CPC 26. Ativo = Passivo + PL.
+          </p>
+        </div>
+      </div>
+
+      {/* Topbar: seletor + status + ações */}
+      <div className="flex items-center justify-between gap-4 mb-6">
+        <div className="flex items-center gap-3">
+          <label className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50">Competência</label>
+          <input
+            type="month"
+            value={mes}
+            onChange={e => setMes(e.target.value)}
+            className="px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm"
+          />
+          {bp && <BPStatusBadge status={bp.status} />}
+          {bp && !bp.indicador_fechamento_ok && (
+            <span className="text-xs px-2 py-1 rounded-full bg-[color:var(--claude-coral)]/15 text-[color:var(--claude-coral)] font-medium flex items-center gap-1">
+              <AlertCircle size={12} /> Não balanceia
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {editavel && (
+            <button
+              onClick={salvarRascunho}
+              disabled={salvando || !dirty}
+              className="px-4 py-2 rounded-lg bg-white border border-[color:var(--claude-ink)]/15 text-sm font-medium hover:bg-[color:var(--claude-ink)]/5 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              <Save size={14} /> {salvando ? 'Salvando…' : dirty ? 'Salvar rascunho' : 'Salvo'}
+            </button>
+          )}
+          {editavel && (
+            <button
+              onClick={fecharBP}
+              className="px-4 py-2 rounded-lg bg-[color:var(--claude-ink)] text-[color:var(--claude-cream)] text-sm font-medium hover:opacity-90 flex items-center gap-2"
+            >
+              <Check size={14} /> Fechar BP
+            </button>
+          )}
+          {bp?.status === 'fechado' && (
+            <>
+              <button onClick={reabrirBP} className="px-4 py-2 rounded-lg bg-white border border-[color:var(--claude-ink)]/15 text-sm font-medium hover:bg-[color:var(--claude-ink)]/5">
+                Reabrir
+              </button>
+              <button onClick={auditarBP} className="px-4 py-2 rounded-lg bg-[color:var(--claude-sage)] text-white text-sm font-medium hover:opacity-90 flex items-center gap-2">
+                <Lock size={14} /> Auditar
+              </button>
+            </>
+          )}
+          {bp?.status === 'auditado' && (
+            <span className="px-4 py-2 text-xs text-[color:var(--claude-ink)]/50 flex items-center gap-2">
+              <Lock size={14} /> Imutável
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-[color:var(--claude-ink)]/10 mb-6">
+        <DRETab active={tab === 'resumo'} onClick={() => setTab('resumo')} icon={<PieChart size={16} />} label="Resumo" />
+        <DRETab active={tab === 'ativo'} onClick={() => setTab('ativo')} icon={<Wallet size={16} />} label="Ativo" />
+        <DRETab active={tab === 'passivo'} onClick={() => setTab('passivo')} icon={<Receipt size={16} />} label="Passivo" />
+        <DRETab active={tab === 'pl'} onClick={() => setTab('pl')} icon={<Building2 size={16} />} label="Patrimônio Líquido" />
+        <DRETab active={tab === 'indicadores'} onClick={() => setTab('indicadores')} icon={<BarChart3 size={16} />} label="Indicadores" />
+        <DRETab active={tab === 'historico'} onClick={() => setTab('historico')} icon={<History size={16} />} label="Histórico" />
+      </div>
+
+      {loading || !bp ? (
+        <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
+      ) : (
+        <>
+          {tab === 'resumo' && <BPResumoView bp={bp} comparativo={comparativo} />}
+          {tab === 'ativo' && <BPAtivoView bp={bp} editavel={editavel} onChange={atualizarCampo} />}
+          {tab === 'passivo' && <BPPassivoView bp={bp} editavel={editavel} onChange={atualizarCampo} />}
+          {tab === 'pl' && <BPPLView bp={bp} editavel={editavel} onChange={atualizarCampo} />}
+          {tab === 'indicadores' && <BPIndicadoresView bp={bp} indicadores={indicadores} />}
+          {tab === 'historico' && <BPHistoricoView onSelect={(m) => { setMes(m); setTab('resumo') }} />}
+        </>
+      )}
+    </div>
+  )
+}
+
+function BPStatusBadge({ status }: { status: BPStatus }) {
+  const map: Record<BPStatus, { label: string; cls: string }> = {
+    rascunho: { label: 'Rascunho', cls: 'bg-[color:var(--claude-ink)]/10 text-[color:var(--claude-ink)]/60' },
+    fechado: { label: 'Fechado', cls: 'bg-[color:var(--claude-amber)]/20 text-[color:var(--claude-amber)]' },
+    auditado: { label: 'Auditado', cls: 'bg-[color:var(--claude-sage)]/20 text-[color:var(--claude-sage)]' },
+  }
+  const { label, cls } = map[status]
+  return <span className={`text-xs px-2 py-1 rounded-full font-medium ${cls}`}>{label}</span>
+}
+
+function BPResumoView({ bp, comparativo }: { bp: BP; comparativo: BPCompPonto[] }) {
+  const sparkAtivo = comparativo.map(p => p.total_ativo)
+  const sparkPL = comparativo.map(p => p.total_patrimonio_liquido)
+  const sparkPassivo = comparativo.map(p => p.total_passivo)
+  const plRatio = bp.total_ativo > 0 ? bp.total_patrimonio_liquido / bp.total_ativo : 0
+
+  return (
+    <div className="space-y-6">
+      {/* KPIs */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KPICard
+          title="Total Ativo"
+          value={formatBRL(bp.total_ativo)}
+          subValue={`AC ${formatBRL(bp.total_ativo_circulante)} · ANC ${formatBRL(bp.total_ativo_nao_circulante)}`}
+          status="neutral"
+          sparklineData={sparkAtivo}
+          sparklineTone="sage"
+        />
+        <KPICard
+          title="Total Passivo"
+          value={formatBRL(bp.total_passivo)}
+          subValue={`PC ${formatBRL(bp.total_passivo_circulante)} · PNC ${formatBRL(bp.total_passivo_nao_circulante)}`}
+          status="neutral"
+          sparklineData={sparkPassivo}
+          sparklineTone="coral"
+        />
+        <KPICard
+          title="Patrimônio Líquido"
+          value={formatBRL(bp.total_patrimonio_liquido)}
+          subValue={`${(plRatio * 100).toFixed(1)}% do ativo`}
+          status={bp.total_patrimonio_liquido > 0 ? 'up' : 'alert'}
+          sparklineData={sparkPL}
+          sparklineTone={bp.total_patrimonio_liquido >= 0 ? 'sage' : 'coral'}
+        />
+        <KPICard
+          title="Equação Fundamental"
+          value={bp.indicador_fechamento_ok ? 'OK' : `Δ ${formatBRL(bp.diferenca_balanceamento)}`}
+          subValue={bp.indicador_fechamento_ok ? 'Ativo = Passivo + PL' : 'Ativo ≠ Passivo + PL'}
+          status={bp.indicador_fechamento_ok ? 'up' : 'alert'}
+        />
+      </div>
+
+      {/* Tabela Ativo vs Passivo+PL */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
+          <div className="px-6 py-3 bg-[color:var(--claude-sage)]/5 border-b border-[color:var(--claude-ink)]/8">
+            <h3 className="headline text-[18px] tracking-editorial">Ativo</h3>
+          </div>
+          <table className="w-full">
+            <tbody>
+              <BPResumoRow label="Circulante" valor={bp.total_ativo_circulante} />
+              <BPResumoRow label="Realizável a Longo Prazo" valor={bp.total_realizavel_longo_prazo} indent />
+              <BPResumoRow label="Investimentos" valor={bp.total_investimentos} indent />
+              <BPResumoRow label="Imobilizado" valor={bp.total_imobilizado} indent />
+              <BPResumoRow label="Intangível" valor={bp.total_intangivel} indent />
+              <BPResumoRow label="Não Circulante" valor={bp.total_ativo_nao_circulante} />
+              <BPResumoRow label="Total Ativo" valor={bp.total_ativo} bold />
+            </tbody>
+          </table>
+        </div>
+        <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
+          <div className="px-6 py-3 bg-[color:var(--claude-coral)]/5 border-b border-[color:var(--claude-ink)]/8">
+            <h3 className="headline text-[18px] tracking-editorial">Passivo + Patrimônio Líquido</h3>
+          </div>
+          <table className="w-full">
+            <tbody>
+              <BPResumoRow label="Passivo Circulante" valor={bp.total_passivo_circulante} />
+              <BPResumoRow label="Passivo Não Circulante" valor={bp.total_passivo_nao_circulante} />
+              <BPResumoRow label="Total Passivo" valor={bp.total_passivo} bold />
+              <BPResumoRow label="Patrimônio Líquido" valor={bp.total_patrimonio_liquido} />
+              <BPResumoRow label="Total Passivo + PL" valor={bp.total_passivo + bp.total_patrimonio_liquido} bold />
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Série 12 meses */}
+      {comparativo.length > 1 && (
+        <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 p-6">
+          <h3 className="headline text-[20px] tracking-editorial mb-4">Evolução patrimonial — 12 meses</h3>
+          <div className="space-y-2">
+            {comparativo.map((p, i) => {
+              const max = Math.max(...comparativo.map(x => x.total_ativo), 1)
+              const wAtivo = (p.total_ativo / max) * 100
+              const wPL = Math.max(0, (p.total_patrimonio_liquido / max)) * 100
+              return (
+                <div key={i} className="flex items-center gap-4 text-xs">
+                  <span className="w-16 font-mono text-[color:var(--claude-ink)]/60">{p.competencia}</span>
+                  <div className="flex-1 h-6 bg-[color:var(--claude-ink)]/5 rounded relative overflow-hidden">
+                    <div className="h-full bg-[color:var(--claude-sage)]/30" style={{ width: `${wAtivo}%` }} />
+                    <div className="h-full bg-[color:var(--claude-sage)] absolute top-0 left-0" style={{ width: `${wPL}%` }} />
+                  </div>
+                  <span className="w-28 text-right font-mono">{formatBRL(p.total_ativo)}</span>
+                  <span className={`w-28 text-right font-mono text-xs ${p.total_patrimonio_liquido >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
+                    PL {formatBRL(p.total_patrimonio_liquido)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex gap-4 text-[10px] uppercase tracking-wider mt-4 text-[color:var(--claude-ink)]/50">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded bg-[color:var(--claude-sage)]/30" />Ativo Total</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded bg-[color:var(--claude-sage)]" />Patrimônio Líquido</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BPResumoRow({ label, valor, bold, indent }: { label: string; valor: number; bold?: boolean; indent?: boolean }) {
+  return (
+    <tr className={`border-b border-[color:var(--claude-ink)]/5 ${bold ? 'bg-[color:var(--claude-ink)]/[0.03]' : ''}`}>
+      <td className={`py-2 text-sm ${indent ? 'pl-10' : 'pl-6'} pr-6 ${bold ? 'font-semibold' : 'text-[color:var(--claude-ink)]/75'}`}>{label}</td>
+      <td className={`px-6 py-2 text-sm text-right font-mono tabular-nums ${bold ? 'font-semibold' : ''} ${valor < 0 ? 'text-[color:var(--claude-coral)]' : ''}`}>
+        {formatBRL(valor)}
+      </td>
+    </tr>
+  )
+}
+
+function BPAtivoView({ bp, editavel, onChange }: { bp: BP; editavel: boolean; onChange: (c: keyof BP, v: number) => void }) {
+  return (
+    <div className="space-y-5">
+      <BPGrupo titulo="Ativo Circulante" total={bp.total_ativo_circulante}>
+        <BPField label="Caixa e Equivalentes" valor={bp.caixa_e_equivalentes} onChange={v => onChange('caixa_e_equivalentes', v)} editavel={editavel} />
+        <BPField label="Bancos Conta Movimento" valor={bp.bancos_conta_movimento} onChange={v => onChange('bancos_conta_movimento', v)} editavel={editavel} />
+        <BPField label="Aplicações Financeiras (CP)" valor={bp.aplicacoes_financeiras_curto_prazo} onChange={v => onChange('aplicacoes_financeiras_curto_prazo', v)} editavel={editavel} />
+        <BPField label="Clientes / Contas a Receber" valor={bp.clientes_contas_a_receber} onChange={v => onChange('clientes_contas_a_receber', v)} editavel={editavel} />
+        <BPField label="Adiantamentos a Fornecedores" valor={bp.adiantamentos_a_fornecedores} onChange={v => onChange('adiantamentos_a_fornecedores', v)} editavel={editavel} />
+        <BPField label="Impostos a Recuperar" valor={bp.impostos_a_recuperar} onChange={v => onChange('impostos_a_recuperar', v)} editavel={editavel} />
+        <BPField label="Estoque" valor={bp.estoque} onChange={v => onChange('estoque', v)} editavel={editavel} />
+        <BPField label="Despesas Antecipadas" valor={bp.despesas_antecipadas} onChange={v => onChange('despesas_antecipadas', v)} editavel={editavel} />
+        <BPField label="Outros Ativos Circulantes" valor={bp.outros_ativos_circulantes} onChange={v => onChange('outros_ativos_circulantes', v)} editavel={editavel} />
+      </BPGrupo>
+
+      <BPGrupo titulo="Realizável a Longo Prazo" total={bp.total_realizavel_longo_prazo}>
+        <BPField label="Clientes Longo Prazo" valor={bp.clientes_longo_prazo} onChange={v => onChange('clientes_longo_prazo', v)} editavel={editavel} />
+        <BPField label="Depósitos Judiciais" valor={bp.depositos_judiciais} onChange={v => onChange('depositos_judiciais', v)} editavel={editavel} />
+        <BPField label="Impostos a Recuperar (LP)" valor={bp.impostos_a_recuperar_longo_prazo} onChange={v => onChange('impostos_a_recuperar_longo_prazo', v)} editavel={editavel} />
+        <BPField label="Empréstimos Concedidos" valor={bp.emprestimos_concedidos} onChange={v => onChange('emprestimos_concedidos', v)} editavel={editavel} />
+        <BPField label="Outros Realizáveis (LP)" valor={bp.outros_realizaveis_longo_prazo} onChange={v => onChange('outros_realizaveis_longo_prazo', v)} editavel={editavel} />
+      </BPGrupo>
+
+      <BPGrupo titulo="Investimentos" total={bp.total_investimentos}>
+        <BPField label="Participações Societárias" valor={bp.participacoes_societarias} onChange={v => onChange('participacoes_societarias', v)} editavel={editavel} />
+        <BPField label="Propriedades para Investimento" valor={bp.propriedades_para_investimento} onChange={v => onChange('propriedades_para_investimento', v)} editavel={editavel} />
+        <BPField label="Outros Investimentos" valor={bp.outros_investimentos} onChange={v => onChange('outros_investimentos', v)} editavel={editavel} />
+      </BPGrupo>
+
+      <BPGrupo titulo="Imobilizado" total={bp.total_imobilizado}>
+        <BPField label="Máquinas e Equipamentos" valor={bp.maquinas_e_equipamentos} onChange={v => onChange('maquinas_e_equipamentos', v)} editavel={editavel} />
+        <BPField label="Veículos" valor={bp.veiculos} onChange={v => onChange('veiculos', v)} editavel={editavel} />
+        <BPField label="Móveis e Utensílios" valor={bp.moveis_e_utensilios} onChange={v => onChange('moveis_e_utensilios', v)} editavel={editavel} />
+        <BPField label="Imóveis" valor={bp.imoveis} onChange={v => onChange('imoveis', v)} editavel={editavel} />
+        <BPField label="Computadores e Periféricos" valor={bp.computadores_e_perifericos} onChange={v => onChange('computadores_e_perifericos', v)} editavel={editavel} />
+        <BPField label="Benfeitorias" valor={bp.benfeitorias} onChange={v => onChange('benfeitorias', v)} editavel={editavel} />
+        <BPField label="Depreciação Acumulada" valor={bp.depreciacao_acumulada} onChange={v => onChange('depreciacao_acumulada', v)} editavel={editavel} redutora />
+      </BPGrupo>
+
+      <BPGrupo titulo="Intangível" total={bp.total_intangivel}>
+        <BPField label="Marcas e Patentes" valor={bp.marcas_e_patentes} onChange={v => onChange('marcas_e_patentes', v)} editavel={editavel} />
+        <BPField label="Softwares" valor={bp.softwares} onChange={v => onChange('softwares', v)} editavel={editavel} />
+        <BPField label="Licenças" valor={bp.licencas} onChange={v => onChange('licencas', v)} editavel={editavel} />
+        <BPField label="Goodwill" valor={bp.goodwill} onChange={v => onChange('goodwill', v)} editavel={editavel} />
+        <BPField label="Amortização Acumulada" valor={bp.amortizacao_acumulada} onChange={v => onChange('amortizacao_acumulada', v)} editavel={editavel} redutora />
+      </BPGrupo>
+
+      <div className="bg-[color:var(--claude-sage)]/5 rounded-xl border border-[color:var(--claude-sage)]/20 px-6 py-4 flex items-center justify-between">
+        <span className="headline text-[18px] tracking-editorial">Total Ativo</span>
+        <span className="text-[22px] font-mono tabular-nums font-semibold">{formatBRL(bp.total_ativo)}</span>
+      </div>
+    </div>
+  )
+}
+
+function BPPassivoView({ bp, editavel, onChange }: { bp: BP; editavel: boolean; onChange: (c: keyof BP, v: number) => void }) {
+  return (
+    <div className="space-y-5">
+      <BPGrupo titulo="Passivo Circulante" total={bp.total_passivo_circulante}>
+        <BPField label="Fornecedores" valor={bp.fornecedores} onChange={v => onChange('fornecedores', v)} editavel={editavel} />
+        <BPField label="Salários a Pagar" valor={bp.salarios_a_pagar} onChange={v => onChange('salarios_a_pagar', v)} editavel={editavel} />
+        <BPField label="Encargos Sociais a Pagar" valor={bp.encargos_sociais_a_pagar} onChange={v => onChange('encargos_sociais_a_pagar', v)} editavel={editavel} />
+        <BPField label="Impostos e Taxas a Recolher" valor={bp.impostos_e_taxas_a_recolher} onChange={v => onChange('impostos_e_taxas_a_recolher', v)} editavel={editavel} />
+        <BPField label="Empréstimos/Financiamentos (CP)" valor={bp.emprestimos_financiamentos_curto_prazo} onChange={v => onChange('emprestimos_financiamentos_curto_prazo', v)} editavel={editavel} />
+        <BPField label="Parcelamentos (CP)" valor={bp.parcelamentos_curto_prazo} onChange={v => onChange('parcelamentos_curto_prazo', v)} editavel={editavel} />
+        <BPField label="Adiantamentos de Clientes" valor={bp.adiantamentos_de_clientes} onChange={v => onChange('adiantamentos_de_clientes', v)} editavel={editavel} />
+        <BPField label="Dividendos a Pagar" valor={bp.dividendos_a_pagar} onChange={v => onChange('dividendos_a_pagar', v)} editavel={editavel} />
+        <BPField label="Provisões (CP)" valor={bp.provisoes_curto_prazo} onChange={v => onChange('provisoes_curto_prazo', v)} editavel={editavel} />
+        <BPField label="Outras Obrigações Circulantes" valor={bp.outras_obrigacoes_circulantes} onChange={v => onChange('outras_obrigacoes_circulantes', v)} editavel={editavel} />
+      </BPGrupo>
+
+      <BPGrupo titulo="Passivo Não Circulante" total={bp.total_passivo_nao_circulante}>
+        <BPField label="Empréstimos/Financiamentos (LP)" valor={bp.emprestimos_financiamentos_longo_prazo} onChange={v => onChange('emprestimos_financiamentos_longo_prazo', v)} editavel={editavel} />
+        <BPField label="Debêntures" valor={bp.debentures} onChange={v => onChange('debentures', v)} editavel={editavel} />
+        <BPField label="Parcelamentos (LP)" valor={bp.parcelamentos_longo_prazo} onChange={v => onChange('parcelamentos_longo_prazo', v)} editavel={editavel} />
+        <BPField label="Provisões (LP)" valor={bp.provisoes_longo_prazo} onChange={v => onChange('provisoes_longo_prazo', v)} editavel={editavel} />
+        <BPField label="Contingências" valor={bp.contingencias} onChange={v => onChange('contingencias', v)} editavel={editavel} />
+        <BPField label="Outras Obrigações (LP)" valor={bp.outras_obrigacoes_longo_prazo} onChange={v => onChange('outras_obrigacoes_longo_prazo', v)} editavel={editavel} />
+      </BPGrupo>
+
+      <div className="bg-[color:var(--claude-coral)]/5 rounded-xl border border-[color:var(--claude-coral)]/20 px-6 py-4 flex items-center justify-between">
+        <span className="headline text-[18px] tracking-editorial">Total Passivo</span>
+        <span className="text-[22px] font-mono tabular-nums font-semibold">{formatBRL(bp.total_passivo)}</span>
+      </div>
+    </div>
+  )
+}
+
+function BPPLView({ bp, editavel, onChange }: { bp: BP; editavel: boolean; onChange: (c: keyof BP, v: number) => void }) {
+  return (
+    <div className="space-y-5">
+      <BPGrupo titulo="Patrimônio Líquido" total={bp.total_patrimonio_liquido}>
+        <BPField label="Capital Social" valor={bp.capital_social} onChange={v => onChange('capital_social', v)} editavel={editavel} />
+        <BPField label="Reservas de Capital" valor={bp.reservas_de_capital} onChange={v => onChange('reservas_de_capital', v)} editavel={editavel} />
+        <BPField label="Ajustes de Avaliação Patrimonial" valor={bp.ajustes_de_avaliacao_patrimonial} onChange={v => onChange('ajustes_de_avaliacao_patrimonial', v)} editavel={editavel} />
+        <BPField label="Reservas de Lucros" valor={bp.reservas_de_lucros} onChange={v => onChange('reservas_de_lucros', v)} editavel={editavel} />
+        <BPField label="Lucros Acumulados" valor={bp.lucros_acumulados} onChange={v => onChange('lucros_acumulados', v)} editavel={editavel} />
+        <BPField label="Prejuízos Acumulados" valor={bp.prejuizos_acumulados} onChange={v => onChange('prejuizos_acumulados', v)} editavel={editavel} redutora />
+        <BPField label="Ações/Quotas em Tesouraria" valor={bp.acoes_ou_quotas_em_tesouraria} onChange={v => onChange('acoes_ou_quotas_em_tesouraria', v)} editavel={editavel} redutora />
+      </BPGrupo>
+
+      <div className="bg-[color:var(--claude-ink)]/5 rounded-xl border border-[color:var(--claude-ink)]/15 px-6 py-4 flex items-center justify-between">
+        <span className="headline text-[18px] tracking-editorial">Total Patrimônio Líquido</span>
+        <span className={`text-[22px] font-mono tabular-nums font-semibold ${bp.total_patrimonio_liquido < 0 ? 'text-[color:var(--claude-coral)]' : ''}`}>
+          {formatBRL(bp.total_patrimonio_liquido)}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function BPGrupo({ titulo, total, children }: { titulo: string; total: number; children: React.ReactNode }) {
+  return (
+    <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
+      <div className="px-6 py-3 border-b border-[color:var(--claude-ink)]/8 flex items-center justify-between">
+        <h3 className="headline text-[16px] tracking-editorial">{titulo}</h3>
+        <span className="text-sm font-mono tabular-nums font-semibold">{formatBRL(total)}</span>
+      </div>
+      <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function BPField({ label, valor, onChange, editavel, redutora }: { label: string; valor: number; onChange: (v: number) => void; editavel: boolean; redutora?: boolean }) {
+  return (
+    <div className="grid grid-cols-[1fr,auto] items-center gap-3 py-1">
+      <label className="text-sm text-[color:var(--claude-ink)]/75">
+        {redutora && <span className="text-[color:var(--claude-coral)] mr-1">(−)</span>}
+        {label}
+      </label>
+      {editavel ? (
+        <input
+          type="number"
+          step="0.01"
+          value={valor}
+          onChange={e => onChange(Number(e.target.value) || 0)}
+          className={`w-40 px-3 py-1.5 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm font-mono text-right tabular-nums ${redutora ? 'text-[color:var(--claude-coral)]' : ''}`}
+        />
+      ) : (
+        <span className={`w-40 text-sm font-mono tabular-nums text-right px-3 ${redutora ? 'text-[color:var(--claude-coral)]' : ''}`}>
+          {formatBRL(valor)}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function BPIndicadoresView({ bp, indicadores }: { bp: BP; indicadores: BPIndicadores | null }) {
+  if (!indicadores) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Sem dados suficientes para calcular indicadores.</div>
+
+  const tone = (v: number, bom: number, ruim: number, invertido = false) => {
+    if (invertido) return v <= bom ? 'sage' : v <= ruim ? 'amber' : 'coral'
+    return v >= bom ? 'sage' : v >= ruim ? 'amber' : 'coral'
+  }
+
+  const indicadoresList = [
+    {
+      grupo: 'Liquidez',
+      itens: [
+        { label: 'Liquidez Corrente', valor: indicadores.liquidez_corrente, formato: 'ratio', formula: 'AC / PC', interp: 'Capacidade de pagar dívidas de curto prazo', color: tone(indicadores.liquidez_corrente, 1.5, 1.0) },
+        { label: 'Liquidez Seca', valor: indicadores.liquidez_seca, formato: 'ratio', formula: '(AC − Estoque) / PC', interp: 'Liquidez sem depender do estoque', color: tone(indicadores.liquidez_seca, 1.0, 0.7) },
+        { label: 'Liquidez Imediata', valor: indicadores.liquidez_imediata, formato: 'ratio', formula: '(Caixa + Bancos + AplicCP) / PC', interp: 'Capital disponível imediatamente', color: tone(indicadores.liquidez_imediata, 0.3, 0.15) },
+      ],
+    },
+    {
+      grupo: 'Estrutura de Capital',
+      itens: [
+        { label: 'Endividamento Geral', valor: indicadores.endividamento_geral, formato: 'pct', formula: '(PC + PNC) / Ativo', interp: '% do ativo financiado por terceiros', color: tone(indicadores.endividamento_geral, 0.5, 0.7, true) },
+        { label: 'Composição Endividamento', valor: indicadores.composicao_endividamento, formato: 'pct', formula: 'PC / (PC + PNC)', interp: '% da dívida que vence no curto prazo', color: tone(indicadores.composicao_endividamento, 0.4, 0.6, true) },
+        { label: 'Imobilização do PL', valor: indicadores.imobilizacao_pl, formato: 'pct', formula: 'Imobilizado / PL', interp: '% do capital próprio aplicado em ativo fixo', color: tone(indicadores.imobilizacao_pl, 0.5, 0.8, true) },
+      ],
+    },
+    {
+      grupo: 'Operacional',
+      itens: [
+        { label: 'Capital de Giro Líquido', valor: indicadores.capital_giro_liquido, formato: 'brl', formula: 'AC − PC', interp: 'Folga operacional disponível', color: indicadores.capital_giro_liquido >= 0 ? 'sage' : 'coral' },
+      ],
+    },
+  ]
+
+  return (
+    <div className="space-y-6">
+      {indicadoresList.map(grupo => (
+        <div key={grupo.grupo}>
+          <h3 className="headline text-[20px] tracking-editorial mb-3">{grupo.grupo}</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {grupo.itens.map(item => {
+              const valorFmt = item.formato === 'brl'
+                ? formatBRL(item.valor)
+                : item.formato === 'pct'
+                  ? `${(item.valor * 100).toFixed(1)}%`
+                  : item.valor.toFixed(2)
+              const bgMap: Record<string, string> = {
+                sage: 'var(--claude-sage)',
+                amber: 'var(--claude-amber)',
+                coral: 'var(--claude-coral)',
+              }
+              return (
+                <div key={item.label} className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 p-5">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="section-label">{item.label}</p>
+                    <span className="w-2 h-2 rounded-full" style={{ background: bgMap[item.color] }} />
+                  </div>
+                  <p className="text-[28px] leading-none font-mono tabular-nums font-semibold">{valorFmt}</p>
+                  <p className="text-[11px] text-[color:var(--claude-ink)]/50 mt-2 font-mono">{item.formula}</p>
+                  <p className="text-xs text-[color:var(--claude-ink)]/60 mt-1">{item.interp}</p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+
+      <div className={`rounded-xl border px-6 py-4 ${bp.indicador_fechamento_ok ? 'bg-[color:var(--claude-sage)]/5 border-[color:var(--claude-sage)]/20' : 'bg-[color:var(--claude-coral)]/5 border-[color:var(--claude-coral)]/20'}`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="headline text-[18px] tracking-editorial flex items-center gap-2">
+              {bp.indicador_fechamento_ok ? <Check size={18} /> : <AlertCircle size={18} />}
+              Equação Fundamental
+            </p>
+            <p className="text-sm text-[color:var(--claude-ink)]/70 mt-1">Ativo = Passivo + Patrimônio Líquido</p>
+          </div>
+          <div className="text-right font-mono tabular-nums text-sm">
+            <div>Ativo: <span className="font-semibold">{formatBRL(bp.total_ativo)}</span></div>
+            <div>Passivo + PL: <span className="font-semibold">{formatBRL(bp.total_passivo + bp.total_patrimonio_liquido)}</span></div>
+            {!bp.indicador_fechamento_ok && (
+              <div className="text-[color:var(--claude-coral)]">Diferença: {formatBRL(bp.diferenca_balanceamento)}</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BPHistoricoView({ onSelect }: { onSelect: (mes: string) => void }) {
+  const [itens, setItens] = useState<BPListItem[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true)
+      try {
+        const res = await axios.get(`${API_URL}/bp/listar`)
+        setItens(res.data)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [])
+
+  if (loading) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
+  if (itens.length === 0) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Nenhum BP cadastrado ainda.</div>
+
+  return (
+    <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="text-xs uppercase tracking-wider text-[color:var(--claude-ink)]/50 border-b border-[color:var(--claude-ink)]/5">
+            <th className="text-left px-6 py-3 font-medium">Competência</th>
+            <th className="text-left px-6 py-3 font-medium">Status</th>
+            <th className="text-right px-6 py-3 font-medium">Ativo</th>
+            <th className="text-right px-6 py-3 font-medium">Passivo</th>
+            <th className="text-right px-6 py-3 font-medium">PL</th>
+            <th className="text-center px-6 py-3 font-medium">Balanceia</th>
+            <th className="px-6 py-3" />
+          </tr>
+        </thead>
+        <tbody>
+          {itens.map(item => (
+            <tr key={item.id} className="border-b border-[color:var(--claude-ink)]/5 hover:bg-[color:var(--claude-ink)]/[0.02]">
+              <td className="px-6 py-3 text-sm font-mono">{item.competencia}</td>
+              <td className="px-6 py-3"><BPStatusBadge status={item.status} /></td>
+              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(item.total_ativo)}</td>
+              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(item.total_passivo)}</td>
+              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(item.total_patrimonio_liquido)}</td>
+              <td className="px-6 py-3 text-center">
+                {item.indicador_fechamento_ok ? (
+                  <Check size={16} className="inline text-[color:var(--claude-sage)]" />
+                ) : (
+                  <X size={16} className="inline text-[color:var(--claude-coral)]" />
+                )}
+              </td>
+              <td className="px-6 py-3 text-right">
+                <button
+                  onClick={() => onSelect(item.competencia)}
+                  className="text-xs px-3 py-1 rounded border border-[color:var(--claude-ink)]/15 hover:bg-[color:var(--claude-ink)]/5"
+                >
+                  Abrir
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

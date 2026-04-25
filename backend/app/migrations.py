@@ -162,12 +162,133 @@ def m_005_produto_custo_nonneg(conn: Connection) -> str:
     return "ok: constraint produto_custo_nonneg criada"
 
 
+def m_006_balanco_patrimonial(conn: Connection) -> str:
+    """
+    Garante que a tabela `balanco_patrimonial` exista. Como `create_all` roda
+    antes, normalmente a tabela já estará criada via SQLAlchemy; esse fallback
+    só age em bancos legados sem o modelo definido no boot.
+
+    Idempotente: checa presença da tabela antes de criar.
+    """
+    if _has_table(conn, "balanco_patrimonial"):
+        return "skip: balanco_patrimonial já existe"
+
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS balanco_patrimonial (
+            id SERIAL PRIMARY KEY,
+            empresa_id INTEGER,
+            competencia DATE NOT NULL,
+            data_referencia DATE NOT NULL,
+            status VARCHAR NOT NULL DEFAULT 'rascunho',
+            moeda VARCHAR NOT NULL DEFAULT 'BRL',
+            observacoes VARCHAR,
+
+            -- Ativo Circulante
+            caixa_e_equivalentes DOUBLE PRECISION DEFAULT 0,
+            bancos_conta_movimento DOUBLE PRECISION DEFAULT 0,
+            aplicacoes_financeiras_curto_prazo DOUBLE PRECISION DEFAULT 0,
+            clientes_contas_a_receber DOUBLE PRECISION DEFAULT 0,
+            adiantamentos_a_fornecedores DOUBLE PRECISION DEFAULT 0,
+            impostos_a_recuperar DOUBLE PRECISION DEFAULT 0,
+            estoque DOUBLE PRECISION DEFAULT 0,
+            despesas_antecipadas DOUBLE PRECISION DEFAULT 0,
+            outros_ativos_circulantes DOUBLE PRECISION DEFAULT 0,
+            total_ativo_circulante DOUBLE PRECISION DEFAULT 0,
+
+            -- Realizável LP
+            clientes_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            depositos_judiciais DOUBLE PRECISION DEFAULT 0,
+            impostos_a_recuperar_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            emprestimos_concedidos DOUBLE PRECISION DEFAULT 0,
+            outros_realizaveis_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            total_realizavel_longo_prazo DOUBLE PRECISION DEFAULT 0,
+
+            -- Investimentos
+            participacoes_societarias DOUBLE PRECISION DEFAULT 0,
+            propriedades_para_investimento DOUBLE PRECISION DEFAULT 0,
+            outros_investimentos DOUBLE PRECISION DEFAULT 0,
+            total_investimentos DOUBLE PRECISION DEFAULT 0,
+
+            -- Imobilizado
+            maquinas_e_equipamentos DOUBLE PRECISION DEFAULT 0,
+            veiculos DOUBLE PRECISION DEFAULT 0,
+            moveis_e_utensilios DOUBLE PRECISION DEFAULT 0,
+            imoveis DOUBLE PRECISION DEFAULT 0,
+            computadores_e_perifericos DOUBLE PRECISION DEFAULT 0,
+            benfeitorias DOUBLE PRECISION DEFAULT 0,
+            depreciacao_acumulada DOUBLE PRECISION DEFAULT 0,
+            total_imobilizado DOUBLE PRECISION DEFAULT 0,
+
+            -- Intangível
+            marcas_e_patentes DOUBLE PRECISION DEFAULT 0,
+            softwares DOUBLE PRECISION DEFAULT 0,
+            licencas DOUBLE PRECISION DEFAULT 0,
+            goodwill DOUBLE PRECISION DEFAULT 0,
+            amortizacao_acumulada DOUBLE PRECISION DEFAULT 0,
+            total_intangivel DOUBLE PRECISION DEFAULT 0,
+
+            total_ativo_nao_circulante DOUBLE PRECISION DEFAULT 0,
+            total_ativo DOUBLE PRECISION DEFAULT 0,
+
+            -- Passivo Circulante
+            fornecedores DOUBLE PRECISION DEFAULT 0,
+            salarios_a_pagar DOUBLE PRECISION DEFAULT 0,
+            encargos_sociais_a_pagar DOUBLE PRECISION DEFAULT 0,
+            impostos_e_taxas_a_recolher DOUBLE PRECISION DEFAULT 0,
+            emprestimos_financiamentos_curto_prazo DOUBLE PRECISION DEFAULT 0,
+            parcelamentos_curto_prazo DOUBLE PRECISION DEFAULT 0,
+            adiantamentos_de_clientes DOUBLE PRECISION DEFAULT 0,
+            dividendos_a_pagar DOUBLE PRECISION DEFAULT 0,
+            provisoes_curto_prazo DOUBLE PRECISION DEFAULT 0,
+            outras_obrigacoes_circulantes DOUBLE PRECISION DEFAULT 0,
+            total_passivo_circulante DOUBLE PRECISION DEFAULT 0,
+
+            -- Passivo Não Circulante
+            emprestimos_financiamentos_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            debentures DOUBLE PRECISION DEFAULT 0,
+            parcelamentos_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            provisoes_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            contingencias DOUBLE PRECISION DEFAULT 0,
+            outras_obrigacoes_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            total_passivo_nao_circulante DOUBLE PRECISION DEFAULT 0,
+
+            total_passivo DOUBLE PRECISION DEFAULT 0,
+
+            -- Patrimônio Líquido
+            capital_social DOUBLE PRECISION DEFAULT 0,
+            reservas_de_capital DOUBLE PRECISION DEFAULT 0,
+            ajustes_de_avaliacao_patrimonial DOUBLE PRECISION DEFAULT 0,
+            reservas_de_lucros DOUBLE PRECISION DEFAULT 0,
+            lucros_acumulados DOUBLE PRECISION DEFAULT 0,
+            prejuizos_acumulados DOUBLE PRECISION DEFAULT 0,
+            acoes_ou_quotas_em_tesouraria DOUBLE PRECISION DEFAULT 0,
+            total_patrimonio_liquido DOUBLE PRECISION DEFAULT 0,
+
+            indicador_fechamento_ok BOOLEAN DEFAULT FALSE,
+
+            criado_em TIMESTAMP DEFAULT NOW(),
+            atualizado_em TIMESTAMP DEFAULT NOW(),
+            fechado_em TIMESTAMP,
+            auditado_em TIMESTAMP,
+
+            CONSTRAINT uq_bp_empresa_competencia UNIQUE (empresa_id, competencia),
+            CONSTRAINT bp_status_chk CHECK (status IN ('rascunho','fechado','auditado'))
+        )
+    """))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_bp_competencia_status "
+        "ON balanco_patrimonial (competencia, status)"
+    ))
+    return "ok: balanco_patrimonial criada"
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
     m_003_produto_codigo,
     m_004_soft_delete_produtos_custo_zero,
     m_005_produto_custo_nonneg,
+    m_006_balanco_patrimonial,
 ]
 
 
