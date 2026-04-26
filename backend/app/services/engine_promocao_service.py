@@ -38,7 +38,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from .. import models, schemas

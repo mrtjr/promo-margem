@@ -101,7 +101,6 @@ def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
             peso=entrada.peso,
             custo_unitario=entrada.custo_unitario,
             cidade=entrada.cidade,
-            peso_medida=None
         )
         db.add(mov)
         db.commit()

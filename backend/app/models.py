@@ -94,7 +94,6 @@ class Movimentacao(Base):
     peso = Column(Float, nullable=True)  # PESO (ENTRADA: unitário; SAIDA/QUEBRA: total)
     custo_unitario = Column(Float)  # ENTRADA: custo de aquisição; SAIDA: preço venda; QUEBRA: CMP no momento
     cidade = Column(String, nullable=True)
-    peso_medida = Column(String, nullable=True) # Legado/Info
     motivo = Column(String, nullable=True)  # só preenchido quando tipo='QUEBRA'
     data = Column(DateTime, server_default=func.now())
 

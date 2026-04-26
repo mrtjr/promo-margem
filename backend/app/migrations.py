@@ -507,6 +507,24 @@ def m_009_indices_performance(conn: Connection) -> str:
     return "ok: " + ", ".join(msgs)
 
 
+def m_010_drop_peso_medida(conn: Connection) -> str:
+    """
+    Remove a coluna `movimentacoes.peso_medida` (campo legado).
+
+    Histórico:
+      - Adicionada em uma versão anterior como 'info livre' ('Legado/Info').
+      - Nunca foi lida pelo código de produção.
+      - Em prod, 100% das linhas sempre estiveram com NULL (escrita explícita
+        em estoque_service.registrar_entrada).
+
+    Idempotente via IF EXISTS no DROP.
+    """
+    if not _has_column(conn, "movimentacoes", "peso_medida"):
+        return "skip: coluna peso_medida ja removida"
+    conn.execute(text("ALTER TABLE movimentacoes DROP COLUMN IF EXISTS peso_medida"))
+    return "ok: coluna peso_medida removida"
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
@@ -517,6 +535,7 @@ MIGRATIONS: List[Callable[[Connection], str]] = [
     m_007_movimentacao_quebra,
     m_008_engine_promocao,
     m_009_indices_performance,
+    m_010_drop_peso_medida,
 ]
 
 
