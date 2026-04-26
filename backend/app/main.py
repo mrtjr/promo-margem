@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Header, Request, UploadFile
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
+from contextlib import asynccontextmanager
 from sqlalchemy import func
 
 from dataclasses import asdict
@@ -41,78 +42,71 @@ except Exception as e:
     print(f"[migrations] FAIL: {e}")
     raise
 
-app = FastAPI(title="PromoMargem API", version="0.12.0")
+@asynccontextmanager
+async def lifespan(app: "FastAPI"):
+    """
+    Bootstrap do backend (substitui o deprecated @app.on_event).
 
-@app.on_event("startup")
-async def startup_event():
-    # Force Structured Groups
+    Ordem é intencional:
+      1. Seeds idempotentes (grupos, plano de contas, config tributária)
+      2. Backfill VendaDiariaSKU (só roda 1x; skip automático depois)
+      3. Recálculo de elasticidades (respeita TTL 7d) + expiração de propostas
+
+    Cada bloco em try/except próprio: nunca bloqueia inicialização do app.
+    """
     db = database.SessionLocal()
-    new_categories = ["ALIMENTICIOS", "TEMPEROS", "EMBALAGENS", "CEREAIS"]
-    
-    # Check if we have the wrong categories
-    existing_groups = db.query(models.Grupo).all()
-    existing_names = [g.nome for g in existing_groups]
-    
-    if set(existing_names) != set(new_categories):
-        # We need to be careful with foreign keys, but for this dev stage we reset
-        for g in existing_groups:
-            # First, unset grupo_id in products to avoid FK errors
-            db.query(models.Produto).filter(models.Produto.grupo_id == g.id).update({"grupo_id": None})
-            db.delete(g)
-        db.commit()
-        
-        for cat_name in new_categories:
-            g = models.Grupo(
-                nome=cat_name,
-                margem_minima=0.17,
-                margem_maxima=0.20,
-                desconto_maximo_permitido=10.0
-            )
-            db.add(g)
-        db.commit()
-
-    # Backfill idempotente: popula vendas_diarias_sku a partir do histórico
-    # de Venda. Só roda na primeira inicialização após a migração; depois
-    # é skip automático.
     try:
-        resultado = estoque_service.backfill_vendas_diarias_sku(db)
-        if not resultado["skipped"]:
-            print(
-                f"[startup] Backfill vendas_diarias_sku: "
-                f"{resultado['vendas_lidas']} vendas lidas, "
-                f"{resultado['dias_criados']} agregados criados."
-            )
-    except Exception as e:
-        print(f"[startup] Backfill falhou (ignorando): {e}")
+        # 1. Seeds básicos (grupos, plano de contas, config). NÃO destrutivos:
+        # só criam o que falta. Renomear grupo no banco persiste — não é mais
+        # sobrescrito a cada deploy.
+        try:
+            seed_info = dre_seed.seed_tudo(db)
+            criados = seed_info.get("grupos_criados", 0)
+            contas = seed_info.get("contas_criadas", 0)
+            if criados > 0 or contas > 0 or seed_info.get("config_criada"):
+                print(
+                    f"[startup] Seeds: grupos={criados}, contas={contas}, "
+                    f"config_criada={seed_info.get('config_criada')}"
+                )
+        except Exception as e:
+            print(f"[startup] Seeds falharam (ignorando): {e}")
 
-    # Seed DRE: plano de contas + config tributária default (Simples 8%).
-    try:
-        dre_info = dre_seed.seed_tudo(db)
-        if dre_info["contas_criadas"] > 0 or dre_info["config_criada"]:
-            print(
-                f"[startup] DRE seed: {dre_info['contas_criadas']} contas criadas, "
-                f"config_criada={dre_info['config_criada']}"
-            )
-    except Exception as e:
-        print(f"[startup] DRE seed falhou (ignorando): {e}")
+        # 2. Backfill VendaDiariaSKU a partir de Venda (idempotente).
+        try:
+            resultado = estoque_service.backfill_vendas_diarias_sku(db)
+            if not resultado["skipped"]:
+                print(
+                    f"[startup] Backfill vendas_diarias_sku: "
+                    f"{resultado['vendas_lidas']} vendas lidas, "
+                    f"{resultado['dias_criados']} agregados criados."
+                )
+        except Exception as e:
+            print(f"[startup] Backfill falhou (ignorando): {e}")
 
-    # Engine de Promoção: recalcula cache de elasticidades respeitando TTL 7d
-    # + expira propostas antigas (24h+).
-    try:
-        info = elasticidade_service.recalcular_todas(db, force=False)
-        if info["recalculados"] > 0:
-            print(
-                f"[startup] Elasticidades: {info['recalculados']} recalculadas "
-                f"(alta={info['qualidade_alta']}, media={info['qualidade_media']}, "
-                f"baixa={info['qualidade_baixa']}, prior={info['qualidade_prior']})"
-            )
-        n_expiradas = engine_promocao_service.expirar_propostas_antigas(db)
-        if n_expiradas > 0:
-            print(f"[startup] Engine: {n_expiradas} proposta(s) expiradas (TTL 24h)")
-    except Exception as e:
-        print(f"[startup] Engine de Promoção falhou (ignorando): {e}")
+        # 3. Engine de Promoção: cache de elasticidades + housekeeping.
+        try:
+            info = elasticidade_service.recalcular_todas(db, force=False)
+            if info["recalculados"] > 0:
+                print(
+                    f"[startup] Elasticidades: {info['recalculados']} recalculadas "
+                    f"(alta={info['qualidade_alta']}, media={info['qualidade_media']}, "
+                    f"baixa={info['qualidade_baixa']}, prior={info['qualidade_prior']})"
+                )
+            n_expiradas = engine_promocao_service.expirar_propostas_antigas(db)
+            if n_expiradas > 0:
+                print(f"[startup] Engine: {n_expiradas} proposta(s) expiradas (TTL 24h)")
+        except Exception as e:
+            print(f"[startup] Engine de Promoção falhou (ignorando): {e}")
+    finally:
+        db.close()
 
-    db.close()
+    yield  # ----- app rodando -----
+
+    # Shutdown: nada a fazer hoje (sem conexões persistentes pra fechar).
+
+
+app = FastAPI(title="PromoMargem API", version="0.12.0", lifespan=lifespan)
+
 
 @app.get("/")
 async def root():
@@ -440,6 +434,8 @@ async def atualizar_produto(
         prod.preco_venda = payload.preco_venda
     if payload.ativo is not None:
         prod.ativo = payload.ativo
+    if payload.bloqueado_engine is not None:
+        prod.bloqueado_engine = payload.bloqueado_engine
 
     db.commit()
     db.refresh(prod)
@@ -476,7 +472,7 @@ async def bulk_entries(req: schemas.EntradaBulkRequest, db: Session = Depends(ge
 
 @app.post("/vendas/bulk")
 async def bulk_sales(req: schemas.VendaBulkRequest, db: Session = Depends(get_db)):
-    vendas_list = [v.dict() for v in req.vendas]
+    vendas_list = [v.model_dump() for v in req.vendas]
     success = estoque_service.registrar_venda_bulk(db, vendas_list)
     return {"status": "success" if success else "error"}
 
@@ -486,7 +482,7 @@ async def registrar_fechamento(req: schemas.FechamentoVendaRequest, db: Session 
     Fluxo unificado: registra as vendas do dia E já retorna a análise consolidada.
     Se `data` não for enviado, usa hoje.
     """
-    vendas_list = [v.dict() for v in req.vendas]
+    vendas_list = [v.model_dump() for v in req.vendas]
     data_alvo: date_type = req.data or date_type.today()
     estoque_service.registrar_venda_bulk(db, vendas_list, data_fechamento=data_alvo)
     analise = analise_service.analisar_fechamento(db, data_alvo)
@@ -888,7 +884,7 @@ async def bp_upsert(payload: schemas.BalancoPatrimonialIn, db: Session = Depends
     Cria ou atualiza BP em rascunho. Totais e indicador são recalculados.
     Rejeita se status atual = fechado ou auditado.
     """
-    bp = bp_service.upsert_bp(db, payload.dict())
+    bp = bp_service.upsert_bp(db, payload.model_dump())
     return bp_service.serializar(bp)
 
 
@@ -1223,7 +1219,7 @@ async def webhook_pdv_vendas(
         # Registra o log mesmo em falha inesperada
         pdv_service.registrar_log(
             db,
-            payload=evento.dict(),
+            payload=evento.model_dump(),
             status="erro",
             mensagem=f"exceção: {e}",
             venda_id=None,
@@ -1234,7 +1230,7 @@ async def webhook_pdv_vendas(
     # 3. Log de auditoria (sempre)
     pdv_service.registrar_log(
         db,
-        payload=evento.dict(),
+        payload=evento.model_dump(),
         status=status,
         mensagem=mensagem,
         venda_id=venda_id,

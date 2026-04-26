@@ -6,6 +6,21 @@ from typing import List, Optional
 from .. import models, schemas
 import uuid
 
+def _primeiro_grupo_id(db: Session) -> int:
+    """
+    Retorna o ID do primeiro grupo cadastrado (menor id). Usado como fallback
+    quando entrada não especifica grupo. Levanta ValueError se não há nenhum
+    — caller traduz pra 4xx adequado.
+    """
+    g = db.query(models.Grupo).order_by(models.Grupo.id.asc()).first()
+    if not g:
+        raise ValueError(
+            "Nenhum grupo cadastrado no sistema. Cadastre pelo menos um grupo "
+            "antes de registrar entradas."
+        )
+    return g.id
+
+
 def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
     # Determine which product. Camadas de matching:
     #   1) produto_id explícito  2) código ERP  3) nome exato
@@ -24,12 +39,16 @@ def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
         if not produto:
             # Create new product automatically. Aceita código se enviado —
             # fica disponível para matching futuro (ex.: CSV do ERP).
+            # Fallback de grupo: se não enviou, usa o primeiro grupo cadastrado
+            # (ordem por id), nunca um id hardcoded — evita FK órfã se grupo
+            # 1 foi deletado historicamente.
+            grupo_id_final = entrada.grupo_id or _primeiro_grupo_id(db)
             new_sku = f"AUTO-{uuid.uuid4().hex[:6].upper()}"
             produto = models.Produto(
                 sku=new_sku,
                 codigo=codigo_norm,
                 nome=entrada.nome_produto,
-                grupo_id=entrada.grupo_id or 1, # Default to first group if none
+                grupo_id=grupo_id_final,
                 custo=entrada.custo_unitario,
                 preco_venda=entrada.custo_unitario * 1.2, # Markup inicial de 20%
                 estoque_qtd=0,

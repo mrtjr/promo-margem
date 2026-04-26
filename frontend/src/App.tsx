@@ -12,20 +12,23 @@ function App() {
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
+  // Stats só busca no mount. Páginas que precisam de dados frescos
+  // refazem fetch própio (ex: Dashboard refaz quando volta a ele).
   useEffect(() => {
-    fetchStats()
-  }, [currentPage])
-
-  const fetchStats = async () => {
-    try {
-      const res = await axios.get(`${API_URL}/stats`)
-      setStats(res.data)
-      setLoading(false)
-    } catch (err) {
-      console.error("Failed to fetch stats", err)
-      setLoading(false)
+    let cancelado = false
+    const fetch = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/stats`)
+        if (!cancelado) setStats(res.data)
+      } catch (err) {
+        console.error("Failed to fetch stats", err)
+      } finally {
+        if (!cancelado) setLoading(false)
+      }
     }
-  }
+    fetch()
+    return () => { cancelado = true }
+  }, [])
 
   return (
     <div className="flex h-screen bg-[color:var(--claude-cream)] text-[color:var(--claude-ink)] font-sans">
@@ -3078,8 +3081,20 @@ function EnginePromocaoPanel() {
         tipo: 'ok',
         msg: `Cesta ${cesta.perfil} aprovada como Promoção #${r.data.id} (rascunho). Publique em Promoções.`,
       })
-      // Re-busca pra atualizar status
-      await propor()
+      // Atualiza estado local SEM re-rodar o solver: backend já marcou esta
+      // como 'aprovada' e as outras 2 como 'descartada' no mesmo run.
+      setResponse(prev => prev ? {
+        ...prev,
+        cestas: prev.cestas.map(c => {
+          if (c.id === cesta.id) {
+            return { ...c, status: 'aprovada', promocao_id: r.data.id }
+          }
+          if (c.status === 'proposta') {
+            return { ...c, status: 'descartada' }
+          }
+          return c
+        }),
+      } : prev)
     } catch (e: any) {
       setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao aprovar' })
     } finally {
