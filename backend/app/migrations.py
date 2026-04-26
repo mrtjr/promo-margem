@@ -472,6 +472,41 @@ def m_008_engine_promocao(conn: Connection) -> str:
     return "ok: " + ", ".join(msgs)
 
 
+def m_009_indices_performance(conn: Connection) -> str:
+    """
+    Adiciona índices compostos para acelerar:
+      - Reversões de movimentação (excluir_entrada/venda/quebra) que recalculam
+        o produto a partir de TODAS as suas Movimentacoes.
+      - Listagens de histórico filtrando por produto_id (UI Histórico, Engine).
+      - Backfill VendaDiariaSKU e analytics por SKU.
+
+    Antes desta migração:
+      - movimentacoes: só índice em (tipo, data) e PK; produto_id sem índice.
+      - vendas:        só índice em data_fechamento e PK; produto_id sem índice.
+
+    Após:
+      - ix_mov_produto_data:           movimentacoes(produto_id, data DESC)
+      - ix_venda_produto_fechamento:   vendas(produto_id, data_fechamento DESC)
+
+    Idempotente via IF NOT EXISTS.
+    """
+    msgs: List[str] = []
+
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_mov_produto_data "
+        "ON movimentacoes (produto_id, data DESC)"
+    ))
+    msgs.append("idx mov(produto_id,data) ok")
+
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_venda_produto_fechamento "
+        "ON vendas (produto_id, data_fechamento DESC)"
+    ))
+    msgs.append("idx venda(produto_id,data_fechamento) ok")
+
+    return "ok: " + ", ".join(msgs)
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
@@ -481,6 +516,7 @@ MIGRATIONS: List[Callable[[Connection], str]] = [
     m_006_balanco_patrimonial,
     m_007_movimentacao_quebra,
     m_008_engine_promocao,
+    m_009_indices_performance,
 ]
 
 

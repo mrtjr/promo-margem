@@ -365,14 +365,21 @@ def _gerar_niveis_para_perfil(
 # ---------------------------------------------------------------------------
 
 def _margem_global_com_cesta(
-    db: Session, cesta_itens: List[CandidatoNivel]
+    db: Session,
+    cesta_itens: List[CandidatoNivel],
+    produtos_all: Optional[List[models.Produto]] = None,
 ) -> Tuple[float, float, float, float]:
     """
     Aplica margin_engine.simulate_promotion_impact considerando o desconto
     médio ponderado da cesta. Retorna (margem_atual, margem_pos, receita_pos,
     impacto_pp).
+
+    `produtos_all` é cache: deve ser fornecido pelo caller dentro do greedy
+    para evitar re-querying a cada iteração (centenas de chamadas por run).
+    Se omitido, faz fallback de query — preserva compatibilidade.
     """
-    produtos_all = db.query(models.Produto).filter(models.Produto.ativo == True).all()
+    if produtos_all is None:
+        produtos_all = db.query(models.Produto).filter(models.Produto.ativo == True).all()
     if not cesta_itens:
         # Margem global sem promoção = margem ponderada por estoque
         atual = margin_engine.calculate_global_margin(produtos_all)
@@ -418,8 +425,16 @@ def _solver_greedy(
             desconto_medio_pct=0.0, motivo_falha="sem_candidatos",
         )
 
+    # Cache de produtos ativos: 1 query no início, reusada em todas as
+    # ~6N+15 chamadas de _margem_global_com_cesta abaixo. Antes de v0.12.1
+    # cada chamada re-queriava o banco, gerando ~3000 queries por /propor
+    # com 500 SKUs. Agora: 1 query.
+    produtos_all = db.query(models.Produto).filter(
+        models.Produto.ativo == True
+    ).all()
+
     # Margem global atual (sem cesta)
-    margem_atual, _, _, _ = _margem_global_com_cesta(db, [])
+    margem_atual, _, _, _ = _margem_global_com_cesta(db, [], produtos_all)
 
     # Configuração por perfil
     if perfil == "conservador":
@@ -485,7 +500,7 @@ def _solver_greedy(
             continue
 
         tentativa = cesta + [nivel]
-        _, margem_pos, _, _ = _margem_global_com_cesta(db, tentativa)
+        _, margem_pos, _, _ = _margem_global_com_cesta(db, tentativa, produtos_all)
         if margem_pos < meta_min_global:
             # tenta nível menor de desconto pro mesmo SKU
             niveis_menores = [
@@ -495,7 +510,7 @@ def _solver_greedy(
             adicionado = False
             for n_menor in sorted(niveis_menores, key=lambda x: x.desconto_pct, reverse=True):
                 tentativa2 = cesta + [n_menor]
-                _, margem_pos2, _, _ = _margem_global_com_cesta(db, tentativa2)
+                _, margem_pos2, _, _ = _margem_global_com_cesta(db, tentativa2, produtos_all)
                 if margem_pos2 >= meta_min_global and n_menor.lucro_marginal > 0:
                     cesta.append(n_menor)
                     adicionado = True
@@ -514,7 +529,7 @@ def _solver_greedy(
             if len(cesta) >= 3:
                 break
             tentativa = cesta + [nivel]
-            _, margem_pos, _, _ = _margem_global_com_cesta(db, tentativa)
+            _, margem_pos, _, _ = _margem_global_com_cesta(db, tentativa, produtos_all)
             if margem_pos >= meta_min_global:
                 cesta.append(nivel)
 
@@ -527,7 +542,7 @@ def _solver_greedy(
             desconto_medio_pct=0.0, motivo_falha="meta_inalcancavel",
         )
 
-    margem_atual_final, margem_projetada, _, _ = _margem_global_com_cesta(db, cesta)
+    margem_atual_final, margem_projetada, _, _ = _margem_global_com_cesta(db, cesta, produtos_all)
     receita_total = sum(n.receita_promo_total for n in cesta)
     lucro_total = sum(n.lucro_marginal for n in cesta)
     desconto_medio = sum(

@@ -313,18 +313,15 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
 
     Retorna dict {qtd, peso, custo, entradas, saidas, quebras} com o estado.
     """
-    entradas = db.query(models.Movimentacao).filter(
+    # 1 query única particionada em Python (vs 3 round-trips). Beneficia
+    # diretamente do índice ix_mov_produto_data (m_009).
+    movs = db.query(models.Movimentacao).filter(
         models.Movimentacao.produto_id == produto.id,
-        models.Movimentacao.tipo == "ENTRADA",
+        models.Movimentacao.tipo.in_(("ENTRADA", "SAIDA", "QUEBRA")),
     ).all()
-    saidas = db.query(models.Movimentacao).filter(
-        models.Movimentacao.produto_id == produto.id,
-        models.Movimentacao.tipo == "SAIDA",
-    ).all()
-    quebras = db.query(models.Movimentacao).filter(
-        models.Movimentacao.produto_id == produto.id,
-        models.Movimentacao.tipo == "QUEBRA",
-    ).all()
+    entradas = [m for m in movs if m.tipo == "ENTRADA"]
+    saidas = [m for m in movs if m.tipo == "SAIDA"]
+    quebras = [m for m in movs if m.tipo == "QUEBRA"]
 
     # Soma ENTRADAS
     qtd_entrada = 0.0
