@@ -1,15 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock, Skull, Wand2, ChevronDown, ChevronRight } from 'lucide-react'
 import axios from 'axios'
+import type { Produto, Grupo, Stats } from './types'
 
-// API base URL
-const API_URL = '/api'
+// API base URL — em prod usa nginx proxy ('/api'); em `npm run dev` setar
+// VITE_API_URL=http://localhost:8000 no .env (ver frontend/.env.example).
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) || '/api'
 
 const CIDADES = ["TEIXEIRA DE FREITAS", "ITAMARAJU"]
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard')
-  const [stats, setStats] = useState<any>(null)
+  const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
 
   // Stats só busca no mount. Páginas que precisam de dados frescos
@@ -185,9 +187,89 @@ function NavItem({ icon, label, isActive, onClick }: any) {
   )
 }
 
+// ============================================================================
+// Confirm — modal genérico de confirmação (substitui window.confirm nativo).
+// Estilo coerente com claude-card; suporta variante perigosa (vermelho) e
+// estado de loading (durante a ação assíncrona).
+// ============================================================================
+
+type ConfirmProps = {
+  open: boolean
+  title: string
+  body?: React.ReactNode
+  confirmLabel?: string
+  cancelLabel?: string
+  danger?: boolean    // estiliza botão vermelho + ícone alerta
+  loading?: boolean   // desabilita ambos os botões e troca label do confirmar
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+function Confirm({
+  open, title, body,
+  confirmLabel = 'Confirmar', cancelLabel = 'Cancelar',
+  danger = false, loading = false,
+  onConfirm, onCancel,
+}: ConfirmProps) {
+  if (!open) return null
+  const accent = danger ? 'var(--claude-coral)' : 'var(--claude-amber)'
+  return (
+    <div
+      className="fixed inset-0 bg-[color:var(--claude-ink)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onClick={() => !loading && onCancel()}
+    >
+      <div className="claude-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-full flex items-center justify-center"
+              style={{ background: `color-mix(in srgb, ${accent} 15%, transparent)` }}
+            >
+              <AlertTriangle size={20} style={{ color: accent }} />
+            </div>
+            <div>
+              <p className="section-label">Confirmação</p>
+              <h3 className="headline text-xl">{title}</h3>
+            </div>
+          </div>
+          <button
+            onClick={() => !loading && onCancel()}
+            disabled={loading}
+            className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] disabled:opacity-50"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {body && (
+          <div className="text-sm text-[color:var(--claude-ink)] mb-5">{body}</div>
+        )}
+
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="px-4 py-2 text-sm rounded-lg border border-[color:var(--border)] text-[color:var(--claude-ink)] hover:bg-[color:var(--claude-cream-deep)] disabled:opacity-50"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="px-4 py-2 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50"
+            style={{ background: accent }}
+          >
+            {loading ? 'Processando…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ComprasPage({ onComplete }: any) {
-  const [produtos, setProdutos] = useState<any[]>([])
-  const [grupos, setGrupos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [grupos, setGrupos] = useState<Grupo[]>([])
   const [rows, setRows] = useState<any[]>([
     { id: Date.now(), matchedId: null, codigo: '', name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }
   ])
@@ -435,8 +517,8 @@ function ComprasPage({ onComplete }: any) {
 }
 
 function ProdutosPage() {
-  const [produtos, setProdutos] = useState<any[]>([])
-  const [grupos, setGrupos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [grupos, setGrupos] = useState<Grupo[]>([])
   const [editando, setEditando] = useState<any | null>(null)
 
   const carregar = () => {
@@ -1458,8 +1540,8 @@ function GroupProgress({ label, margemReal, metaMin, metaMax, faturamento, skusV
 }
 
 function RelatoriosPage() {
-  const [produtos, setProdutos] = useState<any[]>([])
-  const [grupos, setGrupos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [grupos, setGrupos] = useState<Grupo[]>([])
   const [salesItems, setSalesItems] = useState<any>({})
   const [salesPrices, setSalesPrices] = useState<any>({})
   const [submitting, setSubmitting] = useState(false)
@@ -1505,7 +1587,7 @@ function RelatoriosPage() {
       .map(([idStr, qty]: any) => {
         const id = parseInt(idStr)
         const prod = produtos.find(p => p.id === id)
-        const price = salesPrices[id] || prod.preco_venda
+        const price = salesPrices[id] || prod?.preco_venda || 0
         return {
           produto_id: id,
           quantidade: qty,
@@ -2840,7 +2922,7 @@ function ClassBadge({ label, count, color }: any) {
 
 function SimuladorPage({ initialTab = 'manual' }: { initialTab?: 'manual' | 'engine' }) {
   const [tab, setTab] = useState<'manual' | 'engine'>(initialTab)
-  const [produtos, setProdutos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [discount, setDiscount] = useState(10)
   const [result, setResult] = useState<any>(null)
@@ -3448,11 +3530,12 @@ function HistoricoPage() {
   const [confirmando, setConfirmando] = useState<Movimentacao | null>(null)
   const [excluindo, setExcluindo] = useState(false)
   const [reconciliando, setReconciliando] = useState(false)
+  const [confirmReconciliar, setConfirmReconciliar] = useState(false)
   const [toast, setToast] = useState<{ tipo: 'ok' | 'erro'; msg: string } | null>(null)
 
-  const reconciliar = async () => {
+  const executarReconciliacao = async () => {
+    setConfirmReconciliar(false)
     if (reconciliando) return
-    if (!confirm('Reconciliar: recalcula estoque e custo de TODOS os produtos a partir do log de movimentações. Corrige estado inconsistente e desativa produtos sem movimentação. Continuar?')) return
     setReconciliando(true)
     try {
       const res = await axios.post(`${API_URL}/admin/reconciliar-estoques`)
@@ -3468,6 +3551,11 @@ function HistoricoPage() {
       setReconciliando(false)
       setTimeout(() => setToast(null), 6000)
     }
+  }
+
+  const reconciliar = () => {
+    if (reconciliando) return
+    setConfirmReconciliar(true)
   }
 
   const carregar = async () => {
@@ -3738,6 +3826,23 @@ function HistoricoPage() {
           <p className="text-sm text-[color:var(--claude-ink)]">{toast.msg}</p>
         </div>
       )}
+
+      {/* Confirmar reconciliação global (substitui window.confirm) */}
+      <Confirm
+        open={confirmReconciliar}
+        title="Reconciliar estoques?"
+        body={
+          <p>
+            Recalcula <strong>estoque e custo de TODOS os produtos</strong> a partir
+            do log de movimentações. Corrige estado inconsistente e desativa produtos
+            sem movimentação. Esta operação pode demorar segundos em bancos grandes.
+          </p>
+        }
+        confirmLabel="Reconciliar"
+        loading={reconciliando}
+        onConfirm={executarReconciliacao}
+        onCancel={() => setConfirmReconciliar(false)}
+      />
     </div>
   )
 }
@@ -3780,7 +3885,7 @@ type QuebraResumo = {
 
 function QuebrasPage() {
   const [tab, setTab] = useState<'registrar' | 'historico'>('registrar')
-  const [produtos, setProdutos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
   const [quebras, setQuebras] = useState<QuebraOut[]>([])
   const [resumo, setResumo] = useState<QuebraResumo | null>(null)
   const [loading, setLoading] = useState(false)
@@ -4713,10 +4818,25 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
     }
   }
 
-  const handleExcluir = async (id: number) => {
-    if (!confirm('Excluir lançamento?')) return
-    await axios.delete(`${API_URL}/despesas/${id}`)
-    fetchData()
+  const [confirmExcluirId, setConfirmExcluirId] = useState<number | null>(null)
+  const [excluindoLanc, setExcluindoLanc] = useState(false)
+
+  const handleExcluir = (id: number) => {
+    setConfirmExcluirId(id)
+  }
+
+  const executarExcluirLancamento = async () => {
+    if (confirmExcluirId == null || excluindoLanc) return
+    setExcluindoLanc(true)
+    try {
+      await axios.delete(`${API_URL}/despesas/${confirmExcluirId}`)
+      setConfirmExcluirId(null)
+      fetchData()
+    } catch (e: any) {
+      alert('Falha ao excluir: ' + (e?.response?.data?.detail || e.message))
+    } finally {
+      setExcluindoLanc(false)
+    }
   }
 
   const totalPorTipo = lancamentos.reduce<Record<string, number>>((acc, l) => {
@@ -4866,6 +4986,18 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
           </table>
         )}
       </div>
+
+      {/* Confirmar exclusão de lançamento (substitui window.confirm) */}
+      <Confirm
+        open={confirmExcluirId !== null}
+        title="Excluir lançamento?"
+        body={<p>Esta operação remove o lançamento financeiro permanentemente. Os totais do DRE do mês serão recalculados.</p>}
+        confirmLabel="Excluir"
+        danger
+        loading={excluindoLanc}
+        onConfirm={executarExcluirLancamento}
+        onCancel={() => setConfirmExcluirId(null)}
+      />
     </div>
   )
 }
@@ -5230,11 +5362,11 @@ function BPPage() {
     }
   }
 
-  const fecharBP = async () => {
-    if (dirty) {
-      if (!confirm('Há alterações não salvas. Salvar antes de fechar?')) return
-      await salvarRascunho()
-    }
+  const [confirmFecharSalvar, setConfirmFecharSalvar] = useState(false)
+  const [fechandoBP, setFechandoBP] = useState(false)
+
+  const executarFechamento = async () => {
+    setFechandoBP(true)
     try {
       const res = await axios.post(`${API_URL}/bp/fechar?mes=${mes}`)
       setBp(res.data)
@@ -5247,7 +5379,24 @@ function BPPage() {
       } else {
         alert('Falha ao fechar: ' + (d || e.message))
       }
+    } finally {
+      setFechandoBP(false)
     }
+  }
+
+  const fecharBP = async () => {
+    if (dirty) {
+      // dispara modal: usuário decide se salva antes ou cancela
+      setConfirmFecharSalvar(true)
+      return
+    }
+    await executarFechamento()
+  }
+
+  const confirmarSalvarEFechar = async () => {
+    setConfirmFecharSalvar(false)
+    await salvarRascunho()
+    await executarFechamento()
   }
 
   const auditarBP = async () => {
@@ -5358,6 +5507,23 @@ function BPPage() {
           {tab === 'historico' && <BPHistoricoView onSelect={(m) => { setMes(m); setTab('resumo') }} />}
         </>
       )}
+
+      {/* Confirmar salvar antes de fechar (substitui window.confirm) */}
+      <Confirm
+        open={confirmFecharSalvar}
+        title="Salvar antes de fechar?"
+        body={
+          <p>
+            Há <strong>alterações não salvas</strong> no rascunho. O fechamento valida
+            a equação fundamental usando os valores persistidos. Salvar agora antes
+            de tentar fechar?
+          </p>
+        }
+        confirmLabel="Salvar e fechar"
+        loading={fechandoBP}
+        onConfirm={confirmarSalvarEFechar}
+        onCancel={() => setConfirmFecharSalvar(false)}
+      />
     </div>
   )
 }
