@@ -456,25 +456,27 @@ async def simulate_promo(req: schemas.SimulacaoRequest, db: Session = Depends(ge
     )
     return res
 
-@app.post("/entradas/bulk")
+@app.post("/entradas/bulk", response_model=schemas.BulkOperationResponse)
 async def bulk_entries(req: schemas.EntradaBulkRequest, db: Session = Depends(get_db)):
-    # Special logic to create products if they don't exist yet during bulk entry
+    # Pre-link de grupo para produtos já existentes (mantém comportamento legado:
+    # quando o cliente envia produto_id + grupo_id, atualiza o grupo do produto
+    # ANTES de registrar a entrada — útil pra reclassificar via importação).
     for e in req.entradas:
-        # Link products to categories if provided even if already exist
         if e.produto_id and e.grupo_id:
-             prod = db.query(models.Produto).filter(models.Produto.id == e.produto_id).first()
-             if prod:
-                 prod.grupo_id = e.grupo_id
-                 db.commit()
+            prod = db.query(models.Produto).filter(models.Produto.id == e.produto_id).first()
+            if prod:
+                prod.grupo_id = e.grupo_id
+                db.commit()
 
-    success = await estoque_service.registrar_entrada_bulk(db, req.entradas)
-    return {"status": "success" if success else "error"}
+    info = estoque_service.registrar_entrada_bulk(db, req.entradas)
+    return {"ok": len(info["erros"]) == 0, **info}
 
-@app.post("/vendas/bulk")
+
+@app.post("/vendas/bulk", response_model=schemas.BulkOperationResponse)
 async def bulk_sales(req: schemas.VendaBulkRequest, db: Session = Depends(get_db)):
     vendas_list = [v.model_dump() for v in req.vendas]
-    success = estoque_service.registrar_venda_bulk(db, vendas_list)
-    return {"status": "success" if success else "error"}
+    info = estoque_service.registrar_venda_bulk(db, vendas_list)
+    return {"ok": len(info["erros"]) == 0, **info}
 
 @app.post("/fechamento", response_model=schemas.AnaliseFechamentoResponse)
 async def registrar_fechamento(req: schemas.FechamentoVendaRequest, db: Session = Depends(get_db)):
@@ -981,7 +983,7 @@ async def excluir_promocao(promocao_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.post("/simular/grupo")
+@app.post("/simular/grupo", response_model=schemas.SimulacaoPorGrupoResponse)
 async def simular_por_grupo(
     req: schemas.SimulacaoPorGrupoRequest, db: Session = Depends(get_db)
 ):

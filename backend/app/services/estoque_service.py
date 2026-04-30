@@ -2,7 +2,7 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date, datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from .. import models, schemas
 import uuid
 
@@ -107,10 +107,30 @@ def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
         return True
     return False
 
-async def registrar_entrada_bulk(db: Session, entradas: list):
-    for e in entradas:
-        registrar_entrada(db, e)
-    return True
+def registrar_entrada_bulk(db: Session, entradas: list) -> Dict[str, Any]:
+    """
+    Registra um lote de entradas. NÃO transacional — cada entrada tem commit
+    próprio em registrar_entrada(). Falha de uma não afeta as outras.
+
+    Retorna {registradas, total, erros}, no padrão BulkOperationResponse.
+    """
+    registradas = 0
+    erros: List[Dict[str, Any]] = []
+    for i, e in enumerate(entradas):
+        try:
+            ok = registrar_entrada(db, e)
+            if ok:
+                registradas += 1
+            else:
+                erros.append({
+                    "indice": i,
+                    "erro": "produto não pôde ser identificado nem criado (faltam dados)",
+                })
+        except ValueError as exc:
+            erros.append({"indice": i, "erro": str(exc)})
+        except Exception as exc:
+            erros.append({"indice": i, "erro": f"falha inesperada: {exc}"})
+    return {"registradas": registradas, "total": len(entradas), "erros": erros}
 
 
 def backfill_vendas_diarias_sku(db: Session) -> dict:
@@ -157,7 +177,7 @@ def backfill_vendas_diarias_sku(db: Session) -> dict:
     db.commit()
     return {"skipped": False, "vendas_lidas": len(vendas), "dias_criados": dias_criados}
 
-def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None):
+def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None) -> Dict[str, Any]:
     """
     Registra lote de vendas (fechamento do dia), baixa estoque, grava:
       - Venda (linha por item lançado)
@@ -167,18 +187,28 @@ def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None
 
     data_fechamento: data alvo do fechamento (default = hoje). Permite refazer
     fechamento de dia retroativo sem perder histórico.
+
+    Retorna {registradas, total, erros}, no padrão BulkOperationResponse.
+    Vendas com produto_id inexistente são puladas e listadas em `erros`.
     """
     if data_fechamento is None:
         data_fechamento = date.today()
 
     # Acumulador por produto para consolidar agregado diário
     agg_por_produto = {}
+    registradas = 0
+    erros: List[Dict[str, Any]] = []
 
-    for v in vendas:
+    for i, v in enumerate(vendas):
         v_schema = schemas.VendaBulkItem(**v)
         produto = db.query(models.Produto).filter(models.Produto.id == v_schema.produto_id).first()
         if not produto:
+            erros.append({
+                "indice": i,
+                "erro": f"produto_id {v_schema.produto_id} não encontrado",
+            })
             continue
+        registradas += 1
 
         custo_unit = produto.custo if produto.custo else 0.0
         receita_item = v_schema.quantidade * v_schema.preco_venda
@@ -286,7 +316,11 @@ def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None
         db.add(hist)
 
     db.commit()
-    return True
+    return {
+        "registradas": registradas,
+        "total": len(vendas),
+        "erros": erros,
+    }
 
 
 # ============================================================================

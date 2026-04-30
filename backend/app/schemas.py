@@ -315,6 +315,35 @@ class ExclusaoResponse(BaseModel):
     detalhe: Dict[str, Any]
 
 
+class BulkOperationResponse(BaseModel):
+    """
+    Resposta padrão de endpoints /<recurso>/bulk (entradas, vendas).
+
+    `registradas` é o número de itens efetivamente persistidos; `total` é o
+    tamanho do payload original. Falhas individuais ficam em `erros` com
+    {indice, erro} — útil pra UI sinalizar linha a linha sem bloquear o
+    lote inteiro.
+    """
+    ok: bool
+    registradas: int
+    total: int
+    erros: List[Dict[str, Any]] = []
+
+
+class SimulacaoPorGrupoResponse(BaseModel):
+    """
+    Resposta de POST /simular/grupo: aplica o desconto em todos os SKUs
+    ativos do grupo e retorna o impacto consolidado.
+    """
+    grupo_id: int
+    sku_ids: List[int]
+    qtd_skus: int
+    margem_atual: float
+    nova_margem_estimada: float
+    impacto_pp: float
+    status: str   # 'seguro' | 'alerta' | 'bloqueado'
+
+
 # ============================================================================
 # DRE
 # ============================================================================
