@@ -10,8 +10,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
+
+# Leitura lazy: cada chamada releitora `os.environ`. Evita o pitfall de
+# avaliar no import (se a env var é setada depois do startup, a versão
+# top-level nunca via). Custo é desprezível (lookup de hash table).
+def _api_key() -> Optional[str]:
+    return os.getenv("OPENROUTER_API_KEY")
+
+
+def _model() -> str:
+    return os.getenv("OPENROUTER_MODEL", "openrouter/auto")
 
 def get_smart_suggestions(db: Session) -> List[schemas.Sugestao]:
     # 1. Gather Context
@@ -19,7 +27,7 @@ def get_smart_suggestions(db: Session) -> List[schemas.Sugestao]:
     grupos = db.query(models.Grupo).all()
     
     # 2. Try AI First
-    if OPENROUTER_API_KEY:
+    if _api_key():
         ai_suggestions = get_ai_suggestions(produtos, grupos)
         if ai_suggestions:
             return ai_suggestions
@@ -76,14 +84,14 @@ def get_ai_suggestions(produtos, grupos) -> List[schemas.Sugestao]:
         """
 
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {_api_key()}",
             "HTTP-Referer": "http://localhost:3000",
             "X-Title": "PromoMargem",
             "Content-Type": "application/json"
         }
 
         payload = {
-            "model": OPENROUTER_MODEL,
+            "model": _model(),
             "messages": [
                 {"role": "system", "content": "Você é um especialista em margem de lucro e precificação. Retorne apenas JSON puro sem markdown."},
                 {"role": "user", "content": prompt}
@@ -205,14 +213,14 @@ async def get_ai_chat_response(db: Session, messages: List[schemas.ChatMessage])
         full_messages.append({"role": m.role, "content": m.content})
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {_api_key()}",
         "HTTP-Referer": "http://localhost:3000",
         "X-Title": "PromoMargem",
         "Content-Type": "application/json"
     }
 
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": _model(),
         "messages": full_messages
     }
 
@@ -273,7 +281,7 @@ async def get_narrativa_fechamento(
 
     narrativa = None
     fonte = "template"
-    if OPENROUTER_API_KEY:
+    if _api_key():
         narrativa = await _gerar_narrativa_ia(payload_contexto)
         if narrativa:
             fonte = "ia"
@@ -315,13 +323,13 @@ REGRAS:
 - Não inclua títulos tipo "Briefing de Fechamento" — comece direto pela manchete
 """
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {_api_key()}",
         "HTTP-Referer": "http://localhost:3000",
         "X-Title": "PromoMargem - Narrativa",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": _model(),
         "messages": [
             {"role": "system", "content": "Você é um consultor comercial sênior. Responda apenas com o briefing em markdown, nada mais."},
             {"role": "user", "content": prompt},

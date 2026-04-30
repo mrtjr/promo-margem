@@ -1,0 +1,44 @@
+# .dockerignore (raiz) — aplicado a TODOS os contextos do compose.
+# Exclui o que nenhum dos serviços (backend / frontend) precisa no build.
+
+# Git e ferramental
+.git
+.gitignore
+.gitattributes
+.claude
+
+# Caches e builds locais
+__pycache__
+*.py[cod]
+*.pyo
+node_modules
+dist
+.vite
+.pytest_cache
+*.egg-info
+
+# Env e secrets — nunca pra dentro da imagem
+.env
+.env.*
+!.env.example
+
+# Dados pesados / amostras (CSVs, planilhas, exports)
+*.csv
+*.xlsx
+*.xls
+postgres_data
+
+# Documentação e scripts de operador
+docs
+*.md
+*.ps1
+
+# IDE / OS
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Scratch / debug
+narr.json
+*.narr.json

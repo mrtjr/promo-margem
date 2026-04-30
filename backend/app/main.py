@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 from contextlib import asynccontextmanager
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from dataclasses import asdict
 from datetime import date as date_type, timedelta
@@ -107,10 +107,50 @@ async def lifespan(app: "FastAPI"):
 
 app = FastAPI(title="PromoMargem API", version="0.12.0", lifespan=lifespan)
 
+# CORS — permite que o frontend rode em outra origin (ex: vite dev em :5173)
+# enquanto fala com o backend em :8000. Em produção via Docker o tráfego
+# passa pelo nginx no mesmo origin, então o middleware é no-op.
+# Customizar via env var CORS_ORIGINS=https://app.exemplo.com,https://outra.com
+from fastapi.middleware.cors import CORSMiddleware
+
+_cors_default = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173"
+_cors_origins = [
+    o.strip() for o in os.getenv("CORS_ORIGINS", _cors_default).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to PromoMargem API - Smart Version"}
+
+
+@app.get("/health")
+async def health(db: Session = Depends(get_db)):
+    """
+    Health-check de liveness + readiness.
+
+    - 200 + {status: 'ok', db: True, version}: app saudável e DB acessível.
+    - 503 + {status: 'down', db: False, error}: app de pé mas DB inalcançável.
+
+    Usado pelo docker-compose healthcheck do container backend e por
+    monitoramento externo (load balancer, uptime checks).
+    """
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok", "db": True, "version": app.version}
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "down", "db": False, "error": str(e)},
+        )
 
 @app.get("/sugestoes", response_model=List[schemas.Sugestao])
 async def get_sugestoes(db: Session = Depends(get_db)):

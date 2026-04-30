@@ -10,6 +10,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d promo_margem"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   backend:
     build: ./backend
@@ -18,8 +24,18 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://user:password@db:5432/promo_margem
+      # CORS_ORIGINS: customize via env (default cobre localhost:3000 e :5173)
+      # OPENROUTER_API_KEY: opcional, ativa sugestões IA
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Usa python puro pra evitar dependência de curl/wget na imagem slim
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   frontend:
     build: ./frontend
@@ -27,7 +43,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_started
 
 volumes:
   postgres_data:
