@@ -631,26 +631,32 @@ def commit_importacao(
         # ENTRADA espelho: quando o produto foi criado/reativado/teve custo
         # corrigido nesta importação OU quando ele perdeu o histórico de
         # ENTRADA na substituição, a SAÍDA da venda fica sem origem contábil.
-        # Registra ENTRADA no início do dia (00:00) com a mesma quantidade e
-        # o custo recém-estabelecido. Isso:
-        #   - mantém o Histórico de Movimentações balanceado (ENTRADA → SAÍDA);
-        #   - alimenta o estoque para que a baixa subsequente tenha de onde sair;
-        #   - documenta no audit trail a procedência do custo.
+        #
+        # Regra (v0.13.1+): cria ENTRADA-espelho APENAS na quantidade que
+        # falta para atender a venda — `max(0, qtd_venda - estoque_atual)`.
+        # Quando o estoque já cobre a venda, não cria nada (evita poluir o
+        # histórico com ENTRADAs fantasmas que não correspondem a compra real).
+        #   - Caso 1 (produto novo): estoque=0 → entra qtd total da venda.
+        #   - Caso 2 (estoque suficiente): nada é criado.
+        #   - Caso 3 (estoque parcial): entra só o déficit.
         if estabeleceu_custo:
-            ts_entrada = datetime.combine(data_alvo, datetime.min.time())
-            mov_in = models.Movimentacao(
-                produto_id=produto.id,
-                tipo="ENTRADA",
-                quantidade=qtd,
-                peso=0,  # CSV de fechamento não traz peso; entra zerado
-                custo_unitario=custo_unit,
-                data=ts_entrada,
-            )
-            db.add(mov_in)
-            # Atualiza estoque para refletir a entrada antes da SAÍDA. Sem
-            # isso a baixa abaixo seria no-op (estoque já zero) e o produto
-            # ficaria com qtd negativa virtual.
-            produto.estoque_qtd = (produto.estoque_qtd or 0) + qtd
+            estoque_atual = produto.estoque_qtd or 0
+            qtd_entrada = max(0.0, qtd - estoque_atual)
+            if qtd_entrada > 0:
+                ts_entrada = datetime.combine(data_alvo, datetime.min.time())
+                mov_in = models.Movimentacao(
+                    produto_id=produto.id,
+                    tipo="ENTRADA",
+                    quantidade=qtd_entrada,
+                    peso=0,  # CSV de fechamento não traz peso; entra zerado
+                    custo_unitario=custo_unit,
+                    data=ts_entrada,
+                )
+                db.add(mov_in)
+                # Atualiza estoque para refletir a entrada parcial antes da
+                # SAÍDA. Sem isso, a baixa abaixo deixaria o produto com
+                # qtd negativa virtual quando estoque < venda.
+                produto.estoque_qtd = estoque_atual + qtd_entrada
 
         # Baixa estoque proporcional ao peso médio atual
         peso_baixado = 0.0
