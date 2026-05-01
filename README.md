@@ -354,6 +354,57 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 
 Histórico de versões publicadas. Cada release tem tag `vX.Y.Z` no GitHub e nota de release detalhada em [Releases](../../releases).
 
+### v0.12.1 — Manutenção P0/P1/P2/P3 · *2026-05-01*
+> Apertando os parafusos: 7 bugs reais corrigidos, performance do solver, +23 cenários de teste E2E, dead code removido, API consistente, frontend tipado, DevOps endurecido. Zero feature nova.
+
+**🔴 P0 — Bugs reais (silent failures)**
+- `PATCH /produtos/{id}` agora persiste `bloqueado_engine` (toggle de blacklist do Engine estava silenciosamente quebrado).
+- Aprovar cesta no Engine não re-roda mais o solver (cada clique antes criava 3 cestas órfãs).
+- Dashboard `/stats` busca só no mount (antes refazia em todo page change → 30+ requests/sessão).
+- Startup não destrói mais grupos com nomes diferentes do hardcoded; `seed_grupos_padrao` é idempotente e NÃO destrutivo.
+- Fallback `grupo_id=1` substituído por `_primeiro_grupo_id()` dinâmico.
+- `@app.on_event("startup")` migrado para `lifespan` context manager.
+- 5× Pydantic v1 `.dict()` substituídos por `.model_dump()`.
+
+**🟡 P1 — Performance**
+- Solver Engine: cache de `produtos_all` reduz **~6N+15 queries → 1** por `/propor`.
+- `_recalcular_produto_do_zero`: 3 queries → 1 com `tipo.in_(...)`.
+- Migration `m_009_indices_performance`: índices compostos `(produto_id, data DESC)` em `movimentacoes` e `vendas`.
+- Bench documentado em `bench_p1_perf.py`.
+
+**🟠 P2 — Testes (4 suítes novas, 23 cenários)**
+- `test_csv_fechamento_e2e.py` — caminho mais crítico do produto (parse + match + idempotência) cobrindo 750 linhas de service.
+- `test_bp_e2e.py` — equação fundamental, redutoras, ciclo de vida, indicadores.
+- `test_estoque_reversao_e2e.py` — `excluir_entrada` / `excluir_venda` (CMP recalc, orfanização, isolamento por dia).
+- `test_forecast_e2e.py` — cascata de confianças + DoW factor.
+
+**🟤 P3 — Cleanup**
+- `Movimentacao.peso_medida` (campo legado) removido. Migration `m_010_drop_peso_medida` aplica `DROP COLUMN`.
+- Import órfão `from sqlalchemy import and_` removido.
+
+**🟣 P3 — API consistente**
+- `BulkOperationResponse {ok, registradas, total, erros}` padroniza `/entradas/bulk` e `/vendas/bulk`.
+- `SimulacaoPorGrupoResponse` adiciona schema ao `/simular/grupo`.
+- `registrar_entrada_bulk` deixa de ser `async` desnecessário.
+
+**🟢 P3 — Frontend hygiene**
+- `src/types.ts` com `Produto`, `Grupo`, `Stats` canônicos.
+- 9 `useState<any>` quentes tipados (TS pegou bug latente em `RelatoriosPage`: `produtos.find()` podia retornar `undefined`).
+- `VITE_API_URL` env var com fallback `/api` + `vite-env.d.ts` + `.env.example`.
+- Componente `<Confirm>` reutilizável substitui 3 `confirm()` nativos (Reconciliar / Excluir lançamento / Salvar antes de fechar BP).
+
+**⚪ P3 — DevOps**
+- `.dockerignore` em 3 níveis — build context limpo (corte ~200MB de `node_modules` no frontend).
+- `CORSMiddleware` com env var `CORS_ORIGINS` — destrava `npm run dev` falando com backend em porta separada.
+- Endpoint `GET /health` (DB check + 503 quando DB down).
+- Healthchecks no `docker-compose.yml` (`pg_isready` + `service_healthy`).
+- Lazy-load de `OPENROUTER_API_KEY` (era avaliado no import → setar a var depois do startup não tinha efeito).
+
+**Validação final**
+- 8 suítes E2E verdes (54+ cenários) — zero regressão.
+- `tsc --noEmit` exit 0; `vite build` exit 0.
+- Migrations m_007–m_010 aplicadas idempotentemente em PostgreSQL.
+
 ### v0.12.0 — Engine de Promoção orientada a meta · *2026-04-25*
 > Solver inverso: meta de margem semanal → 3 cestas de SKUs com desconto, projeção e risco de stockout. Tudo aprovável em 1 clique.
 
