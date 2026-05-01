@@ -385,6 +385,98 @@ def test_7_resolucao_criar_aplica():
 
 
 # ===========================================================================
+# Cenário 8: Estoque suficiente → NÃO cria ENTRADA-espelho (regra v0.13.1)
+# ===========================================================================
+
+def test_8_estoque_suficiente_nao_cria_entrada():
+    print("\n=== Cenario 8: estoque >= venda -> sem ENTRADA-espelho ===")
+    _, db = setup_db()
+    g = seed_grupo(db)
+    # Produto SEM histórico de ENTRADA mas COM estoque (cenário ex: importou
+    # produtos via outro caminho que ajustou estoque mas não logou ENTRADA;
+    # ou todas as ENTRADAs antigas foram apagadas em algum cleanup).
+    p = models.Produto(
+        sku="ST-OK", codigo="STK", nome="Produto Estoque OK",
+        grupo_id=g.id, custo=10.0, preco_venda=15.0,
+        estoque_qtd=100, estoque_peso=100, ativo=True,
+    )
+    db.add(p); db.commit(); db.refresh(p)
+    # Garantir que NÃO há ENTRADA — só o produto direto no banco
+    assert db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == p.id,
+        models.Movimentacao.tipo == "ENTRADA",
+    ).count() == 0, "fixture inválido: produto não pode ter ENTRADA"
+
+    data_alvo = date(2026, 4, 25)
+    payload = csv_bytes([
+        # Vende 30 — tem 100 em estoque, sobra 70.
+        linha_pedido(1, "25/04/2026", "STK", "Produto Estoque OK", 30.0, 15.00, 450.00),
+    ])
+    preview = fechamento_csv_service.build_preview(db, payload, data_alvo)
+    fechamento_csv_service.commit_importacao(db, preview["linhas"], [], data_alvo)
+
+    # Estoque depois: 100 - 30 = 70 (sem ENTRADA-espelho)
+    db.refresh(p)
+    assert p.estoque_qtd == 70.0, f"estoque pos-CSV: {p.estoque_qtd} (esperado 70)"
+
+    # NENHUMA ENTRADA criada
+    n_entradas = db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == p.id,
+        models.Movimentacao.tipo == "ENTRADA",
+    ).count()
+    assert n_entradas == 0, f"ENTRADA-espelho indevida (count={n_entradas})"
+
+    # SAIDA criada (1)
+    n_saidas = db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == p.id,
+        models.Movimentacao.tipo == "SAIDA",
+    ).count()
+    assert n_saidas == 1, f"esperava 1 SAIDA, got {n_saidas}"
+    print(f"OK: estoque 100→70, ZERO ENTRADAs fantasma criadas")
+
+
+# ===========================================================================
+# Cenário 9: Estoque parcial → ENTRADA-espelho APENAS da diferença
+# ===========================================================================
+
+def test_9_estoque_parcial_cria_apenas_diferenca():
+    print("\n=== Cenario 9: estoque parcial -> ENTRADA-espelho da diferenca ===")
+    _, db = setup_db()
+    g = seed_grupo(db)
+    # Produto sem ENTRADA histórica, com estoque parcial (10 un)
+    p = models.Produto(
+        sku="ST-PC", codigo="STKPARC", nome="Produto Estoque Parcial",
+        grupo_id=g.id, custo=10.0, preco_venda=15.0,
+        estoque_qtd=10, estoque_peso=10, ativo=True,
+    )
+    db.add(p); db.commit(); db.refresh(p)
+
+    data_alvo = date(2026, 4, 25)
+    payload = csv_bytes([
+        # Vende 30 — tem só 10 → precisa de ENTRADA-espelho de 20 (diferença)
+        linha_pedido(1, "25/04/2026", "STKPARC", "Produto Estoque Parcial",
+                     30.0, 15.00, 450.00),
+    ])
+    preview = fechamento_csv_service.build_preview(db, payload, data_alvo)
+    fechamento_csv_service.commit_importacao(db, preview["linhas"], [], data_alvo)
+
+    # Estoque final: começou em 10, entrou 20 (espelho), saiu 30 → fica 0
+    db.refresh(p)
+    assert p.estoque_qtd == 0.0, f"estoque pos-CSV: {p.estoque_qtd} (esperado 0)"
+
+    # 1 ENTRADA-espelho criada com qtd = 20 (diferença), não 30 (venda total)
+    entradas = db.query(models.Movimentacao).filter(
+        models.Movimentacao.produto_id == p.id,
+        models.Movimentacao.tipo == "ENTRADA",
+    ).all()
+    assert len(entradas) == 1, f"esperava 1 ENTRADA-espelho, got {len(entradas)}"
+    assert entradas[0].quantidade == 20.0, \
+        f"qtd da ENTRADA-espelho deveria ser 20 (diferenca), got {entradas[0].quantidade}"
+    assert entradas[0].custo_unitario == 10.0
+    print(f"OK: ENTRADA-espelho criada com qtd=20 (deficit), nao 30 (venda total)")
+
+
+# ===========================================================================
 # Runner
 # ===========================================================================
 
@@ -398,6 +490,8 @@ if __name__ == "__main__":
         test_5_sem_custo_bloqueia_commit,
         test_6_reimport_idempotente,
         test_7_resolucao_criar_aplica,
+        test_8_estoque_suficiente_nao_cria_entrada,
+        test_9_estoque_parcial_cria_apenas_diferenca,
     ]
     falhas = 0
     for t in tests:
