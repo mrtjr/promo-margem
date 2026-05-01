@@ -28,6 +28,8 @@ from .services import (
     quebra_service,
     elasticidade_service,
     engine_promocao_service,
+    dfc_service,
+    dmpl_service,
 )
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
@@ -105,7 +107,7 @@ async def lifespan(app: "FastAPI"):
     # Shutdown: nada a fazer hoje (sem conexões persistentes pra fechar).
 
 
-app = FastAPI(title="PromoMargem API", version="0.12.0", lifespan=lifespan)
+app = FastAPI(title="PromoMargem API", version="0.13.0", lifespan=lifespan)
 
 # CORS — permite que o frontend rode em outra origin (ex: vite dev em :5173)
 # enquanto fala com o backend em :8000. Em produção via Docker o tráfego
@@ -959,6 +961,49 @@ async def bp_excluir(bp_id: int, db: Session = Depends(get_db)):
     """Exclui BP. Só permite se status=rascunho."""
     bp_service.excluir_bp(db, bp_id)
     return {"ok": True, "id": bp_id}
+
+
+# ============================================================================
+# DFC + DMPL (v0.13) — derivações on-demand sobre BP + DRE
+# ============================================================================
+
+@app.get("/dfc", response_model=schemas.DFCMensalOut)
+async def dfc_mensal(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Demonstração dos Fluxos de Caixa do mês (método indireto).
+
+    Pré-requisito: BP do mês N e BP do mês N-1 existirem. Se faltar o
+    anterior, retorna `disponivel=false` com mensagem explicativa
+    (não é erro — é orientação ao usuário).
+    """
+    competencia = _parse_mes(mes)
+    return asdict(dfc_service.calcular_dfc_mes(db, competencia))
+
+
+@app.get("/dfc/comparativo", response_model=List[schemas.DFCComparativoPonto])
+async def dfc_comparativo(
+    ate: Optional[str] = None,
+    meses: int = 12,
+    db: Session = Depends(get_db),
+):
+    """Série dos últimos `meses` meses até `ate`. Para gráficos de tendência."""
+    if not 1 <= meses <= 36:
+        raise HTTPException(status_code=400, detail="meses deve estar entre 1 e 36")
+    ate_dt = _parse_mes(ate)
+    return dfc_service.comparativo_dfc(db, ate_dt, meses=meses)
+
+
+@app.get("/dmpl", response_model=schemas.DMPLMensalOut)
+async def dmpl_mensal(mes: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Demonstração das Mutações do Patrimônio Líquido do mês.
+
+    Lucro Líquido vai automático para Lucros Acumulados; o resto das
+    variações cai em "Outras movimentações" (catch-all). Se BP do mês
+    anterior não existir, considera saldo inicial zero (primeiro mês).
+    """
+    competencia = _parse_mes(mes)
+    return asdict(dmpl_service.calcular_dmpl_mes(db, competencia))
 
 
 # ============================================================================
