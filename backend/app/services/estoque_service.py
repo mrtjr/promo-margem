@@ -2,9 +2,24 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date, datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from .. import models, schemas
 import uuid
+
+def _primeiro_grupo_id(db: Session) -> int:
+    """
+    Retorna o ID do primeiro grupo cadastrado (menor id). Usado como fallback
+    quando entrada não especifica grupo. Levanta ValueError se não há nenhum
+    — caller traduz pra 4xx adequado.
+    """
+    g = db.query(models.Grupo).order_by(models.Grupo.id.asc()).first()
+    if not g:
+        raise ValueError(
+            "Nenhum grupo cadastrado no sistema. Cadastre pelo menos um grupo "
+            "antes de registrar entradas."
+        )
+    return g.id
+
 
 def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
     # Determine which product. Camadas de matching:
@@ -24,12 +39,16 @@ def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
         if not produto:
             # Create new product automatically. Aceita código se enviado —
             # fica disponível para matching futuro (ex.: CSV do ERP).
+            # Fallback de grupo: se não enviou, usa o primeiro grupo cadastrado
+            # (ordem por id), nunca um id hardcoded — evita FK órfã se grupo
+            # 1 foi deletado historicamente.
+            grupo_id_final = entrada.grupo_id or _primeiro_grupo_id(db)
             new_sku = f"AUTO-{uuid.uuid4().hex[:6].upper()}"
             produto = models.Produto(
                 sku=new_sku,
                 codigo=codigo_norm,
                 nome=entrada.nome_produto,
-                grupo_id=entrada.grupo_id or 1, # Default to first group if none
+                grupo_id=grupo_id_final,
                 custo=entrada.custo_unitario,
                 preco_venda=entrada.custo_unitario * 1.2, # Markup inicial de 20%
                 estoque_qtd=0,
@@ -82,17 +101,36 @@ def registrar_entrada(db: Session, entrada: schemas.EntradaCreate):
             peso=entrada.peso,
             custo_unitario=entrada.custo_unitario,
             cidade=entrada.cidade,
-            peso_medida=None
         )
         db.add(mov)
         db.commit()
         return True
     return False
 
-async def registrar_entrada_bulk(db: Session, entradas: list):
-    for e in entradas:
-        registrar_entrada(db, e)
-    return True
+def registrar_entrada_bulk(db: Session, entradas: list) -> Dict[str, Any]:
+    """
+    Registra um lote de entradas. NÃO transacional — cada entrada tem commit
+    próprio em registrar_entrada(). Falha de uma não afeta as outras.
+
+    Retorna {registradas, total, erros}, no padrão BulkOperationResponse.
+    """
+    registradas = 0
+    erros: List[Dict[str, Any]] = []
+    for i, e in enumerate(entradas):
+        try:
+            ok = registrar_entrada(db, e)
+            if ok:
+                registradas += 1
+            else:
+                erros.append({
+                    "indice": i,
+                    "erro": "produto não pôde ser identificado nem criado (faltam dados)",
+                })
+        except ValueError as exc:
+            erros.append({"indice": i, "erro": str(exc)})
+        except Exception as exc:
+            erros.append({"indice": i, "erro": f"falha inesperada: {exc}"})
+    return {"registradas": registradas, "total": len(entradas), "erros": erros}
 
 
 def backfill_vendas_diarias_sku(db: Session) -> dict:
@@ -139,7 +177,7 @@ def backfill_vendas_diarias_sku(db: Session) -> dict:
     db.commit()
     return {"skipped": False, "vendas_lidas": len(vendas), "dias_criados": dias_criados}
 
-def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None):
+def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None) -> Dict[str, Any]:
     """
     Registra lote de vendas (fechamento do dia), baixa estoque, grava:
       - Venda (linha por item lançado)
@@ -149,18 +187,28 @@ def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None
 
     data_fechamento: data alvo do fechamento (default = hoje). Permite refazer
     fechamento de dia retroativo sem perder histórico.
+
+    Retorna {registradas, total, erros}, no padrão BulkOperationResponse.
+    Vendas com produto_id inexistente são puladas e listadas em `erros`.
     """
     if data_fechamento is None:
         data_fechamento = date.today()
 
     # Acumulador por produto para consolidar agregado diário
     agg_por_produto = {}
+    registradas = 0
+    erros: List[Dict[str, Any]] = []
 
-    for v in vendas:
+    for i, v in enumerate(vendas):
         v_schema = schemas.VendaBulkItem(**v)
         produto = db.query(models.Produto).filter(models.Produto.id == v_schema.produto_id).first()
         if not produto:
+            erros.append({
+                "indice": i,
+                "erro": f"produto_id {v_schema.produto_id} não encontrado",
+            })
             continue
+        registradas += 1
 
         custo_unit = produto.custo if produto.custo else 0.0
         receita_item = v_schema.quantidade * v_schema.preco_venda
@@ -268,7 +316,11 @@ def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None
         db.add(hist)
 
     db.commit()
-    return True
+    return {
+        "registradas": registradas,
+        "total": len(vendas),
+        "erros": erros,
+    }
 
 
 # ============================================================================
@@ -284,20 +336,25 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
     Semântica de `Movimentacao.peso`:
       - ENTRADA: peso unitário (peso contribuído = qtd × peso)
       - SAIDA:   peso total baixado da venda (peso consumido = peso)
+      - QUEBRA:  peso total perdido (peso consumido = peso)
 
     CMP = Σ(peso_entrada_i × custo_unit_i) / Σ(peso_entrada_i)
     Se não sobrar entrada, CMP=0.
 
-    Retorna dict {qtd, peso, custo, entradas, saidas} com o estado recalculado.
+    QUEBRA reduz estoque (qtd e peso) mas NÃO altera CMP — o produto perdido
+    sai pelo CMP atual, não muda a média ponderada das entradas remanescentes.
+
+    Retorna dict {qtd, peso, custo, entradas, saidas, quebras} com o estado.
     """
-    entradas = db.query(models.Movimentacao).filter(
+    # 1 query única particionada em Python (vs 3 round-trips). Beneficia
+    # diretamente do índice ix_mov_produto_data (m_009).
+    movs = db.query(models.Movimentacao).filter(
         models.Movimentacao.produto_id == produto.id,
-        models.Movimentacao.tipo == "ENTRADA",
+        models.Movimentacao.tipo.in_(("ENTRADA", "SAIDA", "QUEBRA")),
     ).all()
-    saidas = db.query(models.Movimentacao).filter(
-        models.Movimentacao.produto_id == produto.id,
-        models.Movimentacao.tipo == "SAIDA",
-    ).all()
+    entradas = [m for m in movs if m.tipo == "ENTRADA"]
+    saidas = [m for m in movs if m.tipo == "SAIDA"]
+    quebras = [m for m in movs if m.tipo == "QUEBRA"]
 
     # Soma ENTRADAS
     qtd_entrada = 0.0
@@ -316,9 +373,14 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
     qtd_saida = sum((s.quantidade or 0) for s in saidas)
     peso_saida = sum((s.peso or 0) for s in saidas)
 
+    # Soma QUEBRAS (peso já total — mesma semântica de SAIDA)
+    qtd_quebra = sum((q.quantidade or 0) for q in quebras)
+    peso_quebra = sum((q.peso or 0) for q in quebras)
+
     # Estoque efetivo
-    produto.estoque_qtd = max(0.0, qtd_entrada - qtd_saida)
-    produto.estoque_peso = max(0.0, peso_entrada - peso_saida)
+    produto.estoque_qtd = max(0.0, qtd_entrada - qtd_saida - qtd_quebra)
+    produto.estoque_peso = max(0.0, peso_entrada - peso_saida - peso_quebra)
+    # CMP inalterado por QUEBRA — só depende das ENTRADAS
     produto.custo = (valor_entrada / peso_entrada) if peso_entrada > 0 else 0.0
 
     return {
@@ -327,6 +389,7 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
         "custo": produto.custo,
         "entradas": len(entradas),
         "saidas": len(saidas),
+        "quebras": len(quebras),
     }
 
 
@@ -689,6 +752,7 @@ def listar_historico_movimentacoes(
             "custo_unitario": mov.custo_unitario or 0,
             "valor_total": (mov.quantidade or 0) * (mov.custo_unitario or 0),
             "cidade": mov.cidade,
+            "motivo": mov.motivo,
             "data": mov.data.isoformat() if mov.data else None,
         })
     return resultado

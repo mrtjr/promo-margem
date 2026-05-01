@@ -64,6 +64,35 @@ Pipeline em duas fases — **preview** e **commit** — para o relatório `xRelV
 - **Configuração tributária** — regime, alíquota e PIS/COFINS ajustáveis.
 - **Fechar mês** — congela DRE, gera snapshot.
 
+### 🪄 Engine de Promoção orientado a meta · *novo em v0.12*
+Inverte o simulador: você informa a **meta de margem semanal** e o engine propõe **3 cestas rankeadas** (conservador, balanceado, agressivo) com SKUs, descontos sugeridos, projeções e risco de stockout — pronto pra aprovar.
+
+- **Elasticidade-preço por SKU** — regressão log-log sobre `VendaDiariaSKU` (90 dias). Quando dados são insuficientes (CV de preço <3% ou <10 obs), cai num **prior por classe ABC-XYZ** (de -0,8 para A-X até -2,2 para C-Z). Cache em `ElasticidadeSKU` com TTL 7d, recalculado no startup.
+- **Solver greedy multi-perfil** — para cada (SKU, nível de desconto), avalia contribuição marginal de lucro × risco de stockout × restrições de margem. Adiciona em ordem decrescente de score até atingir meta global. Sem dependências externas (numpy/pulp/ortools).
+- **3 perfis distintos**:
+  - **Conservador** maximiza lucro com `desconto_max=10%`
+  - **Balanceado** maximiza lucro irrestrito (default)
+  - **Agressivo** maximiza volume (sacrifica até 1pp de margem)
+- **Restrições do solver**:
+  - `desconto ≤ teto do grupo` (`Grupo.desconto_maximo_permitido`)
+  - `margem_pos_acao ≥ 5%` (piso técnico)
+  - `risco_stockout < 30%` (≥30% bloqueia o SKU; 15-30% = flag amarela)
+  - SKU não está em `Promocao(ativa)` cobrindo hoje
+  - SKU não tem `produtos.bloqueado_engine=TRUE` (**blacklist** editável por SKU na tela Produtos)
+- **Janela ideal heurística** — 7 dias default; estende a 14d se cobertura >14d (escoar encalhado); reduz a 3d se forecast com confiança baixa.
+- **Lifecycle**: `proposta → aprovada (cria Promocao rascunho) | descartada (manual) | expirada (24h+)`. Aprovar uma cesta automaticamente descarta as outras 2 do mesmo run. Auditoria completa em `cestas_promocao` + `cesta_itens`.
+- **UI** — aba "Engine" no Simulador + entrada de menu **Promo Inteligente** (atalho). 3 cards lado-a-lado com KPIs (margem proj, lucro semanal, SKUs, desconto médio); drawer expansível com cada SKU mostrando β, qualidade da elasticidade, cobertura pós-promo, risco. Toggle de blacklist no modal de edição de produto.
+
+### 💀 Quebras e Perdas · *novo em v0.11*
+Tipo de movimentação dedicado para perdas de estoque, separado de venda:
+- **4 motivos** padronizados — `vencimento`, `avaria`, `desvio`, `doacao` — validados por CHECK constraint no banco.
+- **Custo congelado no momento** — `custo_unitario` da `Movimentacao` recebe o CMP atual; reversão recalcula CMP a partir das ENTRADAs remanescentes (espelho de `excluir_entrada`).
+- **Não polui demanda** — quebra reduz estoque mas **não** cria `Venda` nem `VendaDiariaSKU`, mantendo forecast e ABC-XYZ limpos.
+- **Linha 4.2 do DRE** — `Lucro Bruto = Receita Líquida − CMV − Quebras` com conta contábil dedicada (`4.2 Quebras e Perdas de Estoque`, tipo CMV/DEBITO).
+- **UI dedicada** — formulário rápido (busca produto → qtd → motivo cartão), histórico filtrável, KPIs do mês (valor perdido, % faturamento vs benchmark ABRAS 1,5–2%, top 5 produtos com mais perda).
+- **Bulk transacional** — endpoint `/quebras/bulk` aceita lote com rollback total em qualquer falha.
+- **Dashboard** — KPI "Quebras (mês)" com semáforo verde <1,5% / âmbar 1,5–2% / vermelho >2%.
+
 ### 🧾 Balanço Patrimonial (BP) · *novo em v0.10*
 Módulo completo de BP mensal seguindo **Lei 6.404/76 art. 178 + CPC 26 (R1) + NBC TG 26 (R4)**:
 - **~65 campos** organizados em Ativo Circulante, Realizável a Longo Prazo, Investimentos, Imobilizado, Intangível, Passivo Circulante, Passivo Não Circulante e Patrimônio Líquido.
@@ -305,9 +334,10 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 - [x] **Fase 8** — DRE mensal + Simples Nacional
 - [x] **Fase 9** — Promoções (ciclo de vida + simulação)
 - [x] **Fase 10** — Balanço Patrimonial (BP) mensal + indicadores + ciclo rascunho/fechado/auditado
-- [ ] **Fase 11** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
-- [ ] **Fase 12** — Engine de promoção automática (gatilhos por margem/giro)
-- [ ] **Fase 13** — DFC (Demonstração de Fluxo de Caixa) + DMPL ligadas ao BP
+- [x] **Fase 11** — Quebras/Perdas como tipo de movimentação + linha 4.2 do DRE
+- [x] **Fase 12** — Engine de promoção orientada a meta (solver inverso + elasticidade + 3 perfis + blacklist)
+- [ ] **Fase 13** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
+- [ ] **Fase 14** — DFC (Demonstração de Fluxo de Caixa) + DMPL ligadas ao BP
 
 ---
 
@@ -323,6 +353,102 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 ## Releases
 
 Histórico de versões publicadas. Cada release tem tag `vX.Y.Z` no GitHub e nota de release detalhada em [Releases](../../releases).
+
+### v0.12.1 — Manutenção P0/P1/P2/P3 · *2026-05-01*
+> Apertando os parafusos: 7 bugs reais corrigidos, performance do solver, +23 cenários de teste E2E, dead code removido, API consistente, frontend tipado, DevOps endurecido. Zero feature nova.
+
+**🔴 P0 — Bugs reais (silent failures)**
+- `PATCH /produtos/{id}` agora persiste `bloqueado_engine` (toggle de blacklist do Engine estava silenciosamente quebrado).
+- Aprovar cesta no Engine não re-roda mais o solver (cada clique antes criava 3 cestas órfãs).
+- Dashboard `/stats` busca só no mount (antes refazia em todo page change → 30+ requests/sessão).
+- Startup não destrói mais grupos com nomes diferentes do hardcoded; `seed_grupos_padrao` é idempotente e NÃO destrutivo.
+- Fallback `grupo_id=1` substituído por `_primeiro_grupo_id()` dinâmico.
+- `@app.on_event("startup")` migrado para `lifespan` context manager.
+- 5× Pydantic v1 `.dict()` substituídos por `.model_dump()`.
+
+**🟡 P1 — Performance**
+- Solver Engine: cache de `produtos_all` reduz **~6N+15 queries → 1** por `/propor`.
+- `_recalcular_produto_do_zero`: 3 queries → 1 com `tipo.in_(...)`.
+- Migration `m_009_indices_performance`: índices compostos `(produto_id, data DESC)` em `movimentacoes` e `vendas`.
+- Bench documentado em `bench_p1_perf.py`.
+
+**🟠 P2 — Testes (4 suítes novas, 23 cenários)**
+- `test_csv_fechamento_e2e.py` — caminho mais crítico do produto (parse + match + idempotência) cobrindo 750 linhas de service.
+- `test_bp_e2e.py` — equação fundamental, redutoras, ciclo de vida, indicadores.
+- `test_estoque_reversao_e2e.py` — `excluir_entrada` / `excluir_venda` (CMP recalc, orfanização, isolamento por dia).
+- `test_forecast_e2e.py` — cascata de confianças + DoW factor.
+
+**🟤 P3 — Cleanup**
+- `Movimentacao.peso_medida` (campo legado) removido. Migration `m_010_drop_peso_medida` aplica `DROP COLUMN`.
+- Import órfão `from sqlalchemy import and_` removido.
+
+**🟣 P3 — API consistente**
+- `BulkOperationResponse {ok, registradas, total, erros}` padroniza `/entradas/bulk` e `/vendas/bulk`.
+- `SimulacaoPorGrupoResponse` adiciona schema ao `/simular/grupo`.
+- `registrar_entrada_bulk` deixa de ser `async` desnecessário.
+
+**🟢 P3 — Frontend hygiene**
+- `src/types.ts` com `Produto`, `Grupo`, `Stats` canônicos.
+- 9 `useState<any>` quentes tipados (TS pegou bug latente em `RelatoriosPage`: `produtos.find()` podia retornar `undefined`).
+- `VITE_API_URL` env var com fallback `/api` + `vite-env.d.ts` + `.env.example`.
+- Componente `<Confirm>` reutilizável substitui 3 `confirm()` nativos (Reconciliar / Excluir lançamento / Salvar antes de fechar BP).
+
+**⚪ P3 — DevOps**
+- `.dockerignore` em 3 níveis — build context limpo (corte ~200MB de `node_modules` no frontend).
+- `CORSMiddleware` com env var `CORS_ORIGINS` — destrava `npm run dev` falando com backend em porta separada.
+- Endpoint `GET /health` (DB check + 503 quando DB down).
+- Healthchecks no `docker-compose.yml` (`pg_isready` + `service_healthy`).
+- Lazy-load de `OPENROUTER_API_KEY` (era avaliado no import → setar a var depois do startup não tinha efeito).
+
+**Validação final**
+- 8 suítes E2E verdes (54+ cenários) — zero regressão.
+- `tsc --noEmit` exit 0; `vite build` exit 0.
+- Migrations m_007–m_010 aplicadas idempotentemente em PostgreSQL.
+
+### v0.12.0 — Engine de Promoção orientada a meta · *2026-04-25*
+> Solver inverso: meta de margem semanal → 3 cestas de SKUs com desconto, projeção e risco de stockout. Tudo aprovável em 1 clique.
+
+**Adicionado**
+- 🪄 `engine_promocao_service` (~570 linhas) — solver greedy multi-perfil (conservador / balanceado / agressivo).
+- 📈 `elasticidade_service` — regressão log-log sobre `VendaDiariaSKU` com fallback bayesiano por classe ABC-XYZ. Cache em `ElasticidadeSKU` com TTL 7d.
+- 🚫 Coluna `produtos.bloqueado_engine` (BOOLEAN) — **blacklist** editável SKU a SKU na tela Produtos.
+- 🗃️ Tabelas `cestas_promocao` + `cesta_itens` — propostas persistidas com status `proposta → aprovada | descartada | expirada`.
+- 🔌 7 endpoints REST: `POST /promocoes/engine/propor`, `GET /promocoes/engine/propostas`, `GET /promocoes/engine/propostas/{id}`, `POST /promocoes/engine/aprovar/{id}`, `POST /promocoes/engine/descartar/{id}`, `GET /promocoes/engine/elasticidades`, `POST /admin/recalcular-elasticidades`.
+- 🖼️ Aba **Engine** no Simulador + entrada de menu **Promo Inteligente** (atalho). 3 cards de cesta com KPIs e drawer expansível por SKU mostrando β, qualidade da elasticidade, cobertura pós-promo, risco de stockout.
+- 🔒 Toggle "Excluir do Engine de Promoção" no modal de edição de produto + ícone de cadeado na listagem de SKUs blacklistados.
+- ⚙️ Recálculo automático de elasticidades no startup (respeita TTL); auto-expiração de propostas com >24h.
+- 📜 Migração idempotente `m_008_engine_promocao` cria 3 tabelas, coluna blacklist, índices e CHECK constraints (qualidade, fonte, status, perfil, beta clamped).
+- 🧪 8 cenários de teste E2E (`test_engine_promocao_e2e.py`): regressão de elasticidade, fallback no prior, meta respeitada, descarte por stockout, blacklist + teto, aprovar→Promocao, perfis distintos, meta inalcançável.
+
+**Garantias**
+- Solver não inventa nada — reaproveita `forecast_service`, `analise_service`, `recomendacao_service`, `margin_engine` (1 ponto de verdade pra margem global).
+- `Lucro Bruto` continua respeitando `Receita Líquida − CMV − Quebras` no DRE; engine apenas projeta lucro futuro de promoção, não altera DRE atual.
+- Aprovar cesta cria `Promocao(rascunho)` — não publica automaticamente. Usuário ainda passa pelo `POST /promocoes/{id}/publicar` antes da promoção entrar em vigor.
+- Descartar uma cesta não cria efeito colateral; aprovação é idempotente (chamar 2x retorna mesma `Promocao`).
+- Sem dependências novas: regressão linear em Python puro, sem `numpy`/`scipy`/`pulp`/`ortools`.
+- Backend é fonte única de verdade para β e cestas; cliente nunca calcula nada — só renderiza.
+
+### v0.11.0 — Quebras e Perdas · *2026-04-25*
+> Tipo de movimentação dedicado para perdas de estoque, integrado ao DRE como linha 4.2 — sem contaminar histórico de demanda.
+
+**Adicionado**
+- 💀 `Movimentacao.tipo='QUEBRA'` com coluna `motivo` (vencimento / avaria / desvio / doacao) protegida por CHECK constraint.
+- 📋 `quebra_service` completo — `registrar_quebra`, `registrar_quebra_bulk` (transacional), `excluir_quebra`, `listar_quebras`, `resumo_mes`, `total_quebras_mes`.
+- 🔌 5 endpoints REST — `POST /quebras`, `POST /quebras/bulk`, `GET /quebras`, `GET /quebras/resumo`, `DELETE /quebras/{id}`.
+- 📒 Conta contábil `4.2 Quebras e Perdas de Estoque` (tipo CMV / DEBITO) seedada no plano de contas padrão.
+- 🧮 DRE: nova linha 4.2 entre CMV e Lucro Bruto. `Lucro Bruto = Receita Líquida − CMV − Quebras`.
+- 📊 `DREMensal.quebras` persistido no snapshot mensal.
+- 🖼️ Página `/quebras` no frontend — formulário (busca produto, qtd, peso opcional, 4 cartões de motivo) + histórico com filtros + 4 KPIs mensais + top 5 produtos.
+- 🎯 KPI "Quebras (mês)" no Dashboard com semáforo (benchmark ABRAS 1,5–2%).
+- 📜 Histórico de Movimentações ganhou filtro/badge/exclusão para tipo QUEBRA.
+- 📜 Migração idempotente `m_007_movimentacao_quebra` adiciona coluna, 3 CHECK constraints, índice `ix_mov_tipo_data`, conta 4.2 e `dre_mensal.quebras`.
+- 🧪 7 cenários de teste E2E (`test_quebra_e2e.py`) cobrindo registro, validações, isolamento da demanda, DRE, reversão, bulk transacional, resumo.
+
+**Garantias**
+- QUEBRA reduz `estoque_qtd` e `estoque_peso`, mas **não** cria `Venda` nem `VendaDiariaSKU` → forecast e ABC-XYZ permanecem íntegros.
+- `custo_unitario` é congelado no momento da quebra (CMP atual) → DRE soma direto do log sem recálculo.
+- Reversão (`excluir_quebra`) é espelho exato de `excluir_entrada`: deleta movimentação, recalcula estoque/CMP a partir do log restante, reativa produto se necessário.
+- CMP não muda quando há QUEBRA — só ENTRADAs alimentam a média ponderada.
 
 ### v0.10.0 — Balanço Patrimonial · *2026-04-25*
 > Módulo contábil completo de BP mensal seguindo padrões brasileiros (Lei 6.404/76 + CPC 26).

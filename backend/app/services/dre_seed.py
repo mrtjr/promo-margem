@@ -23,6 +23,7 @@ PLANO_CONTAS_PADRAO = [
     ("3.3",   "Descontos Comerciais",            "DEDUCAO",    "DEBITO"),
 
     ("4.1",   "CMV - Custo Mercadoria Vendida",  "CMV",        "DEBITO"),
+    ("4.2",   "Quebras e Perdas de Estoque",     "CMV",        "DEBITO"),
 
     ("5.1.1", "Comissão de Vendas",              "DESP_VENDA", "DEBITO"),
     ("5.1.2", "Frete de Saída",                  "DESP_VENDA", "DEBITO"),
@@ -104,8 +105,40 @@ def seed_config_tributaria_default(db: Session) -> bool:
     return True
 
 
+GRUPOS_PADRAO = [
+    # (nome, margem_min, margem_max, desconto_max_pct)
+    ("ALIMENTICIOS", 0.17, 0.20, 10.0),
+    ("TEMPEROS",     0.17, 0.20, 10.0),
+    ("EMBALAGENS",   0.17, 0.20, 10.0),
+    ("CEREAIS",      0.17, 0.20, 10.0),
+]
+
+
+def seed_grupos_padrao(db: Session) -> int:
+    """
+    Cria grupos padrão APENAS se a tabela de grupos estiver vazia.
+    Idempotente e NÃO destrutivo: nunca apaga ou renomeia grupos existentes.
+    Retorna quantos grupos foram criados.
+    """
+    existentes = db.query(models.Grupo).count()
+    if existentes > 0:
+        return 0
+    criados = 0
+    for nome, m_min, m_max, desc_max in GRUPOS_PADRAO:
+        db.add(models.Grupo(
+            nome=nome,
+            margem_minima=m_min,
+            margem_maxima=m_max,
+            desconto_maximo_permitido=desc_max,
+        ))
+        criados += 1
+    db.commit()
+    return criados
+
+
 def seed_tudo(db: Session) -> dict:
-    """Atalho para rodar os dois seeds. Retorna contadores."""
+    """Atalho para rodar os seeds básicos. Retorna contadores."""
+    grupos = seed_grupos_padrao(db)
     contas = seed_plano_contas(db)
     config = seed_config_tributaria_default(db)
-    return {"contas_criadas": contas, "config_criada": config}
+    return {"grupos_criados": grupos, "contas_criadas": contas, "config_criada": config}

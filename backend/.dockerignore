@@ -1,0 +1,22 @@
+# .dockerignore do contexto backend/.
+# A raiz já filtra a maior parte; aqui ficam só itens do backend que
+# não devem ir pra dentro da imagem do Python.
+
+# Caches Python (paranoia: a raiz já cobre, mas reforça)
+__pycache__
+*.py[cod]
+*.pyo
+.pytest_cache
+
+# Testes E2E e benchmark — não rodam em produção
+test_*_e2e.py
+bench_*.py
+
+# Env locais
+.env
+.env.*
+!.env.example
+
+# Scratch
+narr.json
+*.narr.json

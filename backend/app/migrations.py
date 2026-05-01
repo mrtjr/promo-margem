@@ -282,6 +282,249 @@ def m_006_balanco_patrimonial(conn: Connection) -> str:
     return "ok: balanco_patrimonial criada"
 
 
+def m_007_movimentacao_quebra(conn: Connection) -> str:
+    """
+    Adiciona suporte ao tipo de movimentação QUEBRA (perda de estoque):
+      1. Coluna `movimentacoes.motivo` (NULLABLE) — vencimento|avaria|desvio|doacao
+      2. CHECK constraints: tipo válido, motivo válido, QUEBRA exige motivo
+      3. Índice (tipo, data) para consultas de histórico/DRE
+      4. Conta contábil 4.2 (Quebras e Perdas, tipo=CMV)
+      5. Coluna `dre_mensal.quebras` (snapshot do valor mensal)
+
+    Idempotente em todas as etapas — checa estado antes de alterar.
+    """
+    msgs: List[str] = []
+
+    # 1. Coluna motivo
+    if not _has_column(conn, "movimentacoes", "motivo"):
+        conn.execute(text("ALTER TABLE movimentacoes ADD COLUMN motivo VARCHAR"))
+        msgs.append("col motivo criada")
+    else:
+        msgs.append("col motivo já existe")
+
+    # 2. CHECK constraints (cada uma idempotente)
+    def _has_constraint(name: str) -> bool:
+        row = conn.execute(text(
+            "SELECT 1 FROM information_schema.table_constraints "
+            "WHERE table_name='movimentacoes' AND constraint_name=:n"
+        ), {"n": name}).first()
+        return row is not None
+
+    if not _has_constraint("mov_tipo_check"):
+        conn.execute(text(
+            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_tipo_check "
+            "CHECK (tipo IN ('ENTRADA','SAIDA','QUEBRA'))"
+        ))
+        msgs.append("check tipo criado")
+    if not _has_constraint("mov_motivo_valid"):
+        conn.execute(text(
+            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_motivo_valid "
+            "CHECK (motivo IS NULL OR motivo IN ('vencimento','avaria','desvio','doacao'))"
+        ))
+        msgs.append("check motivo criado")
+    if not _has_constraint("mov_quebra_exige_motivo"):
+        conn.execute(text(
+            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_quebra_exige_motivo "
+            "CHECK (tipo != 'QUEBRA' OR motivo IS NOT NULL)"
+        ))
+        msgs.append("check quebra-motivo criado")
+
+    # 3. Índice tipo+data
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_mov_tipo_data ON movimentacoes(tipo, data)"
+    ))
+
+    # 4. Conta contábil 4.2 (Quebras e Perdas)
+    existe_conta = conn.execute(text(
+        "SELECT 1 FROM contas_contabeis WHERE codigo='4.2'"
+    )).first()
+    if not existe_conta:
+        conn.execute(text(
+            "INSERT INTO contas_contabeis (codigo, nome, tipo, natureza, ativa) "
+            "VALUES ('4.2','Quebras e Perdas de Estoque','CMV','DEBITO',TRUE)"
+        ))
+        msgs.append("conta 4.2 criada")
+    else:
+        msgs.append("conta 4.2 já existe")
+
+    # 5. Coluna dre_mensal.quebras
+    if _has_table(conn, "dre_mensal") and not _has_column(conn, "dre_mensal", "quebras"):
+        conn.execute(text("ALTER TABLE dre_mensal ADD COLUMN quebras DOUBLE PRECISION DEFAULT 0"))
+        msgs.append("dre_mensal.quebras criada")
+
+    return "ok: " + ", ".join(msgs)
+
+
+def m_008_engine_promocao(conn: Connection) -> str:
+    """
+    Suporte ao Engine de Promoção orientada a meta (v0.12):
+      1. Coluna `produtos.bloqueado_engine` (BOOLEAN, default FALSE) — blacklist
+      2. Tabela `elasticidade_sku` — cache de elasticidades-preço por SKU
+      3. Tabela `cestas_promocao` — propostas geradas pelo solver
+      4. Tabela `cesta_itens` — SKUs de cada cesta com desconto e projeções
+
+    Idempotente em todas as etapas.
+    """
+    msgs: List[str] = []
+
+    # 1. Produto.bloqueado_engine
+    if not _has_column(conn, "produtos", "bloqueado_engine"):
+        conn.execute(text(
+            "ALTER TABLE produtos ADD COLUMN bloqueado_engine BOOLEAN DEFAULT FALSE NOT NULL"
+        ))
+        msgs.append("col produtos.bloqueado_engine criada")
+    else:
+        msgs.append("col bloqueado_engine já existe")
+
+    # 2. Tabela elasticidade_sku
+    if not _has_table(conn, "elasticidade_sku"):
+        conn.execute(text(
+            """
+            CREATE TABLE elasticidade_sku (
+              produto_id INTEGER PRIMARY KEY REFERENCES produtos(id) ON DELETE CASCADE,
+              beta DOUBLE PRECISION NOT NULL,
+              r2 DOUBLE PRECISION,
+              n_observacoes INTEGER NOT NULL DEFAULT 0,
+              cv_preco DOUBLE PRECISION,
+              qualidade VARCHAR(10) NOT NULL,
+              fonte VARCHAR(20) NOT NULL,
+              recalculado_em TIMESTAMP DEFAULT NOW(),
+              CHECK (qualidade IN ('alta','media','baixa','prior')),
+              CHECK (fonte IN ('regressao','prior_abc_xyz')),
+              CHECK (beta >= -3.0 AND beta <= -0.3)
+            )
+            """
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_elasticidade_qualidade ON elasticidade_sku(qualidade)"
+        ))
+        msgs.append("tabela elasticidade_sku criada")
+    else:
+        msgs.append("elasticidade_sku já existe")
+
+    # 3. Tabela cestas_promocao
+    if not _has_table(conn, "cestas_promocao"):
+        conn.execute(text(
+            """
+            CREATE TABLE cestas_promocao (
+              id SERIAL PRIMARY KEY,
+              perfil VARCHAR(20) NOT NULL,
+              meta_margem_pct DOUBLE PRECISION NOT NULL,
+              janela_dias INTEGER NOT NULL,
+              status VARCHAR(15) NOT NULL,
+              margem_atual DOUBLE PRECISION,
+              margem_projetada DOUBLE PRECISION,
+              lucro_semanal_projetado DOUBLE PRECISION,
+              receita_projetada DOUBLE PRECISION,
+              qtd_skus INTEGER NOT NULL DEFAULT 0,
+              desconto_medio_pct DOUBLE PRECISION,
+              motivo_falha VARCHAR(50),
+              promocao_id INTEGER REFERENCES promocoes(id) ON DELETE SET NULL,
+              criado_em TIMESTAMP DEFAULT NOW(),
+              decidido_em TIMESTAMP,
+              motivo_descarte TEXT,
+              CHECK (perfil IN ('conservador','balanceado','agressivo')),
+              CHECK (status IN ('proposta','aprovada','descartada','expirada'))
+            )
+            """
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_cesta_status ON cestas_promocao(status, criado_em DESC)"
+        ))
+        msgs.append("tabela cestas_promocao criada")
+    else:
+        msgs.append("cestas_promocao já existe")
+
+    # 4. Tabela cesta_itens
+    if not _has_table(conn, "cesta_itens"):
+        conn.execute(text(
+            """
+            CREATE TABLE cesta_itens (
+              id SERIAL PRIMARY KEY,
+              cesta_id INTEGER NOT NULL REFERENCES cestas_promocao(id) ON DELETE CASCADE,
+              produto_id INTEGER NOT NULL REFERENCES produtos(id),
+              desconto_pct DOUBLE PRECISION NOT NULL,
+              preco_atual DOUBLE PRECISION NOT NULL,
+              preco_promo DOUBLE PRECISION NOT NULL,
+              margem_atual DOUBLE PRECISION NOT NULL,
+              margem_pos_acao DOUBLE PRECISION NOT NULL,
+              qtd_baseline DOUBLE PRECISION NOT NULL,
+              qtd_projetada DOUBLE PRECISION NOT NULL,
+              receita_projetada DOUBLE PRECISION NOT NULL,
+              lucro_marginal DOUBLE PRECISION NOT NULL,
+              beta_usado DOUBLE PRECISION NOT NULL,
+              qualidade_elasticidade VARCHAR(10) NOT NULL,
+              cobertura_pos_promo_dias DOUBLE PRECISION,
+              risco_stockout_pct DOUBLE PRECISION,
+              flag_risco VARCHAR(10),
+              ordem_entrada INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(cesta_id, produto_id)
+            )
+            """
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_cesta_item_cesta ON cesta_itens(cesta_id)"
+        ))
+        msgs.append("tabela cesta_itens criada")
+    else:
+        msgs.append("cesta_itens já existe")
+
+    return "ok: " + ", ".join(msgs)
+
+
+def m_009_indices_performance(conn: Connection) -> str:
+    """
+    Adiciona índices compostos para acelerar:
+      - Reversões de movimentação (excluir_entrada/venda/quebra) que recalculam
+        o produto a partir de TODAS as suas Movimentacoes.
+      - Listagens de histórico filtrando por produto_id (UI Histórico, Engine).
+      - Backfill VendaDiariaSKU e analytics por SKU.
+
+    Antes desta migração:
+      - movimentacoes: só índice em (tipo, data) e PK; produto_id sem índice.
+      - vendas:        só índice em data_fechamento e PK; produto_id sem índice.
+
+    Após:
+      - ix_mov_produto_data:           movimentacoes(produto_id, data DESC)
+      - ix_venda_produto_fechamento:   vendas(produto_id, data_fechamento DESC)
+
+    Idempotente via IF NOT EXISTS.
+    """
+    msgs: List[str] = []
+
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_mov_produto_data "
+        "ON movimentacoes (produto_id, data DESC)"
+    ))
+    msgs.append("idx mov(produto_id,data) ok")
+
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_venda_produto_fechamento "
+        "ON vendas (produto_id, data_fechamento DESC)"
+    ))
+    msgs.append("idx venda(produto_id,data_fechamento) ok")
+
+    return "ok: " + ", ".join(msgs)
+
+
+def m_010_drop_peso_medida(conn: Connection) -> str:
+    """
+    Remove a coluna `movimentacoes.peso_medida` (campo legado).
+
+    Histórico:
+      - Adicionada em uma versão anterior como 'info livre' ('Legado/Info').
+      - Nunca foi lida pelo código de produção.
+      - Em prod, 100% das linhas sempre estiveram com NULL (escrita explícita
+        em estoque_service.registrar_entrada).
+
+    Idempotente via IF EXISTS no DROP.
+    """
+    if not _has_column(conn, "movimentacoes", "peso_medida"):
+        return "skip: coluna peso_medida ja removida"
+    conn.execute(text("ALTER TABLE movimentacoes DROP COLUMN IF EXISTS peso_medida"))
+    return "ok: coluna peso_medida removida"
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
@@ -289,6 +532,10 @@ MIGRATIONS: List[Callable[[Connection], str]] = [
     m_004_soft_delete_produtos_custo_zero,
     m_005_produto_custo_nonneg,
     m_006_balanco_patrimonial,
+    m_007_movimentacao_quebra,
+    m_008_engine_promocao,
+    m_009_indices_performance,
+    m_010_drop_peso_medida,
 ]
 
 

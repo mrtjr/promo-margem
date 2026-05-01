@@ -3,6 +3,7 @@ Motor de cálculo do DRE (Demonstração do Resultado do Exercício).
 
 Fonte de verdade:
   - VendaDiariaSKU → Receita Bruta e CMV
+  - Movimentacao(tipo=QUEBRA) → linha 4.2 Quebras e Perdas
   - LancamentoFinanceiro → todas as outras linhas (deduções, despesas, etc)
   - ConfigTributaria → impostos sobre venda e IR/CSLL
 
@@ -11,7 +12,8 @@ Cascata:
    (-) Impostos sobre Venda           [calculado pela alíquota]
    (-) Devoluções + Descontos         [LancamentoFinanceiro tipo=DEDUCAO]
    = Receita Líquida
-   (-) CMV
+   (-) CMV (4.1)                      [VendaDiariaSKU.custo]
+   (-) Quebras e Perdas (4.2)         [Movimentacao tipo=QUEBRA]
    = Lucro Bruto
    (-) Despesas Vendas                [tipo=DESP_VENDA]
    (-) Despesas Admin                 [tipo=DESP_ADMIN]
@@ -32,6 +34,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models
+from . import quebra_service
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +141,7 @@ class DREMensalCalculado:
     receita_liquida: float
 
     cmv: float
+    quebras: float
     lucro_bruto: float
     margem_bruta_pct: float
 
@@ -191,8 +195,12 @@ def calcular_dre_mes(db: Session, mes: date) -> DREMensalCalculado:
 
     receita_liquida = receita_bruta - impostos_venda - devolucoes
 
-    # Lucro Bruto
-    lucro_bruto = receita_liquida - cmv
+    # Quebras e Perdas (conta 4.2) — direto da Movimentacao tipo='QUEBRA'.
+    # Não usa LancamentoFinanceiro: a fonte de verdade é o log de movimentações.
+    quebras = quebra_service.total_quebras_mes(db, mes)["valor"]
+
+    # Lucro Bruto = Receita Líquida − CMV − Quebras
+    lucro_bruto = receita_liquida - cmv - quebras
     margem_bruta_pct = (lucro_bruto / receita_bruta) if receita_bruta > 0 else 0.0
 
     # Despesas operacionais
@@ -234,6 +242,7 @@ def calcular_dre_mes(db: Session, mes: date) -> DREMensalCalculado:
         DRELinha("3.3", "(-) Devoluções e Descontos", -devolucoes, _pct(devolucoes), "deducao", 1),
         DRELinha("3.9", "= Receita Líquida", receita_liquida, _pct(receita_liquida), "subtotal", 2),
         DRELinha("4.1", "(-) CMV", -cmv, _pct(cmv), "deducao", 1),
+        DRELinha("4.2", "(-) Quebras e Perdas", -quebras, _pct(quebras), "deducao", 1),
         DRELinha("4.9", "= Lucro Bruto", lucro_bruto, _pct(lucro_bruto), "subtotal", 2),
         DRELinha("5.1", "(-) Despesas de Vendas", -despesas_vendas, _pct(despesas_vendas), "despesa", 1),
         DRELinha("5.2", "(-) Despesas Administrativas", -despesas_admin, _pct(despesas_admin), "despesa", 1),
@@ -254,6 +263,7 @@ def calcular_dre_mes(db: Session, mes: date) -> DREMensalCalculado:
         devolucoes=round(devolucoes, 2),
         receita_liquida=round(receita_liquida, 2),
         cmv=round(cmv, 2),
+        quebras=round(quebras, 2),
         lucro_bruto=round(lucro_bruto, 2),
         margem_bruta_pct=round(margem_bruta_pct, 4),
         despesas_vendas=round(despesas_vendas, 2),
@@ -289,6 +299,8 @@ def dre_comparativo(db: Session, ate_mes: date, meses: int = 12) -> List[Dict[st
             "mes": calc.mes,
             "receita_bruta": calc.receita_bruta,
             "receita_liquida": calc.receita_liquida,
+            "cmv": calc.cmv,
+            "quebras": calc.quebras,
             "lucro_bruto": calc.lucro_bruto,
             "ebitda": calc.ebitda,
             "lucro_liquido": calc.lucro_liquido,
@@ -320,6 +332,7 @@ def fechar_mes(db: Session, mes: date) -> models.DREMensal:
         devolucoes=calc.devolucoes,
         receita_liquida=calc.receita_liquida,
         cmv=calc.cmv,
+        quebras=calc.quebras,
         lucro_bruto=calc.lucro_bruto,
         despesas_vendas=calc.despesas_vendas,
         despesas_admin=calc.despesas_admin,

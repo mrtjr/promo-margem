@@ -1,31 +1,36 @@
 import { useState, useEffect, useRef } from 'react'
-import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock } from 'lucide-react'
+import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock, Skull, Wand2, ChevronDown, ChevronRight } from 'lucide-react'
 import axios from 'axios'
+import type { Produto, Grupo, Stats } from './types'
 
-// API base URL
-const API_URL = '/api'
+// API base URL — em prod usa nginx proxy ('/api'); em `npm run dev` setar
+// VITE_API_URL=http://localhost:8000 no .env (ver frontend/.env.example).
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) || '/api'
 
 const CIDADES = ["TEIXEIRA DE FREITAS", "ITAMARAJU"]
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard')
-  const [stats, setStats] = useState<any>(null)
+  const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Stats só busca no mount. Páginas que precisam de dados frescos
+  // refazem fetch própio (ex: Dashboard refaz quando volta a ele).
   useEffect(() => {
-    fetchStats()
-  }, [currentPage])
-
-  const fetchStats = async () => {
-    try {
-      const res = await axios.get(`${API_URL}/stats`)
-      setStats(res.data)
-      setLoading(false)
-    } catch (err) {
-      console.error("Failed to fetch stats", err)
-      setLoading(false)
+    let cancelado = false
+    const fetch = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/stats`)
+        if (!cancelado) setStats(res.data)
+      } catch (err) {
+        console.error("Failed to fetch stats", err)
+      } finally {
+        if (!cancelado) setLoading(false)
+      }
     }
-  }
+    fetch()
+    return () => { cancelado = true }
+  }, [])
 
   return (
     <div className="flex h-screen bg-[color:var(--claude-cream)] text-[color:var(--claude-ink)] font-sans">
@@ -91,10 +96,22 @@ function App() {
             label="Simulador"
           />
           <NavItem
+            isActive={currentPage === 'promo_engine'}
+            onClick={() => setCurrentPage('promo_engine')}
+            icon={<Wand2 size={20} />}
+            label="Promo Inteligente"
+          />
+          <NavItem
             isActive={currentPage === 'historico'}
             onClick={() => setCurrentPage('historico')}
             icon={<History size={20} />}
             label="Histórico"
+          />
+          <NavItem
+            isActive={currentPage === 'quebras'}
+            onClick={() => setCurrentPage('quebras')}
+            icon={<Skull size={20} />}
+            label="Quebras"
           />
           <div className="pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40">Financeiro</div>
           <NavItem
@@ -128,7 +145,7 @@ function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-hidden flex flex-col">
-        {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp'].includes(currentPage) ? (
+        {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp', 'promo_engine'].includes(currentPage) ? (
           <div className="flex items-center justify-center h-full">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[color:var(--claude-coral)]"></div>
           </div>
@@ -142,7 +159,9 @@ function App() {
             {currentPage === 'briefing' && <BriefingPage />}
             {currentPage === 'projecao' && <ProjecaoPage />}
             {currentPage === 'simulador' && <SimuladorPage />}
+            {currentPage === 'promo_engine' && <SimuladorPage initialTab="engine" />}
             {currentPage === 'historico' && <HistoricoPage />}
+            {currentPage === 'quebras' && <QuebrasPage />}
             {currentPage === 'dre' && <DREPage />}
             {currentPage === 'bp' && <BPPage />}
           </div>
@@ -168,9 +187,89 @@ function NavItem({ icon, label, isActive, onClick }: any) {
   )
 }
 
+// ============================================================================
+// Confirm — modal genérico de confirmação (substitui window.confirm nativo).
+// Estilo coerente com claude-card; suporta variante perigosa (vermelho) e
+// estado de loading (durante a ação assíncrona).
+// ============================================================================
+
+type ConfirmProps = {
+  open: boolean
+  title: string
+  body?: React.ReactNode
+  confirmLabel?: string
+  cancelLabel?: string
+  danger?: boolean    // estiliza botão vermelho + ícone alerta
+  loading?: boolean   // desabilita ambos os botões e troca label do confirmar
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+function Confirm({
+  open, title, body,
+  confirmLabel = 'Confirmar', cancelLabel = 'Cancelar',
+  danger = false, loading = false,
+  onConfirm, onCancel,
+}: ConfirmProps) {
+  if (!open) return null
+  const accent = danger ? 'var(--claude-coral)' : 'var(--claude-amber)'
+  return (
+    <div
+      className="fixed inset-0 bg-[color:var(--claude-ink)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onClick={() => !loading && onCancel()}
+    >
+      <div className="claude-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-full flex items-center justify-center"
+              style={{ background: `color-mix(in srgb, ${accent} 15%, transparent)` }}
+            >
+              <AlertTriangle size={20} style={{ color: accent }} />
+            </div>
+            <div>
+              <p className="section-label">Confirmação</p>
+              <h3 className="headline text-xl">{title}</h3>
+            </div>
+          </div>
+          <button
+            onClick={() => !loading && onCancel()}
+            disabled={loading}
+            className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] disabled:opacity-50"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {body && (
+          <div className="text-sm text-[color:var(--claude-ink)] mb-5">{body}</div>
+        )}
+
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="px-4 py-2 text-sm rounded-lg border border-[color:var(--border)] text-[color:var(--claude-ink)] hover:bg-[color:var(--claude-cream-deep)] disabled:opacity-50"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="px-4 py-2 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50"
+            style={{ background: accent }}
+          >
+            {loading ? 'Processando…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ComprasPage({ onComplete }: any) {
-  const [produtos, setProdutos] = useState<any[]>([])
-  const [grupos, setGrupos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [grupos, setGrupos] = useState<Grupo[]>([])
   const [rows, setRows] = useState<any[]>([
     { id: Date.now(), matchedId: null, codigo: '', name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }
   ])
@@ -418,8 +517,8 @@ function ComprasPage({ onComplete }: any) {
 }
 
 function ProdutosPage() {
-  const [produtos, setProdutos] = useState<any[]>([])
-  const [grupos, setGrupos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [grupos, setGrupos] = useState<Grupo[]>([])
   const [editando, setEditando] = useState<any | null>(null)
 
   const carregar = () => {
@@ -455,7 +554,16 @@ function ProdutosPage() {
           <tbody className="divide-y divide-slate-100">
             {produtos.length > 0 ? produtos.map(p => (
               <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                <td className="px-6 py-4 text-sm font-bold text-slate-900">{p.nome}</td>
+                <td className="px-6 py-4 text-sm font-bold text-slate-900">
+                  <span className="flex items-center gap-1.5">
+                    {p.nome}
+                    {p.bloqueado_engine && (
+                      <span title="Excluído do Engine de Promoção (blacklist)" className="inline-flex items-center text-rose-500">
+                        <Lock size={12} />
+                      </span>
+                    )}
+                  </span>
+                </td>
                 <td className="px-6 py-4 text-xs font-mono">
                   {p.codigo
                     ? <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-bold tracking-wider">{p.codigo}</span>
@@ -505,6 +613,7 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
   const [grupoId, setGrupoId] = useState<number | null>(produto.grupo_id || null)
   const [custo, setCusto] = useState(String(produto.custo ?? ''))
   const [precoVenda, setPrecoVenda] = useState(String(produto.preco_venda ?? ''))
+  const [bloqueadoEngine, setBloqueadoEngine] = useState<boolean>(!!produto.bloqueado_engine)
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
@@ -518,6 +627,7 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
         grupo_id: grupoId,
         custo: parseFloat(custo.replace(',', '.')) || 0,
         preco_venda: parseFloat(precoVenda.replace(',', '.')) || 0,
+        bloqueado_engine: bloqueadoEngine,
       }
       await axios.patch(`${API_URL}/produtos/${produto.id}`, payload)
       onSaved()
@@ -599,6 +709,26 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
                 className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
               />
             </div>
+          </div>
+
+          {/* Blacklist do Engine de Promoção */}
+          <div className="p-3 rounded-lg border border-slate-200 bg-slate-50">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={bloqueadoEngine}
+                onChange={(e) => setBloqueadoEngine(e.target.checked)}
+                className="mt-0.5 accent-rose-600 cursor-pointer"
+              />
+              <div className="flex-1">
+                <p className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <Lock size={13} className="text-rose-600" /> Excluir do Engine de Promoção
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                  Quando marcado, o solver de "Promo Inteligente" nunca vai propor este SKU em promoção. Útil para loss-leaders, contratos com fornecedor ou produtos com margem já gerenciada.
+                </p>
+              </div>
+            </label>
           </div>
         </div>
 
@@ -1016,11 +1146,13 @@ function DashboardPage({ stats, onNavigate }: any) {
   const [saudeCategorias, setSaudeCategorias] = useState<any[]>([])
   const [projecao, setProjecao] = useState<any>(null)
   const [serie, setSerie] = useState<PontoSerie[]>([])
+  const [quebraResumo, setQuebraResumo] = useState<any>(null)
 
   useEffect(() => {
     axios.get(`${API_URL}/categorias/saude`).then(res => setSaudeCategorias(res.data)).catch(() => {})
     axios.get(`${API_URL}/projecao/amanha?top_n=0`).then(res => setProjecao(res.data)).catch(() => {})
     axios.get(`${API_URL}/margem/serie?dias=30`).then(res => setSerie(res.data)).catch(() => {})
+    axios.get(`${API_URL}/quebras/resumo`).then(res => setQuebraResumo(res.data)).catch(() => {})
   }, [])
 
   const marginPct = stats?.margem_semana ? (stats.margem_semana * 100).toFixed(1) : "0.0"
@@ -1079,7 +1211,7 @@ function DashboardPage({ stats, onNavigate }: any) {
       </header>
 
       {/* Stats Grid — Tremor-style: valor + delta + sparkline */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <KPICard
           title="Margem (dia)"
           value={ultMargem != null ? `${ultMargem.toFixed(1)}%` : '—'}
@@ -1109,6 +1241,16 @@ function DashboardPage({ stats, onNavigate }: any) {
           value={stats?.rupturas || 0}
           subValue={stats?.rupturas > 0 ? `${stats.rupturas}/${stats?.total_skus} zerados · repor` : `${stats?.total_skus || 0} SKUs · 0 zerados`}
           status={stats?.rupturas > 0 ? "alert" : "ok"}
+        />
+        <KPICard
+          title="Quebras (mês)"
+          value={quebraResumo
+            ? `R$ ${quebraResumo.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : '—'}
+          subValue={quebraResumo
+            ? `${(quebraResumo.pct_faturamento * 100).toFixed(2)}% do faturamento · ${quebraResumo.eventos} evento(s)`
+            : 'Sem dados'}
+          status={!quebraResumo ? 'neutral' : quebraResumo.pct_faturamento > 0.02 ? 'alert' : quebraResumo.pct_faturamento > 0.015 ? 'warn' : 'ok'}
         />
       </div>
 
@@ -1398,8 +1540,8 @@ function GroupProgress({ label, margemReal, metaMin, metaMax, faturamento, skusV
 }
 
 function RelatoriosPage() {
-  const [produtos, setProdutos] = useState<any[]>([])
-  const [grupos, setGrupos] = useState<any[]>([])
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [grupos, setGrupos] = useState<Grupo[]>([])
   const [salesItems, setSalesItems] = useState<any>({})
   const [salesPrices, setSalesPrices] = useState<any>({})
   const [submitting, setSubmitting] = useState(false)
@@ -1445,7 +1587,7 @@ function RelatoriosPage() {
       .map(([idStr, qty]: any) => {
         const id = parseInt(idStr)
         const prod = produtos.find(p => p.id === id)
-        const price = salesPrices[id] || prod.preco_venda
+        const price = salesPrices[id] || prod?.preco_venda || 0
         return {
           produto_id: id,
           quantidade: qty,
@@ -2778,8 +2920,9 @@ function ClassBadge({ label, count, color }: any) {
   )
 }
 
-function SimuladorPage() {
-  const [produtos, setProdutos] = useState<any[]>([])
+function SimuladorPage({ initialTab = 'manual' }: { initialTab?: 'manual' | 'engine' }) {
+  const [tab, setTab] = useState<'manual' | 'engine'>(initialTab)
+  const [produtos, setProdutos] = useState<Produto[]>([])
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [discount, setDiscount] = useState(10)
   const [result, setResult] = useState<any>(null)
@@ -2798,14 +2941,42 @@ function SimuladorPage() {
   }
 
   const toggleSelection = (id: number) => {
-    setSelectedIds(prev => 
+    setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     )
   }
 
   return (
-    <div className="max-w-6xl mx-auto p-8 space-y-8">
-      <h2 className="text-3xl font-bold tracking-tight">Simulador de Promoção</h2>
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header>
+        <p className="section-label mb-1">Promoção · cenários</p>
+        <h2 className="headline text-4xl tracking-editorial">Simulador</h2>
+        <p className="text-[color:var(--claude-stone)] mt-1">
+          Escolha entre montar a cesta manualmente ou deixar o engine propor 3 cestas a partir de uma meta.
+        </p>
+      </header>
+
+      <div className="flex gap-1 border-b border-[color:var(--border)]">
+        {([
+          { v: 'manual', label: 'Manual' },
+          { v: 'engine', label: 'Engine (orientado a meta)' },
+        ] as const).map(t => (
+          <button
+            key={t.v}
+            onClick={() => setTab(t.v as any)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              tab === t.v
+                ? 'border-[color:var(--claude-coral)] text-[color:var(--claude-ink)]'
+                : 'border-transparent text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'engine' && <EnginePromocaoPanel />}
+      {tab === 'manual' && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
@@ -2885,7 +3056,450 @@ function SimuladorPage() {
           )}
         </div>
       </div>
+      )}
     </div>
+  )
+}
+
+// ============================================================================
+// EnginePromocaoPanel — solver inverso (meta → 3 cestas rankeadas)
+// ============================================================================
+
+type CestaItem = {
+  id: number
+  produto_id: number
+  produto_nome: string
+  produto_sku: string | null
+  classe_abc: string | null
+  classe_xyz: string | null
+  desconto_pct: number
+  preco_atual: number
+  preco_promo: number
+  margem_atual: number
+  margem_pos_acao: number
+  qtd_baseline: number
+  qtd_projetada: number
+  receita_projetada: number
+  lucro_marginal: number
+  beta_usado: number
+  qualidade_elasticidade: string
+  cobertura_pos_promo_dias: number | null
+  risco_stockout_pct: number | null
+  flag_risco: string | null
+  ordem_entrada: number
+}
+
+type CestaPromocao = {
+  id: number
+  perfil: 'conservador' | 'balanceado' | 'agressivo'
+  meta_margem_pct: number
+  janela_dias: number
+  status: string
+  margem_atual: number | null
+  margem_projetada: number | null
+  lucro_semanal_projetado: number | null
+  receita_projetada: number | null
+  qtd_skus: number
+  desconto_medio_pct: number | null
+  motivo_falha: string | null
+  promocao_id: number | null
+  criado_em: string | null
+  decidido_em: string | null
+  itens: CestaItem[]
+  atinge_meta: boolean
+}
+
+type EngineResponse = {
+  cestas: CestaPromocao[]
+  candidatos_total: number
+  candidatos_bloqueados: number
+  candidatos_promo_ativa: number
+  elasticidades_recalculadas: boolean
+  aviso: string | null
+}
+
+const PERFIL_LABELS: Record<string, { label: string; desc: string; color: string }> = {
+  conservador: { label: 'Conservador', desc: 'Desconto até 10%, margem mantida', color: 'sage' },
+  balanceado: { label: 'Balanceado', desc: 'Ponto ótimo do solver', color: 'coral' },
+  agressivo: { label: 'Agressivo', desc: 'Maximiza volume, sacrifica 1pp', color: 'amber' },
+}
+
+function EnginePromocaoPanel() {
+  const [meta, setMeta] = useState(17.5)
+  const [janela, setJanela] = useState(7)
+  const [maxSkus, setMaxSkus] = useState(15)
+  const [response, setResponse] = useState<EngineResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [aprovando, setAprovando] = useState<number | null>(null)
+  const [expanded, setExpanded] = useState<number | null>(null)
+  const [toast, setToast] = useState<{ tipo: 'ok' | 'erro'; msg: string } | null>(null)
+
+  const propor = async () => {
+    setLoading(true)
+    setResponse(null)
+    try {
+      const res = await axios.post(`${API_URL}/promocoes/engine/propor`, {
+        meta_margem_pct: meta / 100,
+        janela_dias: janela,
+        max_skus_por_cesta: maxSkus,
+      })
+      setResponse(res.data)
+      // Expande a cesta balanceada por padrão se atingiu meta
+      const balanceada = res.data.cestas.find((c: CestaPromocao) => c.perfil === 'balanceado')
+      if (balanceada) setExpanded(balanceada.id)
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao gerar propostas' })
+      setTimeout(() => setToast(null), 5000)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const aprovar = async (cesta: CestaPromocao) => {
+    setAprovando(cesta.id)
+    try {
+      const r = await axios.post(`${API_URL}/promocoes/engine/aprovar/${cesta.id}`, {})
+      setToast({
+        tipo: 'ok',
+        msg: `Cesta ${cesta.perfil} aprovada como Promoção #${r.data.id} (rascunho). Publique em Promoções.`,
+      })
+      // Atualiza estado local SEM re-rodar o solver: backend já marcou esta
+      // como 'aprovada' e as outras 2 como 'descartada' no mesmo run.
+      setResponse(prev => prev ? {
+        ...prev,
+        cestas: prev.cestas.map(c => {
+          if (c.id === cesta.id) {
+            return { ...c, status: 'aprovada', promocao_id: r.data.id }
+          }
+          if (c.status === 'proposta') {
+            return { ...c, status: 'descartada' }
+          }
+          return c
+        }),
+      } : prev)
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao aprovar' })
+    } finally {
+      setAprovando(null)
+      setTimeout(() => setToast(null), 5500)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Inputs */}
+      <div className="claude-card p-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div>
+            <label className="section-label">Meta de margem semanal</label>
+            <div className="flex items-center gap-3 mt-2">
+              <input
+                type="range" min="14" max="22" step="0.5"
+                value={meta} onChange={e => setMeta(parseFloat(e.target.value))}
+                className="flex-1 accent-[color:var(--claude-coral)]"
+              />
+              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{meta.toFixed(1)}%</span>
+            </div>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+              Faixa saudável: 17–19%. Meta determina quão agressivo o solver pode ser.
+            </p>
+          </div>
+          <div>
+            <label className="section-label">Janela da promoção</label>
+            <div className="flex items-center gap-3 mt-2">
+              <input
+                type="range" min="3" max="14" step="1"
+                value={janela} onChange={e => setJanela(parseInt(e.target.value))}
+                className="flex-1 accent-[color:var(--claude-coral)]"
+              />
+              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{janela}d</span>
+            </div>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+              7d cobre ciclo semanal padrão. 14d para escoar encalhado.
+            </p>
+          </div>
+          <div>
+            <label className="section-label">Máx SKUs por cesta</label>
+            <div className="flex items-center gap-3 mt-2">
+              <input
+                type="range" min="3" max="25" step="1"
+                value={maxSkus} onChange={e => setMaxSkus(parseInt(e.target.value))}
+                className="flex-1 accent-[color:var(--claude-coral)]"
+              />
+              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{maxSkus}</span>
+            </div>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+              Cestas menores = comunicação mais simples ao cliente.
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={propor}
+            disabled={loading}
+            className="px-5 py-2.5 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+            style={{ background: 'var(--claude-coral)' }}
+          >
+            {loading ? 'Calculando…' : <><Wand2 size={16} /> Gerar 3 propostas</>}
+          </button>
+        </div>
+      </div>
+
+      {/* Aviso */}
+      {response?.aviso && (
+        <div className="claude-card p-4 flex items-start gap-3" style={{ borderLeftWidth: '4px', borderLeftColor: 'var(--claude-amber)' }}>
+          <AlertCircle className="text-[color:var(--claude-amber)] flex-shrink-0 mt-0.5" size={18} />
+          <p className="text-sm text-[color:var(--claude-ink)]">{response.aviso}</p>
+        </div>
+      )}
+
+      {/* Sumário de candidatos */}
+      {response && (
+        <div className="grid grid-cols-3 gap-4">
+          <div className="claude-card p-3 text-center">
+            <p className="section-label">Candidatos elegíveis</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-sage)] mt-1 mono">
+              {response.candidatos_total - response.candidatos_bloqueados - response.candidatos_promo_ativa}
+            </p>
+          </div>
+          <div className="claude-card p-3 text-center">
+            <p className="section-label">Bloqueados (blacklist)</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-stone)] mt-1 mono">{response.candidatos_bloqueados}</p>
+          </div>
+          <div className="claude-card p-3 text-center">
+            <p className="section-label">Já em promoção ativa</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-stone)] mt-1 mono">{response.candidatos_promo_ativa}</p>
+          </div>
+        </div>
+      )}
+
+      {/* 3 cestas lado-a-lado */}
+      {response?.cestas && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {response.cestas.map(c => (
+            <CestaCard
+              key={c.id}
+              cesta={c}
+              expanded={expanded === c.id}
+              onToggle={() => setExpanded(prev => prev === c.id ? null : c.id)}
+              onAprovar={() => aprovar(c)}
+              aprovando={aprovando === c.id}
+            />
+          ))}
+        </div>
+      )}
+
+      {!response && !loading && (
+        <div className="claude-card p-12 text-center">
+          <Wand2 className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={36} />
+          <p className="serif italic text-[color:var(--claude-stone)]">
+            Defina a meta e clique em "Gerar 3 propostas" para o engine propor cestas.
+          </p>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 claude-card px-4 py-3 flex items-center gap-2 max-w-md"
+             style={{
+               borderLeftWidth: '4px',
+               borderLeftColor: toast.tipo === 'ok' ? 'var(--claude-sage)' : 'var(--claude-coral)'
+             }}>
+          {toast.tipo === 'ok'
+            ? <Check size={16} className="text-[color:var(--claude-sage)]" />
+            : <AlertCircle size={16} className="text-[color:var(--claude-coral)]" />}
+          <p className="text-sm text-[color:var(--claude-ink)]">{toast.msg}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CestaCard({
+  cesta, expanded, onToggle, onAprovar, aprovando,
+}: {
+  cesta: CestaPromocao
+  expanded: boolean
+  onToggle: () => void
+  onAprovar: () => void
+  aprovando: boolean
+}) {
+  const meta = PERFIL_LABELS[cesta.perfil] || { label: cesta.perfil, desc: '', color: 'stone' }
+  const colorVar = meta.color === 'sage' ? 'var(--claude-sage)' : meta.color === 'coral' ? 'var(--claude-coral)' : 'var(--claude-amber)'
+  const aprovavel = cesta.status === 'proposta' && cesta.qtd_skus > 0
+  const ja_aprovada = cesta.status === 'aprovada'
+
+  return (
+    <div className="claude-card overflow-hidden flex flex-col">
+      <div className="p-4 border-b border-[color:var(--border)]" style={{ borderLeftWidth: '4px', borderLeftColor: colorVar }}>
+        <div className="flex items-start justify-between mb-1">
+          <div>
+            <p className="section-label" style={{ color: colorVar }}>{meta.label}</p>
+            <p className="text-[10px] text-[color:var(--claude-stone)]">{meta.desc}</p>
+          </div>
+          {ja_aprovada && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide"
+                  style={{ background: 'var(--claude-sage)', color: 'white' }}>
+              Aprovada
+            </span>
+          )}
+          {cesta.status === 'descartada' && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide bg-[color:var(--claude-stone)]/20 text-[color:var(--claude-stone)]">
+              Descartada
+            </span>
+          )}
+        </div>
+
+        {cesta.qtd_skus === 0 ? (
+          <div className="mt-3 p-3 rounded-lg bg-[color:var(--claude-stone)]/5 text-xs text-[color:var(--claude-stone)] italic">
+            {cesta.motivo_falha === 'meta_inalcancavel'
+              ? 'Meta inalcançável com candidatos atuais. Reduza a meta ou revise blacklist.'
+              : cesta.motivo_falha === 'sem_candidatos'
+              ? 'Nenhum SKU elegível.'
+              : 'Sem proposta gerada.'}
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              <div>
+                <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Margem proj.</p>
+                <p className="kpi-value text-xl mono" style={{ color: cesta.atinge_meta ? 'var(--claude-sage)' : 'var(--claude-coral)' }}>
+                  {cesta.margem_projetada != null ? (cesta.margem_projetada * 100).toFixed(1) : '—'}%
+                </p>
+                <p className="text-[10px] text-[color:var(--claude-stone)] mono">
+                  meta {(cesta.meta_margem_pct * 100).toFixed(1)}%
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Lucro semanal</p>
+                <p className="kpi-value text-xl mono text-[color:var(--claude-ink)]">
+                  +R$ {(cesta.lucro_semanal_projetado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                </p>
+                <p className="text-[10px] text-[color:var(--claude-stone)] mono">
+                  receita R$ {(cesta.receita_projetada || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-3 text-xs">
+              <div>
+                <span className="text-[color:var(--claude-stone)]">SKUs:</span>{' '}
+                <span className="mono font-semibold">{cesta.qtd_skus}</span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Desconto médio:</span>{' '}
+                <span className="mono font-semibold">{cesta.desconto_medio_pct?.toFixed(1)}%</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Botões */}
+      <div className="flex border-b border-[color:var(--border)]">
+        <button
+          onClick={onToggle}
+          disabled={cesta.qtd_skus === 0}
+          className="flex-1 px-3 py-2 text-xs font-medium text-[color:var(--claude-stone)] hover:bg-[color:var(--claude-cream-deep)]/40 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+        >
+          {expanded ? <><ChevronDown size={14} /> Ocultar SKUs</> : <><ChevronRight size={14} /> Ver SKUs</>}
+        </button>
+        <button
+          onClick={onAprovar}
+          disabled={!aprovavel || aprovando}
+          className="flex-1 px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ background: colorVar }}
+        >
+          {aprovando ? 'Aprovando…' : ja_aprovada ? 'Aprovada' : 'Aprovar'}
+        </button>
+      </div>
+
+      {/* Detalhes expandidos */}
+      {expanded && cesta.itens.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-[color:var(--claude-cream-deep)]/40 text-left">
+                <th className="px-2 py-1 section-label">SKU</th>
+                <th className="px-2 py-1 section-label text-right">Desc</th>
+                <th className="px-2 py-1 section-label text-right">Margem</th>
+                <th className="px-2 py-1 section-label text-right">+Lucro</th>
+                <th className="px-2 py-1 section-label text-center">Risco</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[color:var(--border)]">
+              {cesta.itens.map(it => (
+                <CestaItemRow key={it.id} item={it} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CestaItemRow({ item }: { item: CestaItem }) {
+  const [open, setOpen] = useState(false)
+  const corRisco = item.flag_risco === 'verde' ? 'var(--claude-sage)' : item.flag_risco === 'amarelo' ? 'var(--claude-amber)' : 'var(--claude-coral)'
+
+  return (
+    <>
+      <tr className="hover:bg-[color:var(--claude-cream-deep)]/30 cursor-pointer" onClick={() => setOpen(o => !o)}>
+        <td className="px-2 py-1.5">
+          <p className="font-medium text-[color:var(--claude-ink)] truncate max-w-[140px]" title={item.produto_nome}>{item.produto_nome}</p>
+          <p className="text-[10px] text-[color:var(--claude-stone)] mono">
+            {item.produto_sku || '—'}
+            {item.classe_abc && item.classe_xyz && ` · ${item.classe_abc}-${item.classe_xyz}`}
+          </p>
+        </td>
+        <td className="px-2 py-1.5 text-right mono font-semibold">{item.desconto_pct.toFixed(0)}%</td>
+        <td className="px-2 py-1.5 text-right mono">
+          <span className="text-[color:var(--claude-stone)]">{(item.margem_atual * 100).toFixed(0)}</span>
+          <span className="text-[color:var(--claude-stone)]/60">→</span>
+          <span style={{ color: item.margem_pos_acao >= 0.10 ? 'var(--claude-ink)' : 'var(--claude-coral)' }}>{(item.margem_pos_acao * 100).toFixed(0)}%</span>
+        </td>
+        <td className="px-2 py-1.5 text-right mono font-semibold text-[color:var(--claude-sage)]">
+          +R$ {item.lucro_marginal.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+        </td>
+        <td className="px-2 py-1.5 text-center">
+          <span className="inline-block w-2 h-2 rounded-full" style={{ background: corRisco }} />
+        </td>
+      </tr>
+      {open && (
+        <tr className="bg-[color:var(--claude-cream-deep)]/30">
+          <td colSpan={5} className="px-3 py-2 text-[11px] text-[color:var(--claude-stone)]">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Preço:</span>{' '}
+                <span className="mono">R$ {item.preco_atual.toFixed(2)} → R$ {item.preco_promo.toFixed(2)}</span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Qtd projetada:</span>{' '}
+                <span className="mono">{item.qtd_projetada.toFixed(0)} ({item.qtd_baseline.toFixed(1)}/dia × fator)</span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Elasticidade β:</span>{' '}
+                <span className="mono">{item.beta_usado.toFixed(2)}</span>
+                <span className="ml-1 text-[10px] uppercase px-1.5 py-0.5 rounded"
+                      style={{
+                        background: item.qualidade_elasticidade === 'alta' ? 'color-mix(in srgb, var(--claude-sage) 20%, transparent)' :
+                                    item.qualidade_elasticidade === 'media' ? 'color-mix(in srgb, var(--claude-amber) 20%, transparent)' :
+                                    'color-mix(in srgb, var(--claude-stone) 20%, transparent)',
+                      }}>
+                  {item.qualidade_elasticidade}
+                </span>
+              </div>
+              <div>
+                <span className="text-[color:var(--claude-stone)]">Cobertura pós-promo:</span>{' '}
+                <span className="mono">
+                  {item.cobertura_pos_promo_dias != null ? `${item.cobertura_pos_promo_dias.toFixed(1)}d` : '∞'}
+                  {item.risco_stockout_pct != null && ` (risco ${(item.risco_stockout_pct * 100).toFixed(0)}%)`}
+                </span>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 
@@ -2895,7 +3509,7 @@ function SimuladorPage() {
 type Movimentacao = {
   movimentacao_id: number
   venda_id: number | null
-  tipo: 'ENTRADA' | 'SAIDA'
+  tipo: 'ENTRADA' | 'SAIDA' | 'QUEBRA'
   produto_id: number | null
   produto_nome: string
   produto_sku: string | null
@@ -2904,6 +3518,7 @@ type Movimentacao = {
   custo_unitario: number
   valor_total: number
   cidade: string | null
+  motivo: string | null
   data: string | null
 }
 
@@ -2911,15 +3526,16 @@ function HistoricoPage() {
   const [movs, setMovs] = useState<Movimentacao[]>([])
   const [loading, setLoading] = useState(true)
   const [dias, setDias] = useState(30)
-  const [filtroTipo, setFiltroTipo] = useState<'' | 'ENTRADA' | 'SAIDA'>('')
+  const [filtroTipo, setFiltroTipo] = useState<'' | 'ENTRADA' | 'SAIDA' | 'QUEBRA'>('')
   const [confirmando, setConfirmando] = useState<Movimentacao | null>(null)
   const [excluindo, setExcluindo] = useState(false)
   const [reconciliando, setReconciliando] = useState(false)
+  const [confirmReconciliar, setConfirmReconciliar] = useState(false)
   const [toast, setToast] = useState<{ tipo: 'ok' | 'erro'; msg: string } | null>(null)
 
-  const reconciliar = async () => {
+  const executarReconciliacao = async () => {
+    setConfirmReconciliar(false)
     if (reconciliando) return
-    if (!confirm('Reconciliar: recalcula estoque e custo de TODOS os produtos a partir do log de movimentações. Corrige estado inconsistente e desativa produtos sem movimentação. Continuar?')) return
     setReconciliando(true)
     try {
       const res = await axios.post(`${API_URL}/admin/reconciliar-estoques`)
@@ -2935,6 +3551,11 @@ function HistoricoPage() {
       setReconciliando(false)
       setTimeout(() => setToast(null), 6000)
     }
+  }
+
+  const reconciliar = () => {
+    if (reconciliando) return
+    setConfirmReconciliar(true)
   }
 
   const carregar = async () => {
@@ -2959,12 +3580,15 @@ function HistoricoPage() {
     try {
       if (confirmando.tipo === 'ENTRADA') {
         await axios.delete(`${API_URL}/entradas/${confirmando.movimentacao_id}`)
+      } else if (confirmando.tipo === 'QUEBRA') {
+        await axios.delete(`${API_URL}/quebras/${confirmando.movimentacao_id}`)
       } else if (confirmando.venda_id) {
         await axios.delete(`${API_URL}/vendas/${confirmando.venda_id}`)
       } else {
         throw new Error('Venda órfã — sem venda_id para deletar.')
       }
-      setToast({ tipo: 'ok', msg: `${confirmando.tipo === 'ENTRADA' ? 'Entrada' : 'Venda'} de ${confirmando.produto_nome} excluída. Estoque revertido.` })
+      const labelTipo = confirmando.tipo === 'ENTRADA' ? 'Entrada' : confirmando.tipo === 'QUEBRA' ? 'Quebra' : 'Venda'
+      setToast({ tipo: 'ok', msg: `${labelTipo} de ${confirmando.produto_nome} excluída. Estoque revertido.` })
       setConfirmando(null)
       await carregar()
     } catch (e: any) {
@@ -2978,8 +3602,10 @@ function HistoricoPage() {
   const totais = {
     entradas: movs.filter(m => m.tipo === 'ENTRADA').length,
     saidas: movs.filter(m => m.tipo === 'SAIDA').length,
+    quebras: movs.filter(m => m.tipo === 'QUEBRA').length,
     valorEntradas: movs.filter(m => m.tipo === 'ENTRADA').reduce((s, m) => s + m.valor_total, 0),
     valorSaidas: movs.filter(m => m.tipo === 'SAIDA').reduce((s, m) => s + m.valor_total, 0),
+    valorQuebras: movs.filter(m => m.tipo === 'QUEBRA').reduce((s, m) => s + m.valor_total, 0),
   }
 
   return (
@@ -3009,6 +3635,7 @@ function HistoricoPage() {
             <option value="">Todos os tipos</option>
             <option value="ENTRADA">Apenas entradas</option>
             <option value="SAIDA">Apenas saídas</option>
+            <option value="QUEBRA">Apenas quebras</option>
           </select>
           <select
             value={dias}
@@ -3024,7 +3651,7 @@ function HistoricoPage() {
       </header>
 
       {/* Sumário */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="claude-card p-4">
           <p className="section-label">Entradas</p>
           <p className="kpi-value text-2xl text-[color:var(--claude-sage)] mt-1">{totais.entradas}</p>
@@ -3035,12 +3662,17 @@ function HistoricoPage() {
           <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">{totais.saidas}</p>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorSaidas.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
         </div>
-        <div className="claude-card p-4 md:col-span-2">
+        <div className="claude-card p-4">
+          <p className="section-label">Quebras</p>
+          <p className="kpi-value text-2xl text-[color:var(--claude-amber)] mt-1">{totais.quebras}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorQuebras.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+        </div>
+        <div className="claude-card p-4">
           <p className="section-label">Fluxo líquido</p>
-          <p className={`kpi-value text-2xl mt-1 ${totais.valorSaidas - totais.valorEntradas >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
-            {totais.valorSaidas - totais.valorEntradas >= 0 ? '+' : ''}R$ {(totais.valorSaidas - totais.valorEntradas).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+          <p className={`kpi-value text-2xl mt-1 ${totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
+            {totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? '+' : ''}R$ {(totais.valorSaidas - totais.valorEntradas - totais.valorQuebras).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
           </p>
-          <p className="text-xs text-[color:var(--claude-stone)] mt-1">Receita − Custo de entradas na janela</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1">Receita − Custo entradas − Quebras</p>
         </div>
       </div>
 
@@ -3074,12 +3706,13 @@ function HistoricoPage() {
             <tbody className="divide-y divide-[color:var(--border)]">
               {movs.map(m => {
                 const isEntrada = m.tipo === 'ENTRADA'
-                const acentColor = isEntrada ? 'var(--claude-sage)' : 'var(--claude-coral)'
-                const Icon = isEntrada ? ArrowDownCircle : ArrowUpCircle
+                const isQuebra = m.tipo === 'QUEBRA'
+                const acentColor = isEntrada ? 'var(--claude-sage)' : isQuebra ? 'var(--claude-amber)' : 'var(--claude-coral)'
+                const Icon = isEntrada ? ArrowDownCircle : isQuebra ? Skull : ArrowUpCircle
                 const dataFmt = m.data
                   ? new Date(m.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
                   : '—'
-                const podeExcluir = isEntrada || m.venda_id !== null
+                const podeExcluir = isEntrada || isQuebra || m.venda_id !== null
                 return (
                   <tr key={`${m.tipo}-${m.movimentacao_id}`} className="hover:bg-[color:var(--claude-cream-deep)]/30 transition-colors">
                     <td className="px-4 py-3">
@@ -3087,6 +3720,9 @@ function HistoricoPage() {
                             style={{ color: acentColor }}>
                         <Icon size={14} /> {m.tipo}
                       </span>
+                      {isQuebra && m.motivo && (
+                        <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 capitalize">{m.motivo}</p>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <p className="text-sm font-medium text-[color:var(--claude-ink)] truncate max-w-[220px]">{m.produto_nome}</p>
@@ -3131,7 +3767,7 @@ function HistoricoPage() {
                 </div>
                 <div>
                   <p className="section-label">Confirmar exclusão</p>
-                  <h3 className="headline text-xl">Reverter {confirmando.tipo === 'ENTRADA' ? 'entrada' : 'venda'}?</h3>
+                  <h3 className="headline text-xl">Reverter {confirmando.tipo === 'ENTRADA' ? 'entrada' : confirmando.tipo === 'QUEBRA' ? 'quebra' : 'venda'}?</h3>
                 </div>
               </div>
               <button onClick={() => !excluindo && setConfirmando(null)}
@@ -3146,10 +3782,566 @@ function HistoricoPage() {
               <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">R$ {confirmando.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></p>
               <div className="mt-3 p-3 rounded-lg text-xs"
                    style={{ background: 'color-mix(in srgb, var(--claude-amber) 10%, transparent)', color: 'var(--claude-ink)' }}>
-                {confirmando.tipo === 'ENTRADA'
-                  ? <>⚠ Estoque cairá {confirmando.quantidade} un. Custo médio será recalculado a partir das entradas restantes.</>
-                  : <>↩ Estoque voltará +{confirmando.quantidade} un. Faturamento e margem do dia {confirmando.data?.slice(0, 10)} serão decrementados.</>
-                }
+                {confirmando.tipo === 'ENTRADA' && (
+                  <>⚠ Estoque cairá {confirmando.quantidade} un. Custo médio será recalculado a partir das entradas restantes.</>
+                )}
+                {confirmando.tipo === 'QUEBRA' && (
+                  <>↩ Estoque voltará +{confirmando.quantidade} un. Quebra do mês ({confirmando.data?.slice(0, 7)}) será decrementada do DRE (linha 4.2).</>
+                )}
+                {confirmando.tipo === 'SAIDA' && (
+                  <>↩ Estoque voltará +{confirmando.quantidade} un. Faturamento e margem do dia {confirmando.data?.slice(0, 10)} serão decrementados.</>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmando(null)}
+                disabled={excluindo}
+                className="px-4 py-2 text-sm rounded-lg border border-[color:var(--border)] text-[color:var(--claude-ink)] hover:bg-[color:var(--claude-cream-deep)] disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarExclusao}
+                disabled={excluindo}
+                className="px-4 py-2 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+                style={{ background: 'var(--claude-coral)' }}
+              >
+                {excluindo ? 'Excluindo…' : <><Trash2 size={14} /> Confirmar exclusão</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 claude-card px-4 py-3 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2"
+             style={{
+               borderLeftWidth: '4px',
+               borderLeftColor: toast.tipo === 'ok' ? 'var(--claude-sage)' : 'var(--claude-coral)'
+             }}>
+          {toast.tipo === 'ok' ? <Check size={16} className="text-[color:var(--claude-sage)]" /> : <AlertCircle size={16} className="text-[color:var(--claude-coral)]" />}
+          <p className="text-sm text-[color:var(--claude-ink)]">{toast.msg}</p>
+        </div>
+      )}
+
+      {/* Confirmar reconciliação global (substitui window.confirm) */}
+      <Confirm
+        open={confirmReconciliar}
+        title="Reconciliar estoques?"
+        body={
+          <p>
+            Recalcula <strong>estoque e custo de TODOS os produtos</strong> a partir
+            do log de movimentações. Corrige estado inconsistente e desativa produtos
+            sem movimentação. Esta operação pode demorar segundos em bancos grandes.
+          </p>
+        }
+        confirmLabel="Reconciliar"
+        loading={reconciliando}
+        onConfirm={executarReconciliacao}
+        onCancel={() => setConfirmReconciliar(false)}
+      />
+    </div>
+  )
+}
+
+// ============================================================================
+// QUEBRAS / PERDAS
+// ============================================================================
+
+const MOTIVOS_QUEBRA = [
+  { value: 'vencimento', label: 'Vencimento', desc: 'Produto venceu e não pode ser vendido' },
+  { value: 'avaria', label: 'Avaria', desc: 'Quebra física, embalagem danificada' },
+  { value: 'desvio', label: 'Desvio', desc: 'Furto, perda, sumiço inexplicado' },
+  { value: 'doacao', label: 'Doação', desc: 'Doado / dado de cortesia' },
+] as const
+
+type QuebraOut = {
+  movimentacao_id: number
+  produto_id: number
+  produto_nome: string
+  produto_sku: string | null
+  quantidade: number
+  peso: number
+  custo_unitario: number
+  valor_total: number
+  motivo: string
+  cidade: string | null
+  observacao: string | null
+  data: string | null
+}
+
+type QuebraResumo = {
+  mes: string
+  valor_total: number
+  quantidade_total: number
+  eventos: number
+  pct_faturamento: number
+  por_motivo: Array<{ motivo: string; quantidade: number; valor: number; eventos: number }>
+  top_produtos: Array<{ produto_id: number; produto_nome: string; produto_sku: string | null; quantidade: number; valor: number; eventos: number }>
+}
+
+function QuebrasPage() {
+  const [tab, setTab] = useState<'registrar' | 'historico'>('registrar')
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [quebras, setQuebras] = useState<QuebraOut[]>([])
+  const [resumo, setResumo] = useState<QuebraResumo | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [salvando, setSalvando] = useState(false)
+  const [toast, setToast] = useState<{ tipo: 'ok' | 'erro'; msg: string } | null>(null)
+  const [confirmando, setConfirmando] = useState<QuebraOut | null>(null)
+  const [excluindo, setExcluindo] = useState(false)
+
+  // form state
+  const [busca, setBusca] = useState('')
+  const [produtoSelecionado, setProdutoSelecionado] = useState<any>(null)
+  const [quantidade, setQuantidade] = useState('')
+  const [peso, setPeso] = useState('')
+  const [motivo, setMotivo] = useState('vencimento')
+  const [cidade, setCidade] = useState<string>('')
+  const [filtroMotivo, setFiltroMotivo] = useState<string>('')
+  const [dias, setDias] = useState(30)
+
+  const carregar = async () => {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ dias: String(dias) })
+      if (filtroMotivo) params.append('motivo', filtroMotivo)
+      const [a, b] = await Promise.all([
+        axios.get(`${API_URL}/quebras?${params}`),
+        axios.get(`${API_URL}/quebras/resumo`),
+      ])
+      setQuebras(a.data)
+      setResumo(b.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data.filter((p: any) => p.ativo)))
+  }, [])
+
+  useEffect(() => { carregar() }, [dias, filtroMotivo])
+
+  const candidatos = busca.length >= 2
+    ? produtos.filter(p =>
+        p.nome?.toLowerCase().includes(busca.toLowerCase()) ||
+        p.sku?.toLowerCase().includes(busca.toLowerCase()) ||
+        p.codigo?.toLowerCase().includes(busca.toLowerCase())
+      ).slice(0, 6)
+    : []
+
+  const salvar = async () => {
+    if (!produtoSelecionado) {
+      setToast({ tipo: 'erro', msg: 'Selecione um produto.' })
+      return
+    }
+    const q = parseFloat(quantidade.replace(',', '.'))
+    if (!q || q <= 0) {
+      setToast({ tipo: 'erro', msg: 'Quantidade inválida.' })
+      return
+    }
+    if (q > produtoSelecionado.estoque_qtd) {
+      setToast({ tipo: 'erro', msg: `Estoque insuficiente. Disponível: ${produtoSelecionado.estoque_qtd}` })
+      return
+    }
+    const p = peso ? parseFloat(peso.replace(',', '.')) : null
+    setSalvando(true)
+    try {
+      const payload: any = {
+        produto_id: produtoSelecionado.id,
+        quantidade: q,
+        motivo,
+      }
+      if (p !== null && !Number.isNaN(p)) payload.peso = p
+      if (cidade) payload.cidade = cidade
+      const res = await axios.post(`${API_URL}/quebras`, payload)
+      setToast({
+        tipo: 'ok',
+        msg: `Quebra registrada: ${q} un. de ${produtoSelecionado.nome} (R$ ${res.data.valor_total.toFixed(2)}).`,
+      })
+      // limpa formulário
+      setProdutoSelecionado(null)
+      setBusca('')
+      setQuantidade('')
+      setPeso('')
+      // refresca produtos pra mostrar estoque atualizado
+      const r = await axios.get(`${API_URL}/produtos`)
+      setProdutos(r.data.filter((p: any) => p.ativo))
+      await carregar()
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao registrar quebra.' })
+    } finally {
+      setSalvando(false)
+      setTimeout(() => setToast(null), 5000)
+    }
+  }
+
+  const confirmarExclusao = async () => {
+    if (!confirmando) return
+    setExcluindo(true)
+    try {
+      await axios.delete(`${API_URL}/quebras/${confirmando.movimentacao_id}`)
+      setToast({ tipo: 'ok', msg: `Quebra de ${confirmando.produto_nome} revertida.` })
+      setConfirmando(null)
+      const r = await axios.get(`${API_URL}/produtos`)
+      setProdutos(r.data.filter((p: any) => p.ativo))
+      await carregar()
+    } catch (e: any) {
+      setToast({ tipo: 'erro', msg: e?.response?.data?.detail || e.message || 'Erro ao excluir.' })
+    } finally {
+      setExcluindo(false)
+      setTimeout(() => setToast(null), 4500)
+    }
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header>
+        <p className="section-label mb-1">Controle · perdas de estoque</p>
+        <h2 className="headline text-4xl tracking-editorial">Quebras e Perdas</h2>
+        <p className="text-[color:var(--claude-stone)] mt-1">
+          Registre vencimentos, avarias, desvios e doações. Reduz estoque sem contar como demanda; impacta a linha 4.2 do DRE.
+        </p>
+      </header>
+
+      {/* KPIs do mês */}
+      {resumo && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="claude-card p-4">
+            <p className="section-label">Valor perdido · {resumo.mes}</p>
+            <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">
+              R$ {resumo.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">{resumo.eventos} evento(s)</p>
+          </div>
+          <div className="claude-card p-4">
+            <p className="section-label">Quantidade total</p>
+            <p className="kpi-value text-2xl text-[color:var(--claude-ink)] mt-1 mono">
+              {resumo.quantidade_total.toLocaleString('pt-BR', {maximumFractionDigits: 2})}
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">unidades baixadas</p>
+          </div>
+          <div className="claude-card p-4">
+            <p className="section-label">% do faturamento</p>
+            <p className={`kpi-value text-2xl mt-1 ${resumo.pct_faturamento > 0.02 ? 'text-[color:var(--claude-coral)]' : 'text-[color:var(--claude-amber)]'}`}>
+              {(resumo.pct_faturamento * 100).toFixed(2)}%
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">benchmark ABRAS: 1,5–2%</p>
+          </div>
+          <div className="claude-card p-4">
+            <p className="section-label">Motivo dominante</p>
+            <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1 capitalize">
+              {resumo.por_motivo[0]?.motivo || '—'}
+            </p>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">
+              {resumo.por_motivo[0]
+                ? `R$ ${resumo.por_motivo[0].valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+                : 'sem registros'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-[color:var(--border)]">
+        {(['registrar', 'historico'] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium capitalize border-b-2 transition-colors ${
+              tab === t
+                ? 'border-[color:var(--claude-coral)] text-[color:var(--claude-ink)]'
+                : 'border-transparent text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]'
+            }`}
+          >
+            {t === 'registrar' ? 'Registrar' : 'Histórico'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'registrar' && (
+        <div className="claude-card p-6 space-y-4">
+          {/* Produto */}
+          <div>
+            <label className="section-label">Produto</label>
+            {produtoSelecionado ? (
+              <div className="mt-1 flex items-center justify-between p-3 rounded-lg bg-[color:var(--claude-cream-deep)]/40 border border-[color:var(--border)]">
+                <div>
+                  <p className="text-sm font-medium text-[color:var(--claude-ink)]">{produtoSelecionado.nome}</p>
+                  <p className="text-xs text-[color:var(--claude-stone)] mono mt-0.5">
+                    {produtoSelecionado.sku} · estoque: {produtoSelecionado.estoque_qtd} un. · custo: R$ {produtoSelecionado.custo?.toFixed(2)}
+                  </p>
+                </div>
+                <button
+                  onClick={() => { setProdutoSelecionado(null); setBusca('') }}
+                  className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-coral)]"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            ) : (
+              <div className="relative mt-1">
+                <input
+                  type="text"
+                  value={busca}
+                  onChange={e => setBusca(e.target.value)}
+                  placeholder="Busque por nome, SKU ou código..."
+                  className="w-full px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm"
+                />
+                {candidatos.length > 0 && (
+                  <div className="absolute z-10 left-0 right-0 mt-1 claude-card max-h-72 overflow-y-auto">
+                    {candidatos.map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => { setProdutoSelecionado(p); setBusca(p.nome) }}
+                        className="w-full text-left px-3 py-2 hover:bg-[color:var(--claude-cream-deep)]/40 border-b border-[color:var(--border)] last:border-0"
+                      >
+                        <p className="text-sm font-medium text-[color:var(--claude-ink)]">{p.nome}</p>
+                        <p className="text-xs text-[color:var(--claude-stone)] mono">
+                          {p.sku} · estoque: {p.estoque_qtd} · custo: R$ {p.custo?.toFixed(2)}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Qtd + Peso */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="section-label">Quantidade</label>
+              <input
+                type="text"
+                value={quantidade}
+                onChange={e => setQuantidade(e.target.value)}
+                placeholder="ex: 5"
+                className="w-full mt-1 px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm mono"
+              />
+              {produtoSelecionado && quantidade && parseFloat(quantidade.replace(',', '.')) > 0 && (
+                <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">
+                  Valor: R$ {(parseFloat(quantidade.replace(',', '.')) * (produtoSelecionado.custo || 0)).toFixed(2)}
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="section-label">Peso (opcional)</label>
+              <input
+                type="text"
+                value={peso}
+                onChange={e => setPeso(e.target.value)}
+                placeholder="kg (deixe vazio para usar peso médio)"
+                className="w-full mt-1 px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm mono"
+              />
+            </div>
+          </div>
+
+          {/* Motivo */}
+          <div>
+            <label className="section-label">Motivo</label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-1">
+              {MOTIVOS_QUEBRA.map(m => (
+                <button
+                  key={m.value}
+                  onClick={() => setMotivo(m.value)}
+                  className={`p-3 rounded-lg border text-left transition-colors ${
+                    motivo === m.value
+                      ? 'border-[color:var(--claude-coral)] bg-[color:var(--claude-coral)]/5'
+                      : 'border-[color:var(--border)] hover:bg-[color:var(--claude-cream-deep)]/40'
+                  }`}
+                >
+                  <p className="text-sm font-medium text-[color:var(--claude-ink)]">{m.label}</p>
+                  <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 leading-tight">{m.desc}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cidade */}
+          <div>
+            <label className="section-label">Cidade (opcional)</label>
+            <select
+              value={cidade}
+              onChange={e => setCidade(e.target.value)}
+              className="w-full mt-1 px-3 py-2 border border-[color:var(--border)] rounded-lg bg-white text-sm"
+            >
+              <option value="">—</option>
+              {CIDADES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+
+          {/* Botão */}
+          <div className="flex justify-end pt-2">
+            <button
+              onClick={salvar}
+              disabled={salvando || !produtoSelecionado || !quantidade}
+              className="px-5 py-2.5 text-sm rounded-lg font-medium text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+              style={{ background: 'var(--claude-coral)' }}
+            >
+              {salvando ? 'Registrando…' : <><Skull size={14} /> Registrar quebra</>}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'historico' && (
+        <>
+          {/* Filtros */}
+          <div className="flex gap-2 items-center justify-end">
+            <select
+              value={filtroMotivo}
+              onChange={(e) => setFiltroMotivo(e.target.value)}
+              className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+            >
+              <option value="">Todos os motivos</option>
+              {MOTIVOS_QUEBRA.map(m => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+            <select
+              value={dias}
+              onChange={(e) => setDias(Number(e.target.value))}
+              className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+            >
+              <option value={7}>7 dias</option>
+              <option value={30}>30 dias</option>
+              <option value={90}>90 dias</option>
+              <option value={365}>1 ano</option>
+            </select>
+          </div>
+
+          {/* Tabela */}
+          <div className="claude-card overflow-hidden">
+            {loading ? (
+              <div className="p-12 flex justify-center">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[color:var(--claude-coral)]"></div>
+              </div>
+            ) : quebras.length === 0 ? (
+              <div className="p-12 text-center">
+                <Skull className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={32} />
+                <p className="serif italic text-[color:var(--claude-stone)]">Nenhuma quebra no período.</p>
+                <p className="text-xs text-[color:var(--claude-stone)]/70 mt-1">Bom sinal! Continue de olho no estoque.</p>
+              </div>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-[color:var(--border)] bg-[color:var(--claude-cream-deep)]/40">
+                    <th className="px-4 py-3 section-label">Data</th>
+                    <th className="px-4 py-3 section-label">Produto</th>
+                    <th className="px-4 py-3 section-label">Motivo</th>
+                    <th className="px-4 py-3 section-label text-right">Qtd</th>
+                    <th className="px-4 py-3 section-label text-right">Custo unit.</th>
+                    <th className="px-4 py-3 section-label text-right">Valor perdido</th>
+                    <th className="px-4 py-3 section-label">Cidade</th>
+                    <th className="px-4 py-3 section-label text-center">Ação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[color:var(--border)]">
+                  {quebras.map(q => {
+                    const dataFmt = q.data
+                      ? new Date(q.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+                      : '—'
+                    return (
+                      <tr key={q.movimentacao_id} className="hover:bg-[color:var(--claude-cream-deep)]/30 transition-colors">
+                        <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)] mono">{dataFmt}</td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium text-[color:var(--claude-ink)] truncate max-w-[220px]">{q.produto_nome}</p>
+                          {q.produto_sku && <p className="text-[10px] text-[color:var(--claude-stone)] mono">{q.produto_sku}</p>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wide capitalize"
+                                style={{
+                                  background: 'color-mix(in srgb, var(--claude-amber) 18%, transparent)',
+                                  color: 'var(--claude-ink)',
+                                }}>
+                            {q.motivo}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{q.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</td>
+                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-stone)]">R$ {q.custo_unitario.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right mono text-sm font-semibold text-[color:var(--claude-coral)]">
+                          R$ {q.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)]">{q.cidade || '—'}</td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            onClick={() => setConfirmando(q)}
+                            title="Reverter quebra (devolve estoque)"
+                            className="p-1.5 rounded-lg text-[color:var(--claude-stone)] hover:text-[color:var(--claude-coral)] hover:bg-[color:var(--claude-coral)]/10 transition-colors"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Top produtos perdidos */}
+          {resumo && resumo.top_produtos.length > 0 && (
+            <div className="claude-card p-6">
+              <p className="section-label mb-3">Top produtos com mais perda · {resumo.mes}</p>
+              <div className="space-y-2">
+                {resumo.top_produtos.slice(0, 5).map((p, i) => (
+                  <div key={p.produto_id} className="flex items-center justify-between py-2 border-b border-[color:var(--border)] last:border-0">
+                    <div className="flex items-center gap-3">
+                      <span className="w-6 h-6 rounded-full bg-[color:var(--claude-cream-deep)] text-xs font-bold flex items-center justify-center">{i + 1}</span>
+                      <div>
+                        <p className="text-sm font-medium text-[color:var(--claude-ink)]">{p.produto_nome}</p>
+                        <p className="text-[10px] text-[color:var(--claude-stone)] mono">{p.produto_sku || '—'} · {p.eventos} evento(s)</p>
+                      </div>
+                    </div>
+                    <p className="mono text-sm font-semibold text-[color:var(--claude-coral)]">
+                      R$ {p.valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Modal confirmação */}
+      {confirmando && (
+        <div className="fixed inset-0 bg-[color:var(--claude-ink)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+             onClick={() => !excluindo && setConfirmando(null)}>
+          <div className="claude-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                     style={{ background: 'color-mix(in srgb, var(--claude-coral) 15%, transparent)' }}>
+                  <AlertTriangle size={20} className="text-[color:var(--claude-coral)]" />
+                </div>
+                <div>
+                  <p className="section-label">Confirmar exclusão</p>
+                  <h3 className="headline text-xl">Reverter quebra?</h3>
+                </div>
+              </div>
+              <button onClick={() => !excluindo && setConfirmando(null)}
+                      className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-sm text-[color:var(--claude-ink)] mb-5">
+              <p><span className="text-[color:var(--claude-stone)]">Produto:</span> <span className="font-medium">{confirmando.produto_nome}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Motivo:</span> <span className="capitalize">{confirmando.motivo}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Quantidade:</span> <span className="mono">{confirmando.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">R$ {confirmando.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></p>
+              <div className="mt-3 p-3 rounded-lg text-xs"
+                   style={{ background: 'color-mix(in srgb, var(--claude-amber) 10%, transparent)', color: 'var(--claude-ink)' }}>
+                ↩ Estoque voltará +{confirmando.quantidade} un. CMP do produto será recalculado. Linha 4.2 do DRE será decrementada.
               </div>
             </div>
 
@@ -3210,6 +4402,7 @@ type DREMensal = {
   devolucoes: number
   receita_liquida: number
   cmv: number
+  quebras: number
   lucro_bruto: number
   margem_bruta_pct: number
   despesas_vendas: number
@@ -3230,6 +4423,8 @@ type DRECompPonto = {
   mes: string
   receita_bruta: number
   receita_liquida: number
+  cmv: number
+  quebras: number
   lucro_bruto: number
   ebitda: number
   lucro_liquido: number
@@ -3623,10 +4818,25 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
     }
   }
 
-  const handleExcluir = async (id: number) => {
-    if (!confirm('Excluir lançamento?')) return
-    await axios.delete(`${API_URL}/despesas/${id}`)
-    fetchData()
+  const [confirmExcluirId, setConfirmExcluirId] = useState<number | null>(null)
+  const [excluindoLanc, setExcluindoLanc] = useState(false)
+
+  const handleExcluir = (id: number) => {
+    setConfirmExcluirId(id)
+  }
+
+  const executarExcluirLancamento = async () => {
+    if (confirmExcluirId == null || excluindoLanc) return
+    setExcluindoLanc(true)
+    try {
+      await axios.delete(`${API_URL}/despesas/${confirmExcluirId}`)
+      setConfirmExcluirId(null)
+      fetchData()
+    } catch (e: any) {
+      alert('Falha ao excluir: ' + (e?.response?.data?.detail || e.message))
+    } finally {
+      setExcluindoLanc(false)
+    }
   }
 
   const totalPorTipo = lancamentos.reduce<Record<string, number>>((acc, l) => {
@@ -3776,6 +4986,18 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
           </table>
         )}
       </div>
+
+      {/* Confirmar exclusão de lançamento (substitui window.confirm) */}
+      <Confirm
+        open={confirmExcluirId !== null}
+        title="Excluir lançamento?"
+        body={<p>Esta operação remove o lançamento financeiro permanentemente. Os totais do DRE do mês serão recalculados.</p>}
+        confirmLabel="Excluir"
+        danger
+        loading={excluindoLanc}
+        onConfirm={executarExcluirLancamento}
+        onCancel={() => setConfirmExcluirId(null)}
+      />
     </div>
   )
 }
@@ -4140,11 +5362,11 @@ function BPPage() {
     }
   }
 
-  const fecharBP = async () => {
-    if (dirty) {
-      if (!confirm('Há alterações não salvas. Salvar antes de fechar?')) return
-      await salvarRascunho()
-    }
+  const [confirmFecharSalvar, setConfirmFecharSalvar] = useState(false)
+  const [fechandoBP, setFechandoBP] = useState(false)
+
+  const executarFechamento = async () => {
+    setFechandoBP(true)
     try {
       const res = await axios.post(`${API_URL}/bp/fechar?mes=${mes}`)
       setBp(res.data)
@@ -4157,7 +5379,24 @@ function BPPage() {
       } else {
         alert('Falha ao fechar: ' + (d || e.message))
       }
+    } finally {
+      setFechandoBP(false)
     }
+  }
+
+  const fecharBP = async () => {
+    if (dirty) {
+      // dispara modal: usuário decide se salva antes ou cancela
+      setConfirmFecharSalvar(true)
+      return
+    }
+    await executarFechamento()
+  }
+
+  const confirmarSalvarEFechar = async () => {
+    setConfirmFecharSalvar(false)
+    await salvarRascunho()
+    await executarFechamento()
   }
 
   const auditarBP = async () => {
@@ -4268,6 +5507,23 @@ function BPPage() {
           {tab === 'historico' && <BPHistoricoView onSelect={(m) => { setMes(m); setTab('resumo') }} />}
         </>
       )}
+
+      {/* Confirmar salvar antes de fechar (substitui window.confirm) */}
+      <Confirm
+        open={confirmFecharSalvar}
+        title="Salvar antes de fechar?"
+        body={
+          <p>
+            Há <strong>alterações não salvas</strong> no rascunho. O fechamento valida
+            a equação fundamental usando os valores persistidos. Salvar agora antes
+            de tentar fechar?
+          </p>
+        }
+        confirmLabel="Salvar e fechar"
+        loading={fechandoBP}
+        onConfirm={confirmarSalvarEFechar}
+        onCancel={() => setConfirmFecharSalvar(false)}
+      />
     </div>
   )
 }

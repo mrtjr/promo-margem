@@ -2,7 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException, Header, Request, UploadFile
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
-from sqlalchemy import func
+from contextlib import asynccontextmanager
+from sqlalchemy import func, text
 
 from dataclasses import asdict
 from datetime import date as date_type, timedelta
@@ -24,6 +25,9 @@ from .services import (
     pdv_service,
     fechamento_csv_service,
     bp_service,
+    quebra_service,
+    elasticidade_service,
+    engine_promocao_service,
 )
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
@@ -38,66 +42,115 @@ except Exception as e:
     print(f"[migrations] FAIL: {e}")
     raise
 
-app = FastAPI(title="PromoMargem API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: "FastAPI"):
+    """
+    Bootstrap do backend (substitui o deprecated @app.on_event).
 
-@app.on_event("startup")
-async def startup_event():
-    # Force Structured Groups
+    Ordem é intencional:
+      1. Seeds idempotentes (grupos, plano de contas, config tributária)
+      2. Backfill VendaDiariaSKU (só roda 1x; skip automático depois)
+      3. Recálculo de elasticidades (respeita TTL 7d) + expiração de propostas
+
+    Cada bloco em try/except próprio: nunca bloqueia inicialização do app.
+    """
     db = database.SessionLocal()
-    new_categories = ["ALIMENTICIOS", "TEMPEROS", "EMBALAGENS", "CEREAIS"]
-    
-    # Check if we have the wrong categories
-    existing_groups = db.query(models.Grupo).all()
-    existing_names = [g.nome for g in existing_groups]
-    
-    if set(existing_names) != set(new_categories):
-        # We need to be careful with foreign keys, but for this dev stage we reset
-        for g in existing_groups:
-            # First, unset grupo_id in products to avoid FK errors
-            db.query(models.Produto).filter(models.Produto.grupo_id == g.id).update({"grupo_id": None})
-            db.delete(g)
-        db.commit()
-        
-        for cat_name in new_categories:
-            g = models.Grupo(
-                nome=cat_name,
-                margem_minima=0.17,
-                margem_maxima=0.20,
-                desconto_maximo_permitido=10.0
-            )
-            db.add(g)
-        db.commit()
-
-    # Backfill idempotente: popula vendas_diarias_sku a partir do histórico
-    # de Venda. Só roda na primeira inicialização após a migração; depois
-    # é skip automático.
     try:
-        resultado = estoque_service.backfill_vendas_diarias_sku(db)
-        if not resultado["skipped"]:
-            print(
-                f"[startup] Backfill vendas_diarias_sku: "
-                f"{resultado['vendas_lidas']} vendas lidas, "
-                f"{resultado['dias_criados']} agregados criados."
-            )
-    except Exception as e:
-        print(f"[startup] Backfill falhou (ignorando): {e}")
+        # 1. Seeds básicos (grupos, plano de contas, config). NÃO destrutivos:
+        # só criam o que falta. Renomear grupo no banco persiste — não é mais
+        # sobrescrito a cada deploy.
+        try:
+            seed_info = dre_seed.seed_tudo(db)
+            criados = seed_info.get("grupos_criados", 0)
+            contas = seed_info.get("contas_criadas", 0)
+            if criados > 0 or contas > 0 or seed_info.get("config_criada"):
+                print(
+                    f"[startup] Seeds: grupos={criados}, contas={contas}, "
+                    f"config_criada={seed_info.get('config_criada')}"
+                )
+        except Exception as e:
+            print(f"[startup] Seeds falharam (ignorando): {e}")
 
-    # Seed DRE: plano de contas + config tributária default (Simples 8%).
-    try:
-        dre_info = dre_seed.seed_tudo(db)
-        if dre_info["contas_criadas"] > 0 or dre_info["config_criada"]:
-            print(
-                f"[startup] DRE seed: {dre_info['contas_criadas']} contas criadas, "
-                f"config_criada={dre_info['config_criada']}"
-            )
-    except Exception as e:
-        print(f"[startup] DRE seed falhou (ignorando): {e}")
+        # 2. Backfill VendaDiariaSKU a partir de Venda (idempotente).
+        try:
+            resultado = estoque_service.backfill_vendas_diarias_sku(db)
+            if not resultado["skipped"]:
+                print(
+                    f"[startup] Backfill vendas_diarias_sku: "
+                    f"{resultado['vendas_lidas']} vendas lidas, "
+                    f"{resultado['dias_criados']} agregados criados."
+                )
+        except Exception as e:
+            print(f"[startup] Backfill falhou (ignorando): {e}")
 
-    db.close()
+        # 3. Engine de Promoção: cache de elasticidades + housekeeping.
+        try:
+            info = elasticidade_service.recalcular_todas(db, force=False)
+            if info["recalculados"] > 0:
+                print(
+                    f"[startup] Elasticidades: {info['recalculados']} recalculadas "
+                    f"(alta={info['qualidade_alta']}, media={info['qualidade_media']}, "
+                    f"baixa={info['qualidade_baixa']}, prior={info['qualidade_prior']})"
+                )
+            n_expiradas = engine_promocao_service.expirar_propostas_antigas(db)
+            if n_expiradas > 0:
+                print(f"[startup] Engine: {n_expiradas} proposta(s) expiradas (TTL 24h)")
+        except Exception as e:
+            print(f"[startup] Engine de Promoção falhou (ignorando): {e}")
+    finally:
+        db.close()
+
+    yield  # ----- app rodando -----
+
+    # Shutdown: nada a fazer hoje (sem conexões persistentes pra fechar).
+
+
+app = FastAPI(title="PromoMargem API", version="0.12.0", lifespan=lifespan)
+
+# CORS — permite que o frontend rode em outra origin (ex: vite dev em :5173)
+# enquanto fala com o backend em :8000. Em produção via Docker o tráfego
+# passa pelo nginx no mesmo origin, então o middleware é no-op.
+# Customizar via env var CORS_ORIGINS=https://app.exemplo.com,https://outra.com
+from fastapi.middleware.cors import CORSMiddleware
+
+_cors_default = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173"
+_cors_origins = [
+    o.strip() for o in os.getenv("CORS_ORIGINS", _cors_default).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to PromoMargem API - Smart Version"}
+
+
+@app.get("/health")
+async def health(db: Session = Depends(get_db)):
+    """
+    Health-check de liveness + readiness.
+
+    - 200 + {status: 'ok', db: True, version}: app saudável e DB acessível.
+    - 503 + {status: 'down', db: False, error}: app de pé mas DB inalcançável.
+
+    Usado pelo docker-compose healthcheck do container backend e por
+    monitoramento externo (load balancer, uptime checks).
+    """
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok", "db": True, "version": app.version}
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "down", "db": False, "error": str(e)},
+        )
 
 @app.get("/sugestoes", response_model=List[schemas.Sugestao])
 async def get_sugestoes(db: Session = Depends(get_db)):
@@ -187,8 +240,8 @@ async def historico_movimentacoes(
     """
     if dias < 1 or dias > 365:
         raise HTTPException(status_code=400, detail="dias deve estar entre 1 e 365")
-    if tipo and tipo not in ("ENTRADA", "SAIDA"):
-        raise HTTPException(status_code=400, detail="tipo deve ser ENTRADA ou SAIDA")
+    if tipo and tipo not in ("ENTRADA", "SAIDA", "QUEBRA"):
+        raise HTTPException(status_code=400, detail="tipo deve ser ENTRADA, SAIDA ou QUEBRA")
     return estoque_service.listar_historico_movimentacoes(db, dias=dias, tipo=tipo, produto_id=produto_id)
 
 
@@ -214,6 +267,97 @@ async def excluir_venda_endpoint(venda_id: int, db: Session = Depends(get_db)):
     """
     try:
         detalhe = estoque_service.excluir_venda(db, venda_id)
+        return {"ok": True, "detalhe": detalhe}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# QUEBRAS / PERDAS
+# ============================================================================
+
+@app.post("/quebras", response_model=schemas.QuebraOut, status_code=201)
+async def registrar_quebra_endpoint(
+    payload: schemas.QuebraCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    Registra uma quebra/perda de estoque.
+
+    Decrementa estoque (qtd + peso), cria Movimentacao tipo='QUEBRA' com
+    custo_unitario congelado = produto.custo no momento. Não cria Venda nem
+    afeta histórico de demanda. Reflete na linha 4.2 do DRE do mês corrente.
+    """
+    try:
+        return quebra_service.registrar_quebra(db, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/quebras/bulk", response_model=List[schemas.QuebraOut], status_code=201)
+async def registrar_quebra_bulk_endpoint(
+    payload: schemas.QuebraBulkRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Registra várias quebras numa transação. Se qualquer item falhar, faz
+    rollback do lote inteiro.
+    """
+    try:
+        return quebra_service.registrar_quebra_bulk(db, payload.quebras)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/quebras", response_model=List[schemas.QuebraOut])
+async def listar_quebras_endpoint(
+    dias: int = 30,
+    motivo: Optional[str] = None,
+    produto_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista quebras dos últimos `dias`. Filtros: motivo, produto_id.
+    """
+    if dias < 1 or dias > 365:
+        raise HTTPException(status_code=400, detail="dias deve estar entre 1 e 365")
+    if motivo and motivo not in schemas.MOTIVOS_QUEBRA_VALIDOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"motivo invalido. Use: {', '.join(schemas.MOTIVOS_QUEBRA_VALIDOS)}",
+        )
+    return quebra_service.listar_quebras(db, dias=dias, motivo=motivo, produto_id=produto_id)
+
+
+@app.get("/quebras/resumo", response_model=schemas.QuebraResumoMes)
+async def resumo_quebras_endpoint(
+    mes: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Resumo de quebras do mês. `mes` em YYYY-MM. Default: mês corrente.
+    Retorna totais, breakdown por motivo e top produtos.
+    """
+    if mes:
+        try:
+            partes = mes.split("-")
+            mes_ref = date_type(int(partes[0]), int(partes[1]), 1)
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail="mes deve estar no formato YYYY-MM")
+    else:
+        hoje = date_type.today()
+        mes_ref = hoje.replace(day=1)
+    return quebra_service.resumo_mes(db, mes_ref)
+
+
+@app.delete("/quebras/{movimentacao_id}", response_model=schemas.ExclusaoResponse)
+async def excluir_quebra_endpoint(movimentacao_id: int, db: Session = Depends(get_db)):
+    """
+    Exclui uma quebra: devolve qtd + peso ao estoque, recalcula CMP do produto.
+    Espelho de excluir_entrada.
+    """
+    try:
+        detalhe = quebra_service.excluir_quebra(db, movimentacao_id)
         return {"ok": True, "detalhe": detalhe}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -330,6 +474,8 @@ async def atualizar_produto(
         prod.preco_venda = payload.preco_venda
     if payload.ativo is not None:
         prod.ativo = payload.ativo
+    if payload.bloqueado_engine is not None:
+        prod.bloqueado_engine = payload.bloqueado_engine
 
     db.commit()
     db.refresh(prod)
@@ -350,25 +496,27 @@ async def simulate_promo(req: schemas.SimulacaoRequest, db: Session = Depends(ge
     )
     return res
 
-@app.post("/entradas/bulk")
+@app.post("/entradas/bulk", response_model=schemas.BulkOperationResponse)
 async def bulk_entries(req: schemas.EntradaBulkRequest, db: Session = Depends(get_db)):
-    # Special logic to create products if they don't exist yet during bulk entry
+    # Pre-link de grupo para produtos já existentes (mantém comportamento legado:
+    # quando o cliente envia produto_id + grupo_id, atualiza o grupo do produto
+    # ANTES de registrar a entrada — útil pra reclassificar via importação).
     for e in req.entradas:
-        # Link products to categories if provided even if already exist
         if e.produto_id and e.grupo_id:
-             prod = db.query(models.Produto).filter(models.Produto.id == e.produto_id).first()
-             if prod:
-                 prod.grupo_id = e.grupo_id
-                 db.commit()
+            prod = db.query(models.Produto).filter(models.Produto.id == e.produto_id).first()
+            if prod:
+                prod.grupo_id = e.grupo_id
+                db.commit()
 
-    success = await estoque_service.registrar_entrada_bulk(db, req.entradas)
-    return {"status": "success" if success else "error"}
+    info = estoque_service.registrar_entrada_bulk(db, req.entradas)
+    return {"ok": len(info["erros"]) == 0, **info}
 
-@app.post("/vendas/bulk")
+
+@app.post("/vendas/bulk", response_model=schemas.BulkOperationResponse)
 async def bulk_sales(req: schemas.VendaBulkRequest, db: Session = Depends(get_db)):
-    vendas_list = [v.dict() for v in req.vendas]
-    success = estoque_service.registrar_venda_bulk(db, vendas_list)
-    return {"status": "success" if success else "error"}
+    vendas_list = [v.model_dump() for v in req.vendas]
+    info = estoque_service.registrar_venda_bulk(db, vendas_list)
+    return {"ok": len(info["erros"]) == 0, **info}
 
 @app.post("/fechamento", response_model=schemas.AnaliseFechamentoResponse)
 async def registrar_fechamento(req: schemas.FechamentoVendaRequest, db: Session = Depends(get_db)):
@@ -376,7 +524,7 @@ async def registrar_fechamento(req: schemas.FechamentoVendaRequest, db: Session 
     Fluxo unificado: registra as vendas do dia E já retorna a análise consolidada.
     Se `data` não for enviado, usa hoje.
     """
-    vendas_list = [v.dict() for v in req.vendas]
+    vendas_list = [v.model_dump() for v in req.vendas]
     data_alvo: date_type = req.data or date_type.today()
     estoque_service.registrar_venda_bulk(db, vendas_list, data_fechamento=data_alvo)
     analise = analise_service.analisar_fechamento(db, data_alvo)
@@ -778,7 +926,7 @@ async def bp_upsert(payload: schemas.BalancoPatrimonialIn, db: Session = Depends
     Cria ou atualiza BP em rascunho. Totais e indicador são recalculados.
     Rejeita se status atual = fechado ou auditado.
     """
-    bp = bp_service.upsert_bp(db, payload.dict())
+    bp = bp_service.upsert_bp(db, payload.model_dump())
     return bp_service.serializar(bp)
 
 
@@ -875,7 +1023,7 @@ async def excluir_promocao(promocao_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.post("/simular/grupo")
+@app.post("/simular/grupo", response_model=schemas.SimulacaoPorGrupoResponse)
 async def simular_por_grupo(
     req: schemas.SimulacaoPorGrupoRequest, db: Session = Depends(get_db)
 ):
@@ -884,6 +1032,136 @@ async def simular_por_grupo(
     Retorna impacto consolidado + lista de SKUs.
     """
     return promocao_service.simular_por_grupo(db, req.grupo_id, req.desconto_pct)
+
+
+# ============================================================================
+# Engine de Promoção orientada a meta (v0.12)
+# ============================================================================
+
+@app.post("/promocoes/engine/propor", response_model=schemas.EngineProporResponse)
+async def engine_propor(
+    req: schemas.EngineProporRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Solver inverso: você informa META de margem semanal e o engine propõe
+    3 cestas (conservador/balanceado/agressivo). Cada cesta tem SKUs com
+    desconto, projeção de impacto e risco de stockout.
+
+    Persiste as 3 cestas em status='proposta' — usuário aprova uma e as
+    outras viram 'descartada' automaticamente.
+    """
+    try:
+        cestas, contadores = engine_promocao_service.gerar_propostas(
+            db,
+            meta_margem_pct=req.meta_margem_pct,
+            janela_dias=req.janela_dias,
+            max_skus_por_cesta=req.max_skus_por_cesta,
+            perfis=req.perfis,
+            margem_minima_sku_pct=req.margem_minima_sku_pct,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    cestas_out = [engine_promocao_service.serializar_cesta(db, c) for c in cestas]
+    nenhuma_atinge = all(not c.get("atinge_meta") for c in cestas_out)
+    aviso = None
+    if nenhuma_atinge:
+        aviso = (
+            "Nenhuma cesta atingiu a meta solicitada. "
+            "Considere reduzir a meta, aumentar a janela ou revisar o blacklist."
+        )
+    elif contadores["candidatos_validos"] < 3:
+        aviso = "Poucos candidatos válidos — resultado pode estar limitado."
+
+    return {
+        "cestas": cestas_out,
+        "candidatos_total": contadores["candidatos_total"],
+        "candidatos_bloqueados": contadores["candidatos_bloqueados"],
+        "candidatos_promo_ativa": contadores["candidatos_promo_ativa"],
+        "elasticidades_recalculadas": False,  # já roda no startup
+        "aviso": aviso,
+    }
+
+
+@app.get("/promocoes/engine/propostas", response_model=List[schemas.CestaPromocaoOut])
+async def engine_listar_propostas(db: Session = Depends(get_db)):
+    """Lista cestas em status='proposta' (não decididas)."""
+    return engine_promocao_service.listar_propostas_ativas(db)
+
+
+@app.get("/promocoes/engine/propostas/{cesta_id}", response_model=schemas.CestaPromocaoOut)
+async def engine_detalhe_proposta(cesta_id: int, db: Session = Depends(get_db)):
+    cesta = engine_promocao_service.buscar_cesta(db, cesta_id)
+    if not cesta:
+        raise HTTPException(status_code=404, detail="Cesta não encontrada")
+    return cesta
+
+
+@app.post("/promocoes/engine/aprovar/{cesta_id}", response_model=schemas.PromocaoOut)
+async def engine_aprovar(
+    cesta_id: int,
+    req: schemas.EngineAprovarRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Aprova cesta: cria Promocao(rascunho), descarta as outras 2 do mesmo run.
+    Para publicar, usar POST /promocoes/{id}/publicar normalmente.
+    """
+    try:
+        return engine_promocao_service.aprovar_cesta(
+            db,
+            cesta_id=cesta_id,
+            nome=req.nome,
+            data_inicio=req.data_inicio,
+            data_fim=req.data_fim,
+        )
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "não encontrada" in msg else 400
+        raise HTTPException(status_code=code, detail=msg)
+
+
+@app.post("/promocoes/engine/descartar/{cesta_id}", response_model=schemas.CestaPromocaoOut)
+async def engine_descartar(
+    cesta_id: int,
+    req: schemas.EngineDescartarRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        cesta = engine_promocao_service.descartar_proposta(db, cesta_id, req.motivo)
+        return engine_promocao_service.serializar_cesta(db, cesta)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "não encontrada" in msg else 400
+        raise HTTPException(status_code=code, detail=msg)
+
+
+@app.get("/promocoes/engine/elasticidades", response_model=List[schemas.ElasticidadeOut])
+async def engine_listar_elasticidades(
+    qualidade: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Audit/debug: lista elasticidades cacheadas.
+    Filtro `qualidade`: alta|media|baixa|prior.
+    """
+    if qualidade and qualidade not in ("alta", "media", "baixa", "prior"):
+        raise HTTPException(status_code=400, detail="qualidade deve ser alta|media|baixa|prior")
+    return elasticidade_service.listar_elasticidades(db, qualidade=qualidade)
+
+
+@app.post("/admin/recalcular-elasticidades")
+async def admin_recalcular_elasticidades(
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Força recálculo do cache de elasticidades. `force=true` ignora TTL.
+    Roda automaticamente no startup com force=False.
+    """
+    info = elasticidade_service.recalcular_todas(db, force=force)
+    return {"ok": True, "detalhe": info}
 
 
 # ============================================================================
@@ -983,7 +1261,7 @@ async def webhook_pdv_vendas(
         # Registra o log mesmo em falha inesperada
         pdv_service.registrar_log(
             db,
-            payload=evento.dict(),
+            payload=evento.model_dump(),
             status="erro",
             mensagem=f"exceção: {e}",
             venda_id=None,
@@ -994,7 +1272,7 @@ async def webhook_pdv_vendas(
     # 3. Log de auditoria (sempre)
     pdv_service.registrar_log(
         db,
-        payload=evento.dict(),
+        payload=evento.model_dump(),
         status=status,
         mensagem=mensagem,
         venda_id=venda_id,

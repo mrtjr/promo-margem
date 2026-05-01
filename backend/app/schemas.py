@@ -26,6 +26,7 @@ class ProdutoBase(BaseModel):
     estoque_peso: float = 0
     ativo: bool = True
     codigo: Optional[str] = None  # abreviação externa (ERP). Unique quando preenchida.
+    bloqueado_engine: bool = False  # blacklist do Engine de Promoção (v0.12)
 
 class ProdutoCreate(ProdutoBase):
     pass
@@ -38,6 +39,7 @@ class ProdutoUpdate(BaseModel):
     custo: Optional[float] = None
     preco_venda: Optional[float] = None
     ativo: Optional[bool] = None
+    bloqueado_engine: Optional[bool] = None
 
 class Produto(ProdutoBase):
     id: int
@@ -234,7 +236,7 @@ class NarrativaFechamentoResponse(BaseModel):
 class MovimentacaoHistoricoItem(BaseModel):
     movimentacao_id: int
     venda_id: Optional[int] = None
-    tipo: str                           # ENTRADA | SAIDA
+    tipo: str                           # ENTRADA | SAIDA | QUEBRA
     produto_id: Optional[int] = None
     produto_nome: str
     produto_sku: Optional[str] = None
@@ -243,12 +245,103 @@ class MovimentacaoHistoricoItem(BaseModel):
     custo_unitario: float
     valor_total: float
     cidade: Optional[str] = None
+    motivo: Optional[str] = None        # vencimento|avaria|desvio|doacao (só QUEBRA)
     data: Optional[str] = None
+
+
+# ============================================================================
+# Quebras / Perdas
+# ============================================================================
+
+MOTIVOS_QUEBRA_VALIDOS = ("vencimento", "avaria", "desvio", "doacao")
+
+
+class QuebraCreate(BaseModel):
+    produto_id: int
+    quantidade: float                       # > 0
+    peso: Optional[float] = None            # peso total da quebra (opcional, default = qtd × peso_medio)
+    motivo: str                             # obrigatório: ver MOTIVOS_QUEBRA_VALIDOS
+    cidade: Optional[str] = None
+    observacao: Optional[str] = None
+
+
+class QuebraBulkRequest(BaseModel):
+    quebras: List[QuebraCreate]
+
+
+class QuebraOut(BaseModel):
+    movimentacao_id: int
+    produto_id: int
+    produto_nome: str
+    produto_sku: Optional[str] = None
+    quantidade: float
+    peso: float
+    custo_unitario: float                   # CMP no momento da quebra
+    valor_total: float                      # qtd × custo_unitario
+    motivo: str
+    cidade: Optional[str] = None
+    observacao: Optional[str] = None
+    data: Optional[str] = None
+
+
+class QuebraResumoMotivo(BaseModel):
+    motivo: str
+    quantidade: float
+    valor: float
+    eventos: int
+
+
+class QuebraResumoProduto(BaseModel):
+    produto_id: int
+    produto_nome: str
+    produto_sku: Optional[str] = None
+    quantidade: float
+    valor: float
+    eventos: int
+
+
+class QuebraResumoMes(BaseModel):
+    mes: str                                # YYYY-MM
+    valor_total: float
+    quantidade_total: float
+    eventos: int
+    pct_faturamento: float                  # valor / receita_bruta_mes
+    por_motivo: List[QuebraResumoMotivo]
+    top_produtos: List[QuebraResumoProduto] # top 10
 
 
 class ExclusaoResponse(BaseModel):
     ok: bool
     detalhe: Dict[str, Any]
+
+
+class BulkOperationResponse(BaseModel):
+    """
+    Resposta padrão de endpoints /<recurso>/bulk (entradas, vendas).
+
+    `registradas` é o número de itens efetivamente persistidos; `total` é o
+    tamanho do payload original. Falhas individuais ficam em `erros` com
+    {indice, erro} — útil pra UI sinalizar linha a linha sem bloquear o
+    lote inteiro.
+    """
+    ok: bool
+    registradas: int
+    total: int
+    erros: List[Dict[str, Any]] = []
+
+
+class SimulacaoPorGrupoResponse(BaseModel):
+    """
+    Resposta de POST /simular/grupo: aplica o desconto em todos os SKUs
+    ativos do grupo e retorna o impacto consolidado.
+    """
+    grupo_id: int
+    sku_ids: List[int]
+    qtd_skus: int
+    margem_atual: float
+    nova_margem_estimada: float
+    impacto_pp: float
+    status: str   # 'seguro' | 'alerta' | 'bloqueado'
 
 
 # ============================================================================
@@ -332,6 +425,7 @@ class DREMensalOut(BaseModel):
     receita_liquida: float
 
     cmv: float
+    quebras: float = 0
     lucro_bruto: float
     margem_bruta_pct: float
 
@@ -363,6 +457,7 @@ class DREComparativoPonto(BaseModel):
     margem_bruta_pct: float
     ebitda_pct: float
     margem_liquida_pct: float
+    quebras: float = 0
 
 
 # ============================================================================
@@ -697,3 +792,98 @@ class BPListagemItem(BaseModel):
     total_patrimonio_liquido: float
     indicador_fechamento_ok: bool
     atualizado_em: Optional[datetime] = None
+
+
+# ============================================================================
+# Engine de Promoção orientada a meta (v0.12)
+# ============================================================================
+
+PERFIS_ENGINE_VALIDOS = ("conservador", "balanceado", "agressivo")
+
+
+class EngineProporRequest(BaseModel):
+    """Input do solver."""
+    meta_margem_pct: float                     # 0.17 a 0.20 normalmente
+    janela_dias: int = 7                       # 3 a 14
+    max_skus_por_cesta: int = 15
+    perfis: Optional[List[str]] = None         # default: todos os 3
+    margem_minima_sku_pct: float = 0.05        # piso técnico
+
+
+class ElasticidadeOut(BaseModel):
+    produto_id: int
+    produto_nome: Optional[str] = None
+    produto_sku: Optional[str] = None
+    beta: float
+    r2: Optional[float] = None
+    n_observacoes: int
+    cv_preco: Optional[float] = None
+    qualidade: str                             # alta|media|baixa|prior
+    fonte: str                                 # regressao|prior_abc_xyz
+    recalculado_em: Optional[datetime] = None
+
+
+class CestaItemOut(BaseModel):
+    id: int
+    produto_id: int
+    produto_nome: str
+    produto_sku: Optional[str] = None
+    classe_abc: Optional[str] = None
+    classe_xyz: Optional[str] = None
+    desconto_pct: float
+    preco_atual: float
+    preco_promo: float
+    margem_atual: float
+    margem_pos_acao: float
+    qtd_baseline: float
+    qtd_projetada: float
+    receita_projetada: float
+    lucro_marginal: float
+    beta_usado: float
+    qualidade_elasticidade: str
+    cobertura_pos_promo_dias: Optional[float] = None
+    risco_stockout_pct: Optional[float] = None
+    flag_risco: Optional[str] = None           # verde|amarelo|vermelho
+    ordem_entrada: int
+
+
+class CestaPromocaoOut(BaseModel):
+    id: int
+    perfil: str
+    meta_margem_pct: float
+    janela_dias: int
+    status: str
+
+    margem_atual: Optional[float] = None
+    margem_projetada: Optional[float] = None
+    lucro_semanal_projetado: Optional[float] = None
+    receita_projetada: Optional[float] = None
+    qtd_skus: int
+    desconto_medio_pct: Optional[float] = None
+    motivo_falha: Optional[str] = None
+
+    promocao_id: Optional[int] = None
+    criado_em: Optional[datetime] = None
+    decidido_em: Optional[datetime] = None
+
+    itens: List[CestaItemOut] = []
+    atinge_meta: bool = False                  # margem_projetada >= meta
+
+
+class EngineAprovarRequest(BaseModel):
+    nome: Optional[str] = None
+    data_inicio: Optional[date] = None
+    data_fim: Optional[date] = None
+
+
+class EngineDescartarRequest(BaseModel):
+    motivo: Optional[str] = None
+
+
+class EngineProporResponse(BaseModel):
+    cestas: List[CestaPromocaoOut]
+    candidatos_total: int
+    candidatos_bloqueados: int                 # produtos.bloqueado_engine=TRUE
+    candidatos_promo_ativa: int                # já em outra Promocao
+    elasticidades_recalculadas: bool
+    aviso: Optional[str] = None                # ex: "meta inalcançável"
