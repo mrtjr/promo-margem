@@ -887,3 +887,68 @@ class EngineProporResponse(BaseModel):
     candidatos_promo_ativa: int                # já em outra Promocao
     elasticidades_recalculadas: bool
     aviso: Optional[str] = None                # ex: "meta inalcançável"
+
+
+# ============================================================================
+# DFC — Demonstração dos Fluxos de Caixa (v0.13)
+# ============================================================================
+
+class DFCLinhaOut(BaseModel):
+    codigo: str
+    label: str
+    valor: float
+    tipo: str          # cabecalho | detalhe | subtotal | resultado
+    nivel: int
+
+
+class DFCMensalOut(BaseModel):
+    mes: str
+    disponivel: bool
+    motivo_indisponivel: Optional[str] = None
+
+    caixa_inicial: float
+    caixa_final: float
+
+    total_operacional: float
+    total_investimento: float
+    total_financiamento: float
+
+    variacao_caixa_calculada: float
+    variacao_caixa_real: float
+    diferenca_reconciliacao: float
+    reconciliacao_ok: bool
+
+    linhas: List[DFCLinhaOut]
+
+
+class DFCComparativoPonto(BaseModel):
+    mes: str
+    disponivel: bool
+    total_operacional: float
+    total_investimento: float
+    total_financiamento: float
+    variacao_caixa_real: float
+    caixa_final: float
+
+
+# ============================================================================
+# DMPL — Demonstração das Mutações do Patrimônio Líquido (v0.13)
+# ============================================================================
+
+class DMPLLinhaOut(BaseModel):
+    componente: str
+    saldo_inicial: float
+    lucro_liquido: float       # contribuição do LL nesta linha
+    outras_mov: float          # catch-all
+    saldo_final: float
+    redutora: bool = False
+
+
+class DMPLMensalOut(BaseModel):
+    mes: str
+    disponivel: bool
+    motivo_indisponivel: Optional[str] = None
+
+    componentes: List[DMPLLinhaOut]
+    total: DMPLLinhaOut
+    fechamento_ok: bool        # total.saldo_final ≈ bp.total_patrimonio_liquido

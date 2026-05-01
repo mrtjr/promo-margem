@@ -126,6 +126,18 @@ function App() {
             icon={<Scale size={20} />}
             label="Balanço Patrimonial"
           />
+          <NavItem
+            isActive={currentPage === 'dfc'}
+            onClick={() => setCurrentPage('dfc')}
+            icon={<Wallet size={20} />}
+            label="DFC"
+          />
+          <NavItem
+            isActive={currentPage === 'dmpl'}
+            onClick={() => setCurrentPage('dmpl')}
+            icon={<BarChart3 size={20} />}
+            label="DMPL"
+          />
         </nav>
 
         <div className="p-4 border-t border-white/5">
@@ -145,7 +157,7 @@ function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-hidden flex flex-col">
-        {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp', 'promo_engine'].includes(currentPage) ? (
+        {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp', 'promo_engine', 'dfc', 'dmpl'].includes(currentPage) ? (
           <div className="flex items-center justify-center h-full">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[color:var(--claude-coral)]"></div>
           </div>
@@ -164,6 +176,8 @@ function App() {
             {currentPage === 'quebras' && <QuebrasPage />}
             {currentPage === 'dre' && <DREPage />}
             {currentPage === 'bp' && <BPPage />}
+            {currentPage === 'dfc' && <DFCPage />}
+            {currentPage === 'dmpl' && <DMPLPage />}
           </div>
         )}
       </main>
@@ -5275,6 +5289,335 @@ type BPListItem = {
 }
 
 type BPTab = 'resumo' | 'ativo' | 'passivo' | 'pl' | 'indicadores' | 'historico'
+
+// ============================================================================
+// DFC — Demonstração dos Fluxos de Caixa (v0.13)
+// ============================================================================
+
+type DFCLinha = {
+  codigo: string
+  label: string
+  valor: number
+  tipo: string   // cabecalho | detalhe | subtotal | resultado
+  nivel: number
+}
+
+type DFCMensal = {
+  mes: string
+  disponivel: boolean
+  motivo_indisponivel?: string | null
+  caixa_inicial: number
+  caixa_final: number
+  total_operacional: number
+  total_investimento: number
+  total_financiamento: number
+  variacao_caixa_calculada: number
+  variacao_caixa_real: number
+  diferenca_reconciliacao: number
+  reconciliacao_ok: boolean
+  linhas: DFCLinha[]
+}
+
+type DFCComp = {
+  mes: string
+  disponivel: boolean
+  total_operacional: number
+  total_investimento: number
+  total_financiamento: number
+  variacao_caixa_real: number
+  caixa_final: number
+}
+
+function DFCPage() {
+  const [mes, setMes] = useState(mesHojeString())
+  const [dfc, setDfc] = useState<DFCMensal | null>(null)
+  const [comp, setComp] = useState<DFCComp[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const fetchDFC = async () => {
+    setLoading(true)
+    try {
+      const [a, b] = await Promise.all([
+        axios.get(`${API_URL}/dfc?mes=${mes}`),
+        axios.get(`${API_URL}/dfc/comparativo?ate=${mes}&meses=6`),
+      ])
+      setDfc(a.data)
+      setComp(b.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { fetchDFC() }, [mes])
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header className="flex justify-between items-end">
+        <div>
+          <p className="section-label mb-1">Demonstração dos Fluxos de Caixa</p>
+          <h2 className="headline text-4xl tracking-editorial">DFC — Método Indireto</h2>
+          <p className="text-[color:var(--claude-stone)] mt-1 text-sm">
+            Reconcilia o Lucro Líquido com a variação de caixa real entre dois Balanços Patrimoniais consecutivos.
+          </p>
+        </div>
+        <input
+          type="month"
+          value={mes}
+          onChange={(e) => setMes(e.target.value)}
+          className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+        />
+      </header>
+
+      {loading && <div className="claude-card p-12 text-center text-[color:var(--claude-stone)]">Carregando…</div>}
+
+      {!loading && dfc && !dfc.disponivel && (
+        <div className="claude-card p-6" style={{ borderLeft: '4px solid var(--claude-amber)' }}>
+          <p className="section-label">DFC indisponível</p>
+          <p className="text-sm mt-2">{dfc.motivo_indisponivel}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-3">
+            Vá em <strong>Balanço Patrimonial</strong> e cadastre o BP do mês (e do mês anterior).
+          </p>
+        </div>
+      )}
+
+      {!loading && dfc && dfc.disponivel && (
+        <>
+          {/* KPIs */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="claude-card p-4">
+              <p className="section-label">Caixa inicial</p>
+              <p className="kpi-value text-xl mt-1 mono">R$ {dfc.caixa_inicial.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+            </div>
+            <div className="claude-card p-4">
+              <p className="section-label">Caixa final</p>
+              <p className="kpi-value text-xl mt-1 mono text-[color:var(--claude-sage)]">R$ {dfc.caixa_final.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+            </div>
+            <div className="claude-card p-4">
+              <p className="section-label">Variação líquida</p>
+              <p className={`kpi-value text-xl mt-1 mono ${dfc.variacao_caixa_real >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
+                {dfc.variacao_caixa_real >= 0 ? '+' : ''}R$ {dfc.variacao_caixa_real.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+              </p>
+            </div>
+            <div className="claude-card p-4">
+              <p className="section-label">Reconciliação</p>
+              <p className={`kpi-value text-xl mt-1 ${dfc.reconciliacao_ok ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-amber)]'}`}>
+                {dfc.reconciliacao_ok ? 'OK' : `Δ R$ ${dfc.diferenca_reconciliacao.toFixed(2)}`}
+              </p>
+              <p className="text-[10px] text-[color:var(--claude-stone)] mt-1">|calc − real| &lt; 0,01</p>
+            </div>
+          </div>
+
+          {/* Tabela cascata */}
+          <div className="claude-card overflow-hidden">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="bg-[color:var(--claude-cream-deep)]/40 border-b border-[color:var(--border)]">
+                  <th className="px-4 py-3 section-label">Cód.</th>
+                  <th className="px-4 py-3 section-label">Descrição</th>
+                  <th className="px-4 py-3 section-label text-right">Valor (R$)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[color:var(--border)]">
+                {dfc.linhas.map(l => {
+                  const isCab = l.tipo === 'cabecalho'
+                  const isSub = l.tipo === 'subtotal'
+                  const isRes = l.tipo === 'resultado'
+                  const negativo = l.valor < 0
+                  return (
+                    <tr key={l.codigo}
+                        className={isCab ? 'bg-[color:var(--claude-cream-deep)]/60' : isSub ? 'bg-[color:var(--claude-cream-deep)]/20 font-semibold' : isRes ? 'bg-[color:var(--claude-sage)]/10 font-bold' : ''}>
+                      <td className="px-4 py-2 mono text-xs text-[color:var(--claude-stone)]">{l.codigo}</td>
+                      <td className={`px-4 py-2 ${isCab ? 'font-bold uppercase tracking-wide text-xs' : ''}`}
+                          style={{ paddingLeft: `${16 + l.nivel * 12}px` }}>
+                        {l.label}
+                      </td>
+                      <td className={`px-4 py-2 text-right mono ${negativo ? 'text-[color:var(--claude-coral)]' : isRes ? 'text-[color:var(--claude-sage)]' : ''}`}>
+                        {isCab && l.valor === 0 ? '' : (
+                          (negativo ? '−' : '') + 'R$ ' + Math.abs(l.valor).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Comparativo 6 meses */}
+          {comp.length > 0 && (
+            <div className="claude-card p-6">
+              <p className="section-label mb-3">Histórico — últimos 6 meses</p>
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-[color:var(--claude-stone)]">
+                    <th className="py-2">Mês</th>
+                    <th className="py-2 text-right">Operacional</th>
+                    <th className="py-2 text-right">Investimento</th>
+                    <th className="py-2 text-right">Financiamento</th>
+                    <th className="py-2 text-right">Δ Caixa</th>
+                    <th className="py-2 text-right">Caixa final</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[color:var(--border)]">
+                  {comp.map(c => (
+                    <tr key={c.mes} className={!c.disponivel ? 'opacity-40' : ''}>
+                      <td className="py-2 mono">{c.mes}</td>
+                      {c.disponivel ? (
+                        <>
+                          <td className={`py-2 text-right mono ${c.total_operacional >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{c.total_operacional.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
+                          <td className={`py-2 text-right mono ${c.total_investimento >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{c.total_investimento.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
+                          <td className={`py-2 text-right mono ${c.total_financiamento >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{c.total_financiamento.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
+                          <td className="py-2 text-right mono font-semibold">{c.variacao_caixa_real >= 0 ? '+' : ''}{c.variacao_caixa_real.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
+                          <td className="py-2 text-right mono">{c.caixa_final.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
+                        </>
+                      ) : (
+                        <td colSpan={5} className="py-2 text-xs italic text-[color:var(--claude-stone)]">sem BP no mês</td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// DMPL — Demonstração das Mutações do PL (v0.13)
+// ============================================================================
+
+type DMPLLinha = {
+  componente: string
+  saldo_inicial: number
+  lucro_liquido: number
+  outras_mov: number
+  saldo_final: number
+  redutora: boolean
+}
+
+type DMPLMensal = {
+  mes: string
+  disponivel: boolean
+  motivo_indisponivel?: string | null
+  componentes: DMPLLinha[]
+  total: DMPLLinha
+  fechamento_ok: boolean
+}
+
+function DMPLPage() {
+  const [mes, setMes] = useState(mesHojeString())
+  const [dmpl, setDmpl] = useState<DMPLMensal | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const fetchDMPL = async () => {
+    setLoading(true)
+    try {
+      const r = await axios.get(`${API_URL}/dmpl?mes=${mes}`)
+      setDmpl(r.data)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { fetchDMPL() }, [mes])
+
+  const fmt = (v: number) => {
+    const sig = v < 0 ? '−' : ''
+    return sig + 'R$ ' + Math.abs(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto p-8 space-y-6">
+      <header className="flex justify-between items-end">
+        <div>
+          <p className="section-label mb-1">Mutações do Patrimônio Líquido</p>
+          <h2 className="headline text-4xl tracking-editorial">DMPL</h2>
+          <p className="text-[color:var(--claude-stone)] mt-1 text-sm">
+            Como cada componente do PL mudou no mês: saldo inicial → lucro líquido → outras movimentações → saldo final.
+          </p>
+        </div>
+        <input
+          type="month"
+          value={mes}
+          onChange={(e) => setMes(e.target.value)}
+          className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+        />
+      </header>
+
+      {loading && <div className="claude-card p-12 text-center text-[color:var(--claude-stone)]">Carregando…</div>}
+
+      {!loading && dmpl && !dmpl.disponivel && (
+        <div className="claude-card p-6" style={{ borderLeft: '4px solid var(--claude-amber)' }}>
+          <p className="section-label">DMPL indisponível</p>
+          <p className="text-sm mt-2">{dmpl.motivo_indisponivel}</p>
+        </div>
+      )}
+
+      {!loading && dmpl && dmpl.disponivel && (
+        <>
+          {/* Status fechamento */}
+          <div className="claude-card p-4 flex items-center justify-between"
+               style={{ borderLeft: `4px solid ${dmpl.fechamento_ok ? 'var(--claude-sage)' : 'var(--claude-coral)'}` }}>
+            <div>
+              <p className="section-label">Fechamento</p>
+              <p className="text-sm mt-1">
+                {dmpl.fechamento_ok
+                  ? <>Total bate com o PL do BP. <strong>R$ {dmpl.total.saldo_final.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></>
+                  : <>Total NÃO bate com o PL do BP — verifique o Balanço.</>
+                }
+              </p>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-[11px] uppercase tracking-wider font-bold ${dmpl.fechamento_ok ? 'bg-[color:var(--claude-sage)]/20 text-[color:var(--claude-sage)]' : 'bg-[color:var(--claude-coral)]/20 text-[color:var(--claude-coral)]'}`}>
+              {dmpl.fechamento_ok ? 'OK' : 'ATENÇÃO'}
+            </span>
+          </div>
+
+          {/* Matriz */}
+          <div className="claude-card overflow-hidden">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="bg-[color:var(--claude-cream-deep)]/40 border-b border-[color:var(--border)]">
+                  <th className="px-4 py-3 section-label">Componente</th>
+                  <th className="px-4 py-3 section-label text-right">Saldo Inicial</th>
+                  <th className="px-4 py-3 section-label text-right">+ Lucro Líquido</th>
+                  <th className="px-4 py-3 section-label text-right">+ Outras Movim.</th>
+                  <th className="px-4 py-3 section-label text-right">= Saldo Final</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[color:var(--border)]">
+                {dmpl.componentes.map(c => (
+                  <tr key={c.componente}>
+                    <td className={`px-4 py-2 ${c.redutora ? 'text-[color:var(--claude-stone)] italic' : ''}`}>{c.componente}</td>
+                    <td className="px-4 py-2 text-right mono">{fmt(c.saldo_inicial)}</td>
+                    <td className={`px-4 py-2 text-right mono ${c.lucro_liquido !== 0 ? (c.lucro_liquido > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50'}`}>{c.lucro_liquido === 0 ? '—' : fmt(c.lucro_liquido)}</td>
+                    <td className={`px-4 py-2 text-right mono ${c.outras_mov !== 0 ? (c.outras_mov > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50'}`}>{c.outras_mov === 0 ? '—' : fmt(c.outras_mov)}</td>
+                    <td className="px-4 py-2 text-right mono font-semibold">{fmt(c.saldo_final)}</td>
+                  </tr>
+                ))}
+                <tr className="bg-[color:var(--claude-cream-deep)]/60 font-bold">
+                  <td className="px-4 py-3">{dmpl.total.componente}</td>
+                  <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.saldo_inicial)}</td>
+                  <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.lucro_liquido)}</td>
+                  <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.outras_mov)}</td>
+                  <td className="px-4 py-3 text-right mono text-[color:var(--claude-sage)]">{fmt(dmpl.total.saldo_final)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-xs text-[color:var(--claude-stone)] italic">
+            Lucro líquido vai automático para "Lucros Acumulados". O resto das variações cai em "Outras Movimentações" (catch-all): aumentos de capital, dividendos, transferências para reservas, ações em tesouraria.
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
 
 function BPPage() {
   const [tab, setTab] = useState<BPTab>('resumo')

@@ -64,6 +64,13 @@ Pipeline em duas fases — **preview** e **commit** — para o relatório `xRelV
 - **Configuração tributária** — regime, alíquota e PIS/COFINS ajustáveis.
 - **Fechar mês** — congela DRE, gera snapshot.
 
+### 💧 DFC + DMPL · *novo em v0.13*
+Dois demonstrativos contábeis derivados **on-demand** do BP + DRE — não persistem, sempre consistentes com o estado atual:
+- **DFC (Fluxos de Caixa)** método indireto (Lei 6.404/76 art. 188, CPC 03 R2): parte do Lucro Líquido e ajusta pelas variações patrimoniais entre o BP do mês N e N-1. Estrutura em 3 atividades (Operacional, Investimento, Financiamento). **Reconciliação automática**: variação calculada vs variação real (caixa final − caixa inicial), com flag se diferença > R$ 0,01.
+- **DMPL (Mutações do PL)** matriz `componente × movimentação`: Capital Social, Reservas, Lucros Acumulados, redutoras (Prejuízos Acumulados, Ações em Tesouraria) — coluna LL ligada direto ao DRE; o resto vai em "Outras movimentações" (catch-all). Validação de fechamento: total do DMPL bate com `bp.total_patrimonio_liquido`.
+- 3 endpoints REST: `GET /dfc?mes=YYYY-MM`, `GET /dfc/comparativo?meses=N`, `GET /dmpl?mes=YYYY-MM`.
+- 2 páginas frontend (`Financeiro → DFC` e `→ DMPL`) com seletor de mês, KPIs, tabela cascata, comparativo de 6 meses (DFC), e indicador de fechamento (DMPL).
+
 ### 🪄 Engine de Promoção orientado a meta · *novo em v0.12*
 Inverte o simulador: você informa a **meta de margem semanal** e o engine propõe **3 cestas rankeadas** (conservador, balanceado, agressivo) com SKUs, descontos sugeridos, projeções e risco de stockout — pronto pra aprovar.
 
@@ -336,8 +343,8 @@ docker compose -p promo-margem down -v   # apaga volume do Postgres
 - [x] **Fase 10** — Balanço Patrimonial (BP) mensal + indicadores + ciclo rascunho/fechado/auditado
 - [x] **Fase 11** — Quebras/Perdas como tipo de movimentação + linha 4.2 do DRE
 - [x] **Fase 12** — Engine de promoção orientada a meta (solver inverso + elasticidade + 3 perfis + blacklist)
-- [ ] **Fase 13** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
-- [ ] **Fase 14** — DFC (Demonstração de Fluxo de Caixa) + DMPL ligadas ao BP
+- [x] **Fase 13** — DFC (Demonstração dos Fluxos de Caixa) + DMPL (Mutações do PL) ligadas ao BP
+- [ ] **Fase 14** — Integração PDV/ERP via webhook (config pronta; falta validação em produção)
 
 ---
 
@@ -404,6 +411,22 @@ Histórico de versões publicadas. Cada release tem tag `vX.Y.Z` no GitHub e not
 - 8 suítes E2E verdes (54+ cenários) — zero regressão.
 - `tsc --noEmit` exit 0; `vite build` exit 0.
 - Migrations m_007–m_010 aplicadas idempotentemente em PostgreSQL.
+
+### v0.13.0 — DFC + DMPL · *2026-05-01*
+> Dois demonstrativos contábeis derivados on-demand do BP + DRE: Fluxos de Caixa (método indireto) e Mutações do Patrimônio Líquido. Sem persistir snapshot, sempre consistentes.
+
+**Adicionado**
+- 💧 `dfc_service.py` (~270 linhas) — DFC método indireto, 3 atividades (Operacional, Investimento, Financiamento), reconciliação automática com variação real de caixa.
+- 📊 `dmpl_service.py` (~150 linhas) — matriz `componente × mutação` com 7 componentes do PL; validação de fechamento contra `bp.total_patrimonio_liquido`.
+- 🔌 3 endpoints REST: `GET /dfc?mes=YYYY-MM`, `GET /dfc/comparativo?meses=N`, `GET /dmpl?mes=YYYY-MM`.
+- 🖼️ 2 páginas frontend (`Financeiro → DFC`, `Financeiro → DMPL`) com seletor de mês, KPIs, tabela cascata, comparativo histórico de 6 meses (DFC), indicador de fechamento (DMPL).
+- 🧪 9 cenários E2E (`test_dfc_e2e.py` 5 + `test_dmpl_e2e.py` 4) cobrindo BP ausente, reconciliação OK, compra de imobilizado em Investimento, empréstimo em Financiamento, depreciação em Operacional, aumento de capital, fechamento contra PL e redutoras com sinal negativo.
+
+**Garantias**
+- Cálculo derivado on-demand: nenhuma persistência. Mudança em BP/DRE reflete imediatamente.
+- DFC exige BP do mês N e N-1; DMPL aceita N-1 ausente (saldo inicial = 0).
+- Reconciliação DFC: se |variação calculada − variação real| > R$ 0,01, sinaliza `reconciliacao_ok=false` (informativo, não bloqueia).
+- DMPL fechamento: soma final por componente bate com `bp.total_patrimonio_liquido` na tolerância 0,01.
 
 ### v0.12.0 — Engine de Promoção orientada a meta · *2026-04-25*
 > Solver inverso: meta de margem semanal → 3 cestas de SKUs com desconto, projeção e risco de stockout. Tudo aprovável em 1 clique.
