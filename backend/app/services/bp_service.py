@@ -173,6 +173,96 @@ def _diferenca(bp: models.BalancoPatrimonial) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Diagnóstico de coerência DRE ↔ BP (consumido por DFC e DMPL)
+# ---------------------------------------------------------------------------
+
+# Campos que indicam PL "inicializado". Se TODOS forem zero em bp_atual e
+# bp_anterior, o BP está stale e inferências por delta-PL produzem valores
+# enganosos (ex.: heurística do DFC trata "LL > 0 com Δ Lucros Acumulados=0"
+# como "saiu em dividendos", inventando saída de caixa que não existe).
+_CAMPOS_PL_INICIALIZACAO = (
+    "capital_social",
+    "reservas_de_capital",
+    "ajustes_de_avaliacao_patrimonial",
+    "reservas_de_lucros",
+    "lucros_acumulados",
+    "dividendos_a_pagar",
+    "acoes_ou_quotas_em_tesouraria",
+    "prejuizos_acumulados",
+)
+
+TOLERANCIA_PL_INICIALIZADO = 0.01
+
+
+def pl_inicializado(bp: Optional[models.BalancoPatrimonial]) -> bool:
+    """
+    True se o BP tem ao menos um campo de PL com módulo > R$ 0,01.
+
+    Usado por DFC/DMPL para detectar BP "stale" (não alimentado) e suprimir
+    inferências de delta-PL — sem isso, um BP zerado faz o DFC inventar
+    "dividendos pagos = LL do mês" e a DMPL exibir "outras_mov = -LL".
+    """
+    if bp is None:
+        return False
+    return any(
+        abs(float(getattr(bp, c, 0) or 0)) > TOLERANCIA_PL_INICIALIZADO
+        for c in _CAMPOS_PL_INICIALIZACAO
+    )
+
+
+def diagnosticar_coerencia_dre_bp(
+    bp_atual: Optional[models.BalancoPatrimonial],
+    bp_anterior: Optional[models.BalancoPatrimonial],
+    lucro_liquido_dre: float,
+) -> List[Dict[str, str]]:
+    """
+    Retorna avisos sobre coerência entre LL da DRE e o BP do mês.
+
+    Avisos possíveis (em ordem de prioridade — só um deles costuma aparecer):
+      1. bp_pl_nao_inicializado: nenhum campo de PL > R$ 0,01 em bp_atual nem
+         em bp_anterior. DFC suprime dividendos_pagos; DMPL ainda usa LL como
+         contribuição mas o aviso explica o saldo zerado.
+      2. ll_nao_propagado: LL > R$ 0,01 mas Δ Lucros Acumulados ≈ 0.
+         DRE não foi propagada para o BP — DFC/DMPL podem mostrar valores
+         que são apenas sintoma desta lacuna.
+
+    Severidade "media" — informativos, não bloqueiam o demonstrativo.
+    """
+    avisos: List[Dict[str, str]] = []
+
+    inicializado = pl_inicializado(bp_atual) or pl_inicializado(bp_anterior)
+    if not inicializado:
+        avisos.append({
+            "codigo": "bp_pl_nao_inicializado",
+            "severidade": "media",
+            "mensagem": (
+                "Patrimônio Líquido do BP não está inicializado (capital social, "
+                "lucros acumulados, etc. todos zerados). Inferências baseadas "
+                "em delta-BP foram suprimidas para evitar valores enganosos. "
+                "Cadastre os saldos do BP para que DFC e DMPL fiquem completos."
+            ),
+        })
+        return avisos  # quando stale, o segundo aviso é redundante
+
+    si_la = float(getattr(bp_anterior, "lucros_acumulados", 0) or 0) if bp_anterior else 0.0
+    sf_la = float(getattr(bp_atual, "lucros_acumulados", 0) or 0)
+    delta_lucros = sf_la - si_la
+    if abs(lucro_liquido_dre) > 0.01 and abs(delta_lucros) < 0.01:
+        avisos.append({
+            "codigo": "ll_nao_propagado",
+            "severidade": "media",
+            "mensagem": (
+                f"Lucro Líquido da DRE (R$ {lucro_liquido_dre:.2f}) não está "
+                "refletido em Lucros Acumulados do BP. Atualize o BP do mês — "
+                "sem isso, podem aparecer 'dividendos pagos' ou 'outras "
+                "movimentações' que não correspondem a eventos reais."
+            ),
+        })
+
+    return avisos
+
+
+# ---------------------------------------------------------------------------
 # Lookup
 # ---------------------------------------------------------------------------
 
