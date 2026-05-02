@@ -22,6 +22,8 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
+from ..utils.tz import hoje_brt
+
 from .. import models, schemas
 from . import estoque_service
 
@@ -129,7 +131,7 @@ def processar_evento(
         return "erro", "nenhum item no evento", None
 
     # 3. Registra vendas (usa data_venda ou hoje)
-    data_alvo = evento.data_venda or date.today()
+    data_alvo = evento.data_venda or hoje_brt()
     try:
         resultado = estoque_service.registrar_venda_bulk(
             db, vendas, data_fechamento=data_alvo

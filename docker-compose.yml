@@ -6,6 +6,8 @@ services:
       POSTGRES_DB: promo_margem
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
+      TZ: America/Sao_Paulo
+      PGTZ: America/Sao_Paulo
     ports:
       - "5432:5432"
     volumes:
@@ -24,6 +26,9 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://user:password@db:5432/promo_margem
+      TZ: America/Sao_Paulo
+      # Cinto-e-suspensórios: o código já força BRT via app.utils.tz.hoje_brt(),
+      # então TZ aqui é redundante mas alinha logs/timestamps do uvicorn.
       # CORS_ORIGINS: customize via env (default cobre localhost:3000 e :5173)
       # OPENROUTER_API_KEY: opcional, ativa sugestões IA
     depends_on:

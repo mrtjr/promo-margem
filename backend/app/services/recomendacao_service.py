@@ -26,6 +26,7 @@ from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..utils.tz import hoje_brt
 from . import analise_service, forecast_service
 
 
@@ -319,7 +320,7 @@ def gerar_recomendacoes(
     ordenadas por urgência (alta → baixa) e receita do período.
     """
     if data_alvo is None:
-        data_alvo = date.today()
+        data_alvo = hoje_brt()
 
     classificacoes = analise_service.classificar_abc_xyz(db, data_alvo, janela_dias)
     classif_map = {c.produto_id: c for c in classificacoes}

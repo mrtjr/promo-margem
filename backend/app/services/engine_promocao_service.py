@@ -41,6 +41,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..utils.tz import hoje_brt
 from . import analise_service, forecast_service, elasticidade_service, margin_engine
 
 
@@ -139,7 +140,7 @@ def listar_candidatos(
     Retorna candidatos elegíveis + contadores de motivos de exclusão.
     """
     if ate_data is None:
-        ate_data = date.today()
+        ate_data = hoje_brt()
     hoje_dt = datetime.combine(ate_data, datetime.min.time())
 
     produtos_ativos = db.query(models.Produto).filter(
@@ -720,7 +721,7 @@ def aprovar_cesta(
 
     # Datas default: a partir de amanhã, janela = cesta.janela_dias
     if data_inicio is None:
-        data_inicio = date.today() + timedelta(days=1)
+        data_inicio = hoje_brt() + timedelta(days=1)
     if data_fim is None:
         data_fim = data_inicio + timedelta(days=cesta.janela_dias - 1)
 
@@ -802,7 +803,7 @@ def serializar_cesta(db: Session, cesta: models.CestaPromocao) -> dict:
     """Converte CestaPromocao em dict pronto pra schemas.CestaPromocaoOut."""
     classifs = {}  # opcional — popula se necessário pra exibir abc/xyz
     try:
-        for c in analise_service.classificar_abc_xyz(db, date.today()):
+        for c in analise_service.classificar_abc_xyz(db, hoje_brt()):
             classifs[c.produto_id] = c
     except Exception:
         classifs = {}

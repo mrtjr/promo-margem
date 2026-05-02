@@ -6,6 +6,7 @@ from datetime import date
 from dataclasses import asdict
 from sqlalchemy.orm import Session
 from .. import models, schemas
+from ..utils.tz import hoje_brt
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -261,7 +262,7 @@ async def get_narrativa_fechamento(
     from . import analise_service, forecast_service, recomendacao_service
 
     if data_alvo is None:
-        data_alvo = date.today()
+        data_alvo = hoje_brt()
 
     analise = analise_service.analisar_fechamento(db, data_alvo, janela_dias=janela_dias)
     projecao = forecast_service.projetar_proximo_dia(db, hoje=data_alvo, top_n=10)

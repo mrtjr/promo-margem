@@ -1252,9 +1252,14 @@ function DashboardPage({ stats, onNavigate }: any) {
         />
         <KPICard
           title="Rupturas"
-          value={stats?.rupturas || 0}
-          subValue={stats?.rupturas > 0 ? `${stats.rupturas}/${stats?.total_skus} zerados · repor` : `${stats?.total_skus || 0} SKUs · 0 zerados`}
-          status={stats?.rupturas > 0 ? "alert" : "ok"}
+          value={stats?.rupturas ?? 0}
+          subValue={(() => {
+            const rupt = stats?.rupturas ?? 0
+            const skus = stats?.total_skus
+            if (skus == null) return rupt > 0 ? `${rupt} zerados · repor` : 'sem dados'
+            return rupt > 0 ? `${rupt}/${skus} zerados · repor` : `${skus} SKUs · 0 zerados`
+          })()}
+          status={(stats?.rupturas ?? 0) > 0 ? "alert" : stats?.total_skus == null ? "neutral" : "ok"}
         />
         <KPICard
           title="Quebras (mês)"
@@ -2457,6 +2462,7 @@ function ProjecaoDetalhesSKU({ proj }: any) {
 function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
   const statusConfig: Record<string, { label: string, bg: string, text: string, border: string }> = {
     saudavel:   { label: 'SAUDÁVEL',   bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-500' },
+    acima_meta: { label: 'ACIMA DA META', bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-500' },
     atencao:    { label: 'ATENÇÃO',    bg: 'bg-amber-50',   text: 'text-amber-700',   border: 'border-amber-500' },
     alerta:     { label: 'ALERTA',     bg: 'bg-rose-50',    text: 'text-rose-700',    border: 'border-rose-500' },
     sem_vendas: { label: 'SEM VENDAS', bg: 'bg-slate-50',   text: 'text-slate-600',   border: 'border-slate-400' },
@@ -2466,13 +2472,16 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
   const abc = analise.classificacao_abc || {}
   const xyz = analise.classificacao_xyz || {}
   const anomaliasOrdenadas = [...(analise.anomalias || [])].sort((a: any, b: any) => {
-    const ord: Record<string, number> = { alta: 0, media: 1, baixa: 2 }
-    return (ord[a.severidade] ?? 3) - (ord[b.severidade] ?? 3)
+    const ord: Record<string, number> = { alta: 0, media: 1, baixa: 2, info: 3 }
+    return (ord[a.severidade] ?? 4) - (ord[b.severidade] ?? 4)
   })
 
+  // Severidade `info` = nota positiva (margem acima da meta sem suspeita).
+  // Distinta de `media`/`alta` (anomalias reais) e de `baixa` (info neutra).
   const sevIcon = (s: string) =>
     s === 'alta' ? <AlertTriangle size={14} className="text-rose-600" /> :
     s === 'media' ? <AlertCircle size={14} className="text-amber-600" /> :
+    s === 'info' ? <TrendingUp size={14} className="text-emerald-600" /> :
     <Check size={14} className="text-slate-500" />
 
   return (
@@ -2490,7 +2499,7 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
       {/* KPIs principais */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <KPICard title="Faturamento" value={`R$ ${analise.faturamento_dia.toFixed(2)}`} sub={`vs 7d: ${analise.variacao_faturamento_7d_pct >= 0 ? '+' : ''}${analise.variacao_faturamento_7d_pct.toFixed(1)}%`} tone={analise.variacao_faturamento_7d_pct >= -5 ? 'ok' : 'alert'} />
-        <KPICard title="Margem do Dia" value={`${(analise.margem_dia * 100).toFixed(1)}%`} sub={`Meta: 17–19%`} tone={analise.status_meta === 'saudavel' ? 'ok' : analise.status_meta === 'alerta' ? 'alert' : 'warn'} />
+        <KPICard title="Margem do Dia" value={`${(analise.margem_dia * 100).toFixed(1)}%`} sub={`Meta: 17–19%`} tone={(analise.status_meta === 'saudavel' || analise.status_meta === 'acima_meta') ? 'ok' : analise.status_meta === 'alerta' ? 'alert' : 'warn'} />
         <KPICard title="Margem 7d / 30d" value={`${(analise.margem_media_7d * 100).toFixed(1)}%`} sub={`30d: ${(analise.margem_media_30d * 100).toFixed(1)}%`} tone="neutral" />
         <KPICard title="SKUs vendidos" value={`${analise.total_skus_vendidos}/${analise.total_skus_cadastrados}`} sub={`Rupturas: ${analise.rupturas}`} tone={analise.rupturas > 0 ? 'warn' : 'ok'} />
       </div>

@@ -25,6 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..utils.tz import hoje_brt
 from . import analise_service
 
 
@@ -135,7 +136,7 @@ def estimar_elasticidade_sku(
     classif_map é opcional — se fornecido, evita reclassificar a cada chamada.
     """
     if ate_data is None:
-        ate_data = date.today()
+        ate_data = hoje_brt()
     inicio = ate_data - timedelta(days=JANELA_HISTORICO_DIAS - 1)
 
     rows = db.query(
@@ -247,7 +248,7 @@ def recalcular_todas(db: Session, force: bool = False) -> Dict[str, int]:
         e.produto_id: e for e in db.query(models.ElasticidadeSKU).all()
     }
 
-    classifs = analise_service.classificar_abc_xyz(db, date.today())
+    classifs = analise_service.classificar_abc_xyz(db, hoje_brt())
     classif_map = {c.produto_id: c for c in classifs}
 
     n_recalc = 0

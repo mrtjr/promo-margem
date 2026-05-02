@@ -6,8 +6,14 @@ Responsabilidades:
 - Classificar SKUs em matriz ABC-XYZ (valor × previsibilidade)
 - Detectar anomalias (quedas de volume, margens fora da meta, novos produtos sem venda)
 
-Regra de negócio (PRD): meta de margem global 17% a 19% — abaixo de 17% é alerta
-vermelho; abaixo de 17,5% é alerta amarelo.
+Regra de margem global (5 faixas):
+  margem < 17%             → alerta (crítico, abaixo da meta mínima)
+  17%   ≤ margem < 17.5%   → atencao (perto do piso)
+  17.5% ≤ margem ≤ 19.5%   → saudavel (faixa-alvo, sem anomalia)
+  margem > 19.5%           → acima_meta (positivo; anomalia tipo info)
+  margem >> média 30d (≥ META_MAX × 1.3 e fora de 2σ histórico) → também acima_meta
+                            no status, mas anomalia tipo margem_global_suspeita
+                            com severidade media (provável erro de cadastro/custo).
 """
 from dataclasses import dataclass, asdict
 from datetime import date, timedelta
@@ -17,12 +23,17 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from .. import models
+from ..utils.tz import hoje_brt
 
 
 META_MARGEM_MIN = 0.17
 META_MARGEM_MAX = 0.19
 ALERTA_AMARELO_INF = 0.175
 ALERTA_AMARELO_SUP = 0.195
+# Acima de META_MARGEM_MAX × 1.3 (~24.7%) E fora de 2σ do histórico → suspeita
+# de erro de cadastro (custo zerado, item sem custo). Os dois critérios juntos
+# evitam falso-positivo em dias com mix realmente premium.
+MARGEM_ALTA_FATOR_SUSPEITA = 1.3
 
 # Thresholds ABC por fração acumulada de receita
 ABC_A = 0.80
@@ -52,8 +63,11 @@ class SKUClassificacao:
 @dataclass
 class Anomalia:
     produto_id: Optional[int]
-    tipo: str  # queda_volume, margem_baixa, ruptura, sem_venda, margem_global_alerta
-    severidade: str  # alta, media, baixa
+    # tipos: queda_volume, margem_baixa, ruptura, sem_venda,
+    #        margem_global_baixa_critica, margem_global_baixa,
+    #        margem_global_alta, margem_global_suspeita
+    tipo: str
+    severidade: str  # alta, media, baixa, info
     descricao: str
     valor: Optional[float] = None
 
@@ -78,13 +92,22 @@ class AnaliseFechamento:
 
 
 def _status_meta(margem: float, faturamento: float) -> str:
+    """
+    Classifica o dia em 5 categorias (ver docstring do módulo):
+      sem_vendas, alerta, atencao, saudavel, acima_meta.
+    Acima da faixa-alvo NÃO é mais tratado como 'atencao' — é estado positivo
+    'acima_meta'. A nuance 'suspeito' (provável erro de custo) é detectada
+    como anomalia separada, com contexto histórico.
+    """
     if faturamento <= 0:
         return "sem_vendas"
     if margem < META_MARGEM_MIN:
         return "alerta"
-    if margem < ALERTA_AMARELO_INF or margem > ALERTA_AMARELO_SUP:
+    if margem < ALERTA_AMARELO_INF:
         return "atencao"
-    return "saudavel"
+    if margem <= ALERTA_AMARELO_SUP:
+        return "saudavel"
+    return "acima_meta"
 
 
 def classificar_abc_xyz(db: Session, ate_data: date, janela_dias: int = JANELA_HISTORICO_DIAS) -> List[SKUClassificacao]:
@@ -196,30 +219,83 @@ def detectar_anomalias(
     margem_dia: float,
     faturamento_dia: float,
     faturamento_media_7d: float,
+    margem_media_30d: float = 0.0,
+    margem_std_30d: float = 0.0,
 ) -> List[Anomalia]:
     """
     Retorna anomalias operacionais detectadas no fechamento.
+
+    Margem global é classificada em 4 faixas anômalas + 1 saudável (silenciosa):
+      < 17%             → margem_global_baixa_critica (alta)
+      17% .. 17.5%      → margem_global_baixa (media)
+      17.5% .. 19.5%    → (sem anomalia — dentro da faixa-alvo)
+      > 19.5%           → margem_global_alta (info)  -- destaque positivo
+      muito acima*      → margem_global_suspeita (media) -- provável erro de dado
+
+    *muito acima = margem > META_MAX × 1.3 (~24.7%) E margem > média_30d + 2σ.
+    Se faltar histórico (std=0), nunca classifica como suspeita — fica como alta.
     """
     anomalias: List[Anomalia] = []
 
-    # 1) Margem global fora da meta
+    # 1) Margem global vs faixa-alvo (4 ramos contextuais)
     if faturamento_dia > 0:
         if margem_dia < META_MARGEM_MIN:
             anomalias.append(Anomalia(
                 produto_id=None,
-                tipo="margem_global_alerta",
+                tipo="margem_global_baixa_critica",
                 severidade="alta",
-                descricao=f"Margem do dia ({margem_dia*100:.1f}%) abaixo da meta mínima de {META_MARGEM_MIN*100:.0f}%.",
+                descricao=(
+                    f"Margem do dia ({margem_dia*100:.1f}%) abaixo da meta mínima "
+                    f"de {META_MARGEM_MIN*100:.0f}%. Risco direto a lucro — revisar "
+                    "preço de venda, mix do dia ou descontos aplicados."
+                ),
                 valor=round(margem_dia, 4),
             ))
-        elif margem_dia < ALERTA_AMARELO_INF or margem_dia > ALERTA_AMARELO_SUP:
+        elif margem_dia < ALERTA_AMARELO_INF:
             anomalias.append(Anomalia(
                 produto_id=None,
-                tipo="margem_global_alerta",
+                tipo="margem_global_baixa",
                 severidade="media",
-                descricao=f"Margem do dia ({margem_dia*100:.1f}%) fora da faixa ideal {ALERTA_AMARELO_INF*100:.1f}%-{ALERTA_AMARELO_SUP*100:.1f}%.",
+                descricao=(
+                    f"Margem do dia ({margem_dia*100:.1f}%) abaixo da faixa-alvo "
+                    f"({ALERTA_AMARELO_INF*100:.1f}%–{ALERTA_AMARELO_SUP*100:.1f}%). "
+                    "Próximo do piso — observar tendência."
+                ),
                 valor=round(margem_dia, 4),
             ))
+        elif margem_dia > ALERTA_AMARELO_SUP:
+            limiar_suspeita = META_MARGEM_MAX * MARGEM_ALTA_FATOR_SUSPEITA
+            eh_suspeita = (
+                margem_dia > limiar_suspeita
+                and margem_std_30d > 0
+                and margem_dia > margem_media_30d + 2 * margem_std_30d
+            )
+            if eh_suspeita:
+                anomalias.append(Anomalia(
+                    produto_id=None,
+                    tipo="margem_global_suspeita",
+                    severidade="media",
+                    descricao=(
+                        f"Margem do dia ({margem_dia*100:.1f}%) muito acima do histórico "
+                        f"(média 30d: {margem_media_30d*100:.1f}%, σ: {margem_std_30d*100:.1f}pp). "
+                        "Verificar produtos com custo zerado ou recém-cadastrados — "
+                        "margem inflada por dado pode mascarar prejuízo real."
+                    ),
+                    valor=round(margem_dia, 4),
+                ))
+            else:
+                anomalias.append(Anomalia(
+                    produto_id=None,
+                    tipo="margem_global_alta",
+                    severidade="info",
+                    descricao=(
+                        f"Margem do dia ({margem_dia*100:.1f}%) acima da faixa-alvo "
+                        f"({ALERTA_AMARELO_SUP*100:.1f}%). Resultado positivo — "
+                        "validar mix vendido (premium ou item de alta margem)."
+                    ),
+                    valor=round(margem_dia, 4),
+                ))
+        # else: 17.5% ≤ margem ≤ 19.5% — saudável, sem anomalia.
 
     # 2) Queda de faturamento vs média 7d
     if faturamento_media_7d > 0 and faturamento_dia > 0:
@@ -287,7 +363,7 @@ def analisar_fechamento(db: Session, data_alvo: Optional[date] = None, janela_di
     Gera análise completa do fechamento do dia `data_alvo` (default hoje).
     """
     if data_alvo is None:
-        data_alvo = date.today()
+        data_alvo = hoje_brt()
 
     # Histórico recente (já persistido em VendaDiariaSKU)
     data_ini_30 = data_alvo - timedelta(days=janela_dias - 1)
@@ -321,6 +397,16 @@ def analisar_fechamento(db: Session, data_alvo: Optional[date] = None, janela_di
     rec_30d_total = sum(faturamento_por_dia[d] for d in dias_30d)
     cus_30d_total = sum(custo_por_dia.get(d, 0.0) for d in dias_30d)
     margem_media_30d = (rec_30d_total - cus_30d_total) / rec_30d_total if rec_30d_total > 0 else 0.0
+
+    # σ da margem diária dos últimos 30 dias (excluindo hoje). Usado para detectar
+    # margem do dia "muito acima do histórico" como anomalia de suspeita.
+    margens_diarias_30d = []
+    for d in dias_30d:
+        fat_d = faturamento_por_dia[d]
+        cus_d = custo_por_dia.get(d, 0.0)
+        if fat_d > 0:
+            margens_diarias_30d.append((fat_d - cus_d) / fat_d)
+    margem_std_30d = pstdev(margens_diarias_30d) if len(margens_diarias_30d) >= 2 else 0.0
 
     variacao = 0.0
     if faturamento_media_7d > 0:
@@ -371,7 +457,8 @@ def analisar_fechamento(db: Session, data_alvo: Optional[date] = None, janela_di
 
     # Anomalias
     anomalias = detectar_anomalias(
-        db, data_alvo, classificacoes, margem_dia, faturamento_dia, faturamento_media_7d
+        db, data_alvo, classificacoes, margem_dia, faturamento_dia,
+        faturamento_media_7d, margem_media_30d, margem_std_30d,
     )
 
     return AnaliseFechamento(

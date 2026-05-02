@@ -14,6 +14,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..utils.tz import hoje_brt
 
 
 PLANO_CONTAS_PADRAO = [
@@ -97,7 +98,7 @@ def seed_config_tributaria_default(db: Session) -> bool:
         aliquota_irpj=0.0,
         aliquota_csll=0.0,
         presuncao_lucro_pct=0.08,
-        vigencia_inicio=date.today().replace(day=1),
+        vigencia_inicio=hoje_brt().replace(day=1),
         vigencia_fim=None,
     )
     db.add(config)
