@@ -339,8 +339,15 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
       - SAIDA:   peso total baixado da venda (peso consumido = peso)
       - QUEBRA:  peso total perdido (peso consumido = peso)
 
-    CMP = Σ(peso_entrada_i × custo_unit_i) / Σ(peso_entrada_i)
-    Se não sobrar entrada, CMP=0.
+    CMP — regra dual:
+      1. Σ(peso_entrada) > 0          → CMP = Σ(peso_i × custo_i) / Σ(peso_i)
+      2. Σ(peso_entrada) = 0 mas
+         Σ(qtd_entrada)  > 0          → CMP = Σ(qtd_i × custo_i) / Σ(qtd_i)
+      3. caso contrário                → CMP = 0
+    Fallback (2) cobre ENTRADAs sem peso (ex.: espelho do CSV de fechamento,
+    que entra com peso=0). Sem ele, qualquer reconciliação zera o custo de
+    produtos cujo histórico de ENTRADA veio só do CSV. Peso vence quando
+    ambos > 0 (semântica histórica preservada).
 
     QUEBRA reduz estoque (qtd e peso) mas NÃO altera CMP — o produto perdido
     sai pelo CMP atual, não muda a média ponderada das entradas remanescentes.
@@ -381,8 +388,16 @@ def _recalcular_produto_do_zero(db: Session, produto: models.Produto) -> dict:
     # Estoque efetivo
     produto.estoque_qtd = max(0.0, qtd_entrada - qtd_saida - qtd_quebra)
     produto.estoque_peso = max(0.0, peso_entrada - peso_saida - peso_quebra)
-    # CMP inalterado por QUEBRA — só depende das ENTRADAS
-    produto.custo = (valor_entrada / peso_entrada) if peso_entrada > 0 else 0.0
+    # CMP — regra dual (ver docstring). Peso vence quando há peso; senão
+    # cai p/ ponderação por qtd para preservar custo de produtos cuja
+    # ENTRADA veio só do CSV de fechamento (peso=0 por design).
+    if peso_entrada > 0:
+        produto.custo = valor_entrada / peso_entrada
+    elif qtd_entrada > 0:
+        valor_qtd = sum((e.quantidade or 0) * (e.custo_unitario or 0) for e in entradas)
+        produto.custo = valor_qtd / qtd_entrada
+    else:
+        produto.custo = 0.0
 
     return {
         "qtd": produto.estoque_qtd,
