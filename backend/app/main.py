@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import date as date_type, timedelta
 
 from . import models, schemas, database, migrations
+from .utils.tz import hoje_brt
 from .database import engine, get_db
 from .services import (
     margin_engine,
@@ -178,7 +179,7 @@ async def get_stats(db: Session = Depends(get_db)):
     total_skus = db.query(func.count(models.Produto.id)).filter(
         models.Produto.ativo == True
     ).scalar() or 0
-    hoje = date_type.today()
+    hoje = hoje_brt()
 
     # Margens reais de vendas — 3 janelas distintas
     margem_dia = _margem_janela(db, hoje, hoje)
@@ -221,7 +222,7 @@ async def saude_por_categoria(
     comparada com a meta configurada em cada Grupo. Sempre devolve todos
     os grupos cadastrados (mesmo sem vendas — status `sem_vendas`).
     """
-    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    data_alvo = date_type.fromisoformat(data) if data else hoje_brt()
     if janela < 1 or janela > 365:
         raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
     rows = categoria_service.saude_por_grupo(db, ate_data=data_alvo, janela_dias=janela)
@@ -347,7 +348,7 @@ async def resumo_quebras_endpoint(
         except (ValueError, IndexError):
             raise HTTPException(status_code=400, detail="mes deve estar no formato YYYY-MM")
     else:
-        hoje = date_type.today()
+        hoje = hoje_brt()
         mes_ref = hoje.replace(day=1)
     return quebra_service.resumo_mes(db, mes_ref)
 
@@ -411,7 +412,7 @@ async def serie_margem_diaria(
     Fonte: VendaDiariaSKU. Dias sem venda retornam ponto com status=sem_vendas
     em vez de serem omitidos — a UI pode desenhar a ausência explicitamente.
     """
-    ate = date_type.fromisoformat(data) if data else date_type.today()
+    ate = date_type.fromisoformat(data) if data else hoje_brt()
     if dias < 2 or dias > 180:
         raise HTTPException(status_code=400, detail="dias deve estar entre 2 e 180")
     pontos = serie_service.serie_margem(db, ate_data=ate, dias=dias)
@@ -527,7 +528,7 @@ async def registrar_fechamento(req: schemas.FechamentoVendaRequest, db: Session 
     Se `data` não for enviado, usa hoje.
     """
     vendas_list = [v.model_dump() for v in req.vendas]
-    data_alvo: date_type = req.data or date_type.today()
+    data_alvo: date_type = req.data or hoje_brt()
     estoque_service.registrar_venda_bulk(db, vendas_list, data_fechamento=data_alvo)
     analise = analise_service.analisar_fechamento(db, data_alvo)
     return asdict(analise)
@@ -542,7 +543,7 @@ async def analisar_fechamento_endpoint(
     Retorna a análise do fechamento para `data` (YYYY-MM-DD, default=hoje).
     `janela` controla quantos dias de histórico são considerados (default 30).
     """
-    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    data_alvo = date_type.fromisoformat(data) if data else hoje_brt()
     if janela < 1 or janela > 365:
         raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
     analise = analise_service.analisar_fechamento(db, data_alvo, janela_dias=janela)
@@ -617,7 +618,7 @@ async def projecao_amanha(
     `base`: data-base (YYYY-MM-DD); projeção será para o dia seguinte. Default=hoje.
     `top_n`: limita a quantidade de SKUs detalhados na resposta (default 20).
     """
-    hoje = date_type.fromisoformat(base) if base else date_type.today()
+    hoje = date_type.fromisoformat(base) if base else hoje_brt()
     projecao = forecast_service.projetar_proximo_dia(db, hoje=hoje, top_n=top_n)
     return asdict(projecao)
 
@@ -631,7 +632,7 @@ async def listar_recomendacoes(
     """
     Retorna recomendações estratégicas por SKU (matriz ABC-XYZ + modificadores).
     """
-    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    data_alvo = date_type.fromisoformat(data) if data else hoje_brt()
     if janela < 1 or janela > 365:
         raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
     recs = recomendacao_service.gerar_recomendacoes(db, data_alvo=data_alvo, top_n=top_n, janela_dias=janela)
@@ -648,7 +649,7 @@ async def narrativa_fechamento(
     Briefing diário consolidado: narrativa IA + análise + projeção + top recomendações.
     Ideal para copiar direto para o WhatsApp da equipe.
     """
-    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    data_alvo = date_type.fromisoformat(data) if data else hoje_brt()
     if janela < 1 or janela > 365:
         raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
     return await sugestao_service.get_narrativa_fechamento(
@@ -666,7 +667,7 @@ async def simular_cesta(
     Simula impacto global de aplicar TODAS as recomendações promocionais (ou
     apenas as de uma urgência específica: alta, media, baixa).
     """
-    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    data_alvo = date_type.fromisoformat(data) if data else hoje_brt()
     if urgencia and urgencia not in ("alta", "media", "baixa"):
         raise HTTPException(status_code=400, detail="urgencia deve ser alta, media ou baixa")
     recs = recomendacao_service.gerar_recomendacoes(db, data_alvo=data_alvo, janela_dias=janela)
@@ -680,7 +681,7 @@ async def simular_cesta(
 def _parse_mes(mes: Optional[str]) -> date_type:
     """Aceita 'YYYY-MM' ou 'YYYY-MM-DD'. Default = mês atual."""
     if not mes:
-        return date_type.today().replace(day=1)
+        return hoje_brt().replace(day=1)
     partes = mes.split("-")
     if len(partes) == 2:
         return date_type(int(partes[0]), int(partes[1]), 1)
@@ -822,7 +823,7 @@ async def atualizar_config_tributaria(
         models.ConfigTributaria.vigencia_fim.is_(None)
     ).first()
     if atual:
-        atual.vigencia_fim = date_type.today()
+        atual.vigencia_fim = hoje_brt()
 
     nova = models.ConfigTributaria(
         regime=cfg.regime,
@@ -1224,7 +1225,7 @@ async def sugestao_por_grupo(
     copiar no WhatsApp da equipe. Formato PRD:
       "Promo sugerida: grupo Médio, 15% off em 30 SKUs → margem 17,8%"
     """
-    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    data_alvo = date_type.fromisoformat(data) if data else hoje_brt()
     if janela < 1 or janela > 365:
         raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
     recs = recomendacao_service.gerar_recomendacoes(db, data_alvo=data_alvo, janela_dias=janela)
@@ -1241,7 +1242,7 @@ async def sugestao_resumo_global(
     Resumo global + agregação por grupo. Combina todas as sugestões num único
     impacto consolidado via margin_engine.
     """
-    data_alvo = date_type.fromisoformat(data) if data else date_type.today()
+    data_alvo = date_type.fromisoformat(data) if data else hoje_brt()
     if janela < 1 or janela > 365:
         raise HTTPException(status_code=400, detail="janela deve estar entre 1 e 365 dias")
     recs = recomendacao_service.gerar_recomendacoes(db, data_alvo=data_alvo, janela_dias=janela)

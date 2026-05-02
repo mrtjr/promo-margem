@@ -12,6 +12,7 @@ from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..utils.tz import hoje_brt
 
 
 @dataclass
@@ -52,7 +53,7 @@ def saude_por_grupo(
     indispensável para a UI não esconder categorias.
     """
     if ate_data is None:
-        ate_data = date.today()
+        ate_data = hoje_brt()
     data_inicio = ate_data - timedelta(days=janela_dias - 1)
 
     grupos = db.query(models.Grupo).order_by(models.Grupo.nome).all()

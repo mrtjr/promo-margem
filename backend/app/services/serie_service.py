@@ -12,6 +12,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..utils.tz import hoje_brt
 
 
 META_MIN = 0.17
@@ -55,7 +56,7 @@ def serie_margem(
     em vez de simplesmente esconder.
     """
     if ate_data is None:
-        ate_data = date.today()
+        ate_data = hoje_brt()
     data_inicio = ate_data - timedelta(days=dias - 1)
 
     registros = db.query(models.VendaDiariaSKU).filter(

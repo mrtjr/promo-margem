@@ -22,6 +22,8 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any
 
 from sqlalchemy import func
+
+from ..utils.tz import agora_brt
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -212,7 +214,7 @@ def listar_quebras(
     """
     Lista quebras dos últimos `dias`. Filtros opcionais por motivo/produto.
     """
-    cutoff = datetime.now() - timedelta(days=dias)
+    cutoff = agora_brt() - timedelta(days=dias)
     q = db.query(models.Movimentacao, models.Produto).outerjoin(
         models.Produto, models.Produto.id == models.Movimentacao.produto_id
     ).filter(

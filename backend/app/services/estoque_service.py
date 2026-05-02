@@ -2,6 +2,7 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date, datetime, timedelta
+from ..utils.tz import hoje_brt, agora_brt
 from typing import List, Optional, Dict, Any
 from .. import models, schemas
 import uuid
@@ -192,7 +193,7 @@ def registrar_venda_bulk(db: Session, vendas: list, data_fechamento: date = None
     Vendas com produto_id inexistente são puladas e listadas em `erros`.
     """
     if data_fechamento is None:
-        data_fechamento = date.today()
+        data_fechamento = hoje_brt()
 
     # Acumulador por produto para consolidar agregado diário
     agg_por_produto = {}
@@ -492,7 +493,7 @@ def excluir_venda(db: Session, venda_id: int) -> dict:
     # do INSERT (legado) só se data_fechamento for NULL.
     dia_venda: date = (
         venda.data_fechamento
-        or (venda.data.date() if venda.data else date.today())
+        or (venda.data.date() if venda.data else hoje_brt())
     )
 
     # 1. Tenta casar com Movimentacao SAIDA irmã (±2s e mesma qtd/produto)
@@ -716,7 +717,7 @@ def listar_historico_movimentacoes(
 
     dias: janela (default 30). tipo: ENTRADA | SAIDA | None (ambos).
     """
-    cutoff = datetime.now() - timedelta(days=dias)
+    cutoff = agora_brt() - timedelta(days=dias)
     q = db.query(models.Movimentacao, models.Produto).outerjoin(
         models.Produto, models.Produto.id == models.Movimentacao.produto_id
     ).filter(models.Movimentacao.data >= cutoff)

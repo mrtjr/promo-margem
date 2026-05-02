@@ -22,6 +22,7 @@ from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..utils.tz import hoje_brt
 
 
 JANELA_ROLLING = 7
@@ -112,7 +113,7 @@ def projetar_sku(
     Projeta venda de um SKU para `data_alvo` (tipicamente amanhã).
     """
     if hoje is None:
-        hoje = date.today()
+        hoje = hoje_brt()
 
     janela_inicio = hoje - timedelta(days=JANELA_DOW - 1)
     registros = db.query(models.VendaDiariaSKU).filter(
@@ -196,7 +197,7 @@ def projetar_proximo_dia(
     (o consolidado considera todos).
     """
     if hoje is None:
-        hoje = date.today()
+        hoje = hoje_brt()
     data_alvo = hoje + timedelta(days=1)
 
     produtos = db.query(models.Produto).filter(models.Produto.ativo == True).all()
