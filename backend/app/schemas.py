@@ -893,6 +893,13 @@ class EngineProporResponse(BaseModel):
 # DFC — Demonstração dos Fluxos de Caixa (v0.13)
 # ============================================================================
 
+class AvisoDemonstrativo(BaseModel):
+    """Aviso emitido por DFC/DMPL sobre coerência DRE↔BP."""
+    codigo: str          # bp_pl_nao_inicializado | ll_nao_propagado | ...
+    severidade: str      # alta | media | baixa | info
+    mensagem: str
+
+
 class DFCLinhaOut(BaseModel):
     codigo: str
     label: str
@@ -919,6 +926,7 @@ class DFCMensalOut(BaseModel):
     reconciliacao_ok: bool
 
     linhas: List[DFCLinhaOut]
+    avisos: List[AvisoDemonstrativo] = []
 
 
 class DFCComparativoPonto(BaseModel):
@@ -952,3 +960,4 @@ class DMPLMensalOut(BaseModel):
     componentes: List[DMPLLinhaOut]
     total: DMPLLinhaOut
     fechamento_ok: bool        # total.saldo_final ≈ bp.total_patrimonio_liquido
+    avisos: List[AvisoDemonstrativo] = []

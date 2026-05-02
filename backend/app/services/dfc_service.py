@@ -61,6 +61,14 @@ class DFCMensal:
     reconciliacao_ok: bool             # < 0.01
 
     linhas: List[Dict[str, Any]]
+    # Avisos diagnósticos sobre coerência DRE ↔ BP. Quando o BP do mês está
+    # stale (PL zerado), inferências como "dividendos pagos via Δ Lucros
+    # Acumulados" são suprimidas e um aviso é emitido aqui. Não bloqueia.
+    avisos: List[Dict[str, str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.avisos is None:
+            self.avisos = []
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +246,18 @@ def calcular_dfc_mes(db: Session, competencia: date) -> DFCMensal:
     #   pago = LL_distribuido + (inicio_div - final_div) = LL - delta_div - delta_lucros_acumulados
     # Heurística: dividendos_pagos ≈ (lucro_liquido - delta_lucros_ac) - delta_div_pagar
     # Negativo do que vai pra "saída de caixa"
-    dividendos_pagos = max(0.0, (lucro_liquido - delta_lucros_ac) - delta_div_pagar)
+    #
+    # Guard contra BP stale: se nenhum campo de PL > R$ 0,01 em bp_atual nem
+    # em bp_anterior, a fórmula acima trataria "LL > 0 com BP zerado" como
+    # "tudo saiu em dividendos" — saída de caixa fictícia. Suprime nesse caso
+    # e emite aviso. Também emite aviso quando LL existe mas Δ Lucros Acumulados=0
+    # (DRE não-propagada para o BP) — fórmula ainda roda, mas o usuário é alertado.
+    avisos = bp_service.diagnosticar_coerencia_dre_bp(bp_atual, bp_anterior, lucro_liquido)
+    bp_stale = not (bp_service.pl_inicializado(bp_atual) or bp_service.pl_inicializado(bp_anterior))
+    if bp_stale:
+        dividendos_pagos = 0.0
+    else:
+        dividendos_pagos = max(0.0, (lucro_liquido - delta_lucros_ac) - delta_div_pagar)
 
     total_financiamento = (
         var_emp_cp + var_emp_lp + var_debentures + var_parc_cp + var_parc_lp
@@ -315,6 +334,7 @@ def calcular_dfc_mes(db: Session, competencia: date) -> DFCMensal:
         diferenca_reconciliacao=round(diferenca, 2),
         reconciliacao_ok=reconciliacao_ok,
         linhas=[asdict(l) for l in linhas],
+        avisos=avisos,
     )
 
 

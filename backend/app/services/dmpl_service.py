@@ -53,6 +53,14 @@ class DMPLMensal:
     componentes: List[Dict[str, Any]]
     total: Dict[str, Any]   # linha de totais
     fechamento_ok: bool     # total.saldo_final ≈ bp.total_patrimonio_liquido
+    # Avisos de coerência DRE↔BP. Quando BP está stale ou LL não foi
+    # propagado, "outras_mov" da linha Lucros Acumulados acaba refletindo
+    # essa lacuna (não evento patrimonial real); o aviso explica a origem.
+    avisos: List[Dict[str, str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.avisos is None:
+            self.avisos = []
 
 
 # Componentes do PL na ordem que devem aparecer
@@ -162,6 +170,13 @@ def calcular_dmpl_mes(db: Session, competencia: date) -> DMPLMensal:
     pl_no_bp = float(bp_atual.total_patrimonio_liquido or 0)
     fechamento_ok = abs(soma_final - pl_no_bp) < 0.01
 
+    # Avisos: se BP stale ou LL não-propagado, "outras_mov" da linha Lucros
+    # Acumulados é apenas eco da lacuna (LL existe, mas BP não absorveu).
+    # Não modifica valores — só explica a origem para o usuário.
+    avisos = bp_service.diagnosticar_coerencia_dre_bp(
+        bp_atual, bp_anterior, lucro_liquido_dre
+    )
+
     return DMPLMensal(
         mes=competencia.strftime("%Y-%m"),
         disponivel=True,
@@ -169,4 +184,5 @@ def calcular_dmpl_mes(db: Session, competencia: date) -> DMPLMensal:
         componentes=[asdict(l) for l in linhas],
         total=total,
         fechamento_ok=fechamento_ok,
+        avisos=avisos,
     )
