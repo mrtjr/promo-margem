@@ -9,14 +9,18 @@ dist/
 build/
 *.egg-info/
 
-# Node / React
+# Node / React / Electron
 node_modules/
 dist/
+out/
 .vite/
+resources/backend/
 
 # Banco
 *.sqlite
 *.db
+*.db-shm
+*.db-wal
 
 # Env
 .env

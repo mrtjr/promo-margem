@@ -1,0 +1,50 @@
+{
+  "name": "promomargem-desktop",
+  "version": "0.1.0",
+  "description": "PromoMargem - sistema de margem e promocao para atacado/varejo (desktop standalone Windows)",
+  "private": true,
+  "main": "out/main/index.js",
+  "author": {
+    "name": "mrtjr",
+    "email": "martim.gato1@gmail.com"
+  },
+  "scripts": {
+    "dev": "concurrently -n py,el -c blue,green \"npm:dev:py\" \"npm:dev:electron\"",
+    "dev:py": "cd backend && .venv\\Scripts\\python -m uvicorn app.main:app --reload --port 8000",
+    "dev:electron": "electron-vite dev",
+    "dev:packaged": "cross-env USE_BUNDLED_BACKEND=1 electron-vite preview",
+    "build:py": "powershell -ExecutionPolicy Bypass -File backend/build_backend.ps1",
+    "build:app": "electron-vite build && electron-builder --win",
+    "build": "npm run build:py && npm run build:app",
+    "release": "npm run build:py && electron-vite build && electron-builder --win --publish always",
+    "test:py": "cd backend && .venv\\Scripts\\python -m pytest -x",
+    "lint": "tsc --noEmit",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "axios": "^1.15.0",
+    "clsx": "^2.1.1",
+    "electron-updater": "^6.3.9",
+    "lucide-react": "^1.8.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tailwind-merge": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.5.0",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "get-port": "^7.1.0",
+    "postcss": "^8.5.10",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.10"
+  }
+}

@@ -1,12 +1,10 @@
 fastapi==0.115.0
 uvicorn==0.31.0
 sqlalchemy==2.0.35
-psycopg2-binary==2.9.9
 pandas==2.2.3
 numpy==2.1.2
 python-multipart==0.0.12
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
-alembic==1.13.3
 httpx
-python-dotenv
+pyinstaller==6.11.0

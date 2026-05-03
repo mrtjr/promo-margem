@@ -1,0 +1,54 @@
+appId: com.mrtjr.promomargem
+productName: PromoMargem
+copyright: "Copyright (c) 2026 mrtjr"
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - "out/**/*"
+  - "package.json"
+  - "!**/*.{md,map,ts}"
+  - "!**/{.DS_Store,Thumbs.db}"
+
+extraResources:
+  - from: resources/backend
+    to: backend
+    filter:
+      - "**/*"
+
+asar: true
+asarUnpack:
+  - "resources/backend/**"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: "PromoMargem-Setup-${version}.${ext}"
+  publisherName: "PromoMargem"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: PromoMargem
+  uninstallDisplayName: PromoMargem
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  deleteAppDataOnUninstall: false
+
+publish:
+  - provider: github
+    owner: mrtjr
+    repo: promomargem-desktop
+    private: true
+    releaseType: release
+
+generateUpdatesFilesForAllChannels: true

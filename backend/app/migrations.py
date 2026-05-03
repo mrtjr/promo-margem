@@ -1,5 +1,5 @@
 """
-Migrações idempotentes em raw SQL. Rodadas no startup.
+Migrações idempotentes em raw SQL — versão dialect-aware (SQLite + Postgres).
 
 Estratégia: como o projeto usa Base.metadata.create_all (que só cria tabelas
 novas mas nunca altera colunas existentes), este módulo centraliza os ALTER
@@ -7,10 +7,19 @@ TABLE / ADD COLUMN necessários. Cada função:
   - É idempotente (pode rodar N vezes sem efeito colateral)
   - Checa o estado atual antes de alterar
   - Loga o que fez (ou o que pulou)
+  - Funciona em SQLite (produção) e Postgres (legado, só durante migração de
+    dados via scripts/migrate_pg_to_sqlite.py)
 
 Para adicionar uma nova migração:
   1. Escreva uma função `def m_NNN_descricao(conn): ...`
   2. Adicione ao final da lista em `apply_pending()`
+
+Notas SQLite:
+  - `ALTER TABLE ADD CONSTRAINT CHECK` NÃO existe em SQLite. CHECK constraints
+    devem ser definidos em CREATE TABLE (via SQLAlchemy CheckConstraint nos
+    models, OU em CREATE TABLE de fallback). Em SQLite, _ensure_check é no-op.
+  - `data::date` (cast) → use `date(data)` (função SQLite). Detectado em runtime.
+  - `SERIAL`, `DOUBLE PRECISION`, `JSONB`, `NOW()` → traduzidos por _sql_type().
 """
 from __future__ import annotations
 
@@ -19,7 +28,14 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 
+def _is_sqlite(conn: Connection) -> bool:
+    return conn.dialect.name == "sqlite"
+
+
 def _has_column(conn: Connection, table: str, column: str) -> bool:
+    if _is_sqlite(conn):
+        rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        return any(r[1] == column for r in rows)
     row = conn.execute(
         text(
             "SELECT 1 FROM information_schema.columns "
@@ -31,6 +47,12 @@ def _has_column(conn: Connection, table: str, column: str) -> bool:
 
 
 def _has_table(conn: Connection, table: str) -> bool:
+    if _is_sqlite(conn):
+        row = conn.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name = :t"),
+            {"t": table},
+        ).first()
+        return row is not None
     row = conn.execute(
         text(
             "SELECT 1 FROM information_schema.tables "
@@ -41,59 +63,92 @@ def _has_table(conn: Connection, table: str) -> bool:
     return row is not None
 
 
+def _has_constraint(conn: Connection, table: str, name: str) -> bool:
+    """
+    SQLite não tem catálogo formal de constraints — retorna True (no-op)
+    para fazer migrations CHECK serem skip em SQLite. CHECKs efetivos vivem
+    em CREATE TABLE ou nos models via CheckConstraint.
+    """
+    if _is_sqlite(conn):
+        return True
+    row = conn.execute(
+        text(
+            "SELECT 1 FROM information_schema.table_constraints "
+            "WHERE table_name = :t AND constraint_name = :n"
+        ),
+        {"t": table, "n": name},
+    ).first()
+    return row is not None
+
+
+def _now_default(conn: Connection) -> str:
+    return "CURRENT_TIMESTAMP" if _is_sqlite(conn) else "NOW()"
+
+
+def _serial_pk(conn: Connection) -> str:
+    return "INTEGER PRIMARY KEY AUTOINCREMENT" if _is_sqlite(conn) else "SERIAL PRIMARY KEY"
+
+
+def _double(conn: Connection) -> str:
+    return "REAL" if _is_sqlite(conn) else "DOUBLE PRECISION"
+
+
+def _json_type(conn: Connection) -> str:
+    return "TEXT" if _is_sqlite(conn) else "JSONB"
+
+
+def _date_cast(conn: Connection, expr: str) -> str:
+    return f"date({expr})" if _is_sqlite(conn) else f"{expr}::date"
+
+
 # ---------------------------------------------------------------------------
 # Migrações individuais
 # ---------------------------------------------------------------------------
 
 def m_001_venda_data_fechamento(conn: Connection) -> str:
-    """
-    Adiciona `vendas.data_fechamento` (date). Backfill: copia de `vendas.data::date`
-    para linhas existentes, assim o bug de desalinhamento some no próprio momento
-    da migração.
-    """
     if _has_column(conn, "vendas", "data_fechamento"):
         return "skip: vendas.data_fechamento já existe"
 
     conn.execute(text("ALTER TABLE vendas ADD COLUMN data_fechamento date"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_vendas_data_fechamento ON vendas (data_fechamento)"))
-    # Backfill: para vendas antigas (ou do seed retroativo), assume data_fechamento = data::date
-    conn.execute(text("UPDATE vendas SET data_fechamento = data::date WHERE data_fechamento IS NULL"))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_vendas_data_fechamento "
+        "ON vendas (data_fechamento)"
+    ))
+    cast_expr = _date_cast(conn, "data")
+    conn.execute(text(
+        f"UPDATE vendas SET data_fechamento = {cast_expr} WHERE data_fechamento IS NULL"
+    ))
     return "ok: vendas.data_fechamento criada + backfill aplicado"
 
 
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
-
 def m_002_integracao_pdv_tabelas(conn: Connection) -> str:
-    """
-    Garante que as tabelas `integracao_pdv_config` e `integracao_pdv_log`
-    existam. Como `create_all` é chamado antes das migrations, essa função
-    só atua em bancos legados que não tiveram o modelo definido na boot.
-    """
     config_ok = _has_table(conn, "integracao_pdv_config")
     log_ok = _has_table(conn, "integracao_pdv_log")
     if config_ok and log_ok:
         return "skip: tabelas PDV já existem"
-    # create_all já foi executado — se chegou aqui sem a tabela, algo quebrou
-    # no metadata. Força criação pelo SQL direto (fallback).
+
+    serial = _serial_pk(conn)
+    now = _now_default(conn)
+    json_t = _json_type(conn)
+    bool_default = "1" if _is_sqlite(conn) else "TRUE"
+
     if not config_ok:
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS integracao_pdv_config (
-                id SERIAL PRIMARY KEY,
+                id {serial},
                 token VARCHAR NOT NULL,
                 nome_pdv VARCHAR,
-                ativa BOOLEAN DEFAULT TRUE,
-                criado_em TIMESTAMP DEFAULT NOW(),
-                atualizado_em TIMESTAMP DEFAULT NOW()
+                ativa BOOLEAN DEFAULT {bool_default},
+                criado_em TIMESTAMP DEFAULT {now},
+                atualizado_em TIMESTAMP DEFAULT {now}
             )
         """))
     if not log_ok:
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS integracao_pdv_log (
-                id SERIAL PRIMARY KEY,
-                recebido_em TIMESTAMP DEFAULT NOW(),
-                payload JSONB,
+                id {serial},
+                recebido_em TIMESTAMP DEFAULT {now},
+                payload {json_t},
                 status VARCHAR,
                 mensagem VARCHAR,
                 venda_id INTEGER REFERENCES vendas(id),
@@ -107,13 +162,6 @@ def m_002_integracao_pdv_tabelas(conn: Connection) -> str:
 
 
 def m_003_produto_codigo(conn: Connection) -> str:
-    """
-    Adiciona `produtos.codigo` (varchar, unique, nullable).
-
-    Usado como 1ª camada de matching na importação de Fechamento de Vendas
-    (CSV do ERP). Unique permite várias linhas NULL (comportamento do Postgres),
-    então produtos legados sem código continuam funcionando.
-    """
     if _has_column(conn, "produtos", "codigo"):
         return "skip: produtos.codigo já existe"
 
@@ -126,35 +174,28 @@ def m_003_produto_codigo(conn: Connection) -> str:
 
 
 def m_004_soft_delete_produtos_custo_zero(conn: Connection) -> str:
-    """
-    Desativa produtos órfãos que foram criados com custo=0 antes da validação
-    existir (commits anteriores a 2d87723). Produto com custo=0 gera SAÍDA
-    com margem 100% (dado contábil errado), então o matching do CSV deve
-    ignorá-los até que uma Entrada de Estoque estabeleça o CMP correto.
-
-    Idempotente: só age em produtos com custo<=0 E ativo=True. Roda novamente
-    sem efeito se o banco já estiver limpo. Uma vez que o usuário registrar
-    Entrada, o produto volta a ativo=True via estoque_service.
-    """
-    res = conn.execute(text(
-        "UPDATE produtos SET ativo = FALSE "
-        "WHERE (custo IS NULL OR custo <= 0) AND ativo = TRUE"
-    ))
+    if _is_sqlite(conn):
+        sql = ("UPDATE produtos SET ativo = 0 "
+               "WHERE (custo IS NULL OR custo <= 0) AND ativo = 1")
+    else:
+        sql = ("UPDATE produtos SET ativo = FALSE "
+               "WHERE (custo IS NULL OR custo <= 0) AND ativo = TRUE")
+    res = conn.execute(text(sql))
     n = res.rowcount if res.rowcount is not None else 0
-    return f"ok: {n} produto(s) órfão(s) com custo<=0 desativados" if n else "skip: nenhum produto com custo<=0 ativo"
+    return (f"ok: {n} produto(s) órfão(s) com custo<=0 desativados"
+            if n else "skip: nenhum produto com custo<=0 ativo")
 
 
 def m_005_produto_custo_nonneg(conn: Connection) -> str:
     """
-    Adiciona CHECK CONSTRAINT garantindo que produto.custo nunca seja negativo.
-    Permite zero (produto pode nascer com custo=0 transitoriamente, antes da
-    primeira Entrada), mas bloqueia valores negativos por corrupção/bug.
+    SQLite não suporta ALTER TABLE ADD CONSTRAINT CHECK. O CHECK efetivo
+    para SQLite vive em models.Produto (CheckConstraint via SQLAlchemy
+    quando a tabela for recriada). No-op em SQLite.
     """
-    row = conn.execute(text(
-        "SELECT 1 FROM information_schema.table_constraints "
-        "WHERE table_name='produtos' AND constraint_name='produto_custo_nonneg'"
-    )).first()
-    if row:
+    if _is_sqlite(conn):
+        return "skip (sqlite): CHECK custo>=0 declarativo no model"
+
+    if _has_constraint(conn, "produtos", "produto_custo_nonneg"):
         return "skip: constraint produto_custo_nonneg já existe"
     conn.execute(text(
         "ALTER TABLE produtos ADD CONSTRAINT produto_custo_nonneg CHECK (custo >= 0)"
@@ -163,19 +204,17 @@ def m_005_produto_custo_nonneg(conn: Connection) -> str:
 
 
 def m_006_balanco_patrimonial(conn: Connection) -> str:
-    """
-    Garante que a tabela `balanco_patrimonial` exista. Como `create_all` roda
-    antes, normalmente a tabela já estará criada via SQLAlchemy; esse fallback
-    só age em bancos legados sem o modelo definido no boot.
-
-    Idempotente: checa presença da tabela antes de criar.
-    """
     if _has_table(conn, "balanco_patrimonial"):
         return "skip: balanco_patrimonial já existe"
 
-    conn.execute(text("""
+    serial = _serial_pk(conn)
+    now = _now_default(conn)
+    dbl = _double(conn)
+    bool_default = "1" if _is_sqlite(conn) else "FALSE"
+
+    conn.execute(text(f"""
         CREATE TABLE IF NOT EXISTS balanco_patrimonial (
-            id SERIAL PRIMARY KEY,
+            id {serial},
             empresa_id INTEGER,
             competencia DATE NOT NULL,
             data_referencia DATE NOT NULL,
@@ -183,91 +222,83 @@ def m_006_balanco_patrimonial(conn: Connection) -> str:
             moeda VARCHAR NOT NULL DEFAULT 'BRL',
             observacoes VARCHAR,
 
-            -- Ativo Circulante
-            caixa_e_equivalentes DOUBLE PRECISION DEFAULT 0,
-            bancos_conta_movimento DOUBLE PRECISION DEFAULT 0,
-            aplicacoes_financeiras_curto_prazo DOUBLE PRECISION DEFAULT 0,
-            clientes_contas_a_receber DOUBLE PRECISION DEFAULT 0,
-            adiantamentos_a_fornecedores DOUBLE PRECISION DEFAULT 0,
-            impostos_a_recuperar DOUBLE PRECISION DEFAULT 0,
-            estoque DOUBLE PRECISION DEFAULT 0,
-            despesas_antecipadas DOUBLE PRECISION DEFAULT 0,
-            outros_ativos_circulantes DOUBLE PRECISION DEFAULT 0,
-            total_ativo_circulante DOUBLE PRECISION DEFAULT 0,
+            caixa_e_equivalentes {dbl} DEFAULT 0,
+            bancos_conta_movimento {dbl} DEFAULT 0,
+            aplicacoes_financeiras_curto_prazo {dbl} DEFAULT 0,
+            clientes_contas_a_receber {dbl} DEFAULT 0,
+            adiantamentos_a_fornecedores {dbl} DEFAULT 0,
+            impostos_a_recuperar {dbl} DEFAULT 0,
+            estoque {dbl} DEFAULT 0,
+            despesas_antecipadas {dbl} DEFAULT 0,
+            outros_ativos_circulantes {dbl} DEFAULT 0,
+            total_ativo_circulante {dbl} DEFAULT 0,
 
-            -- Realizável LP
-            clientes_longo_prazo DOUBLE PRECISION DEFAULT 0,
-            depositos_judiciais DOUBLE PRECISION DEFAULT 0,
-            impostos_a_recuperar_longo_prazo DOUBLE PRECISION DEFAULT 0,
-            emprestimos_concedidos DOUBLE PRECISION DEFAULT 0,
-            outros_realizaveis_longo_prazo DOUBLE PRECISION DEFAULT 0,
-            total_realizavel_longo_prazo DOUBLE PRECISION DEFAULT 0,
+            clientes_longo_prazo {dbl} DEFAULT 0,
+            depositos_judiciais {dbl} DEFAULT 0,
+            impostos_a_recuperar_longo_prazo {dbl} DEFAULT 0,
+            emprestimos_concedidos {dbl} DEFAULT 0,
+            outros_realizaveis_longo_prazo {dbl} DEFAULT 0,
+            total_realizavel_longo_prazo {dbl} DEFAULT 0,
 
-            -- Investimentos
-            participacoes_societarias DOUBLE PRECISION DEFAULT 0,
-            propriedades_para_investimento DOUBLE PRECISION DEFAULT 0,
-            outros_investimentos DOUBLE PRECISION DEFAULT 0,
-            total_investimentos DOUBLE PRECISION DEFAULT 0,
+            participacoes_societarias {dbl} DEFAULT 0,
+            propriedades_para_investimento {dbl} DEFAULT 0,
+            outros_investimentos {dbl} DEFAULT 0,
+            total_investimentos {dbl} DEFAULT 0,
 
-            -- Imobilizado
-            maquinas_e_equipamentos DOUBLE PRECISION DEFAULT 0,
-            veiculos DOUBLE PRECISION DEFAULT 0,
-            moveis_e_utensilios DOUBLE PRECISION DEFAULT 0,
-            imoveis DOUBLE PRECISION DEFAULT 0,
-            computadores_e_perifericos DOUBLE PRECISION DEFAULT 0,
-            benfeitorias DOUBLE PRECISION DEFAULT 0,
-            depreciacao_acumulada DOUBLE PRECISION DEFAULT 0,
-            total_imobilizado DOUBLE PRECISION DEFAULT 0,
+            maquinas_e_equipamentos {dbl} DEFAULT 0,
+            veiculos {dbl} DEFAULT 0,
+            moveis_e_utensilios {dbl} DEFAULT 0,
+            imoveis {dbl} DEFAULT 0,
+            computadores_e_perifericos {dbl} DEFAULT 0,
+            benfeitorias {dbl} DEFAULT 0,
+            depreciacao_acumulada {dbl} DEFAULT 0,
+            total_imobilizado {dbl} DEFAULT 0,
 
-            -- Intangível
-            marcas_e_patentes DOUBLE PRECISION DEFAULT 0,
-            softwares DOUBLE PRECISION DEFAULT 0,
-            licencas DOUBLE PRECISION DEFAULT 0,
-            goodwill DOUBLE PRECISION DEFAULT 0,
-            amortizacao_acumulada DOUBLE PRECISION DEFAULT 0,
-            total_intangivel DOUBLE PRECISION DEFAULT 0,
+            marcas_e_patentes {dbl} DEFAULT 0,
+            softwares {dbl} DEFAULT 0,
+            licencas {dbl} DEFAULT 0,
+            goodwill {dbl} DEFAULT 0,
+            amortizacao_acumulada {dbl} DEFAULT 0,
+            total_intangivel {dbl} DEFAULT 0,
 
-            total_ativo_nao_circulante DOUBLE PRECISION DEFAULT 0,
-            total_ativo DOUBLE PRECISION DEFAULT 0,
+            total_ativo_nao_circulante {dbl} DEFAULT 0,
+            total_ativo {dbl} DEFAULT 0,
 
-            -- Passivo Circulante
-            fornecedores DOUBLE PRECISION DEFAULT 0,
-            salarios_a_pagar DOUBLE PRECISION DEFAULT 0,
-            encargos_sociais_a_pagar DOUBLE PRECISION DEFAULT 0,
-            impostos_e_taxas_a_recolher DOUBLE PRECISION DEFAULT 0,
-            emprestimos_financiamentos_curto_prazo DOUBLE PRECISION DEFAULT 0,
-            parcelamentos_curto_prazo DOUBLE PRECISION DEFAULT 0,
-            adiantamentos_de_clientes DOUBLE PRECISION DEFAULT 0,
-            dividendos_a_pagar DOUBLE PRECISION DEFAULT 0,
-            provisoes_curto_prazo DOUBLE PRECISION DEFAULT 0,
-            outras_obrigacoes_circulantes DOUBLE PRECISION DEFAULT 0,
-            total_passivo_circulante DOUBLE PRECISION DEFAULT 0,
+            fornecedores {dbl} DEFAULT 0,
+            salarios_a_pagar {dbl} DEFAULT 0,
+            encargos_sociais_a_pagar {dbl} DEFAULT 0,
+            impostos_e_taxas_a_recolher {dbl} DEFAULT 0,
+            emprestimos_financiamentos_curto_prazo {dbl} DEFAULT 0,
+            parcelamentos_curto_prazo {dbl} DEFAULT 0,
+            adiantamentos_de_clientes {dbl} DEFAULT 0,
+            dividendos_a_pagar {dbl} DEFAULT 0,
+            provisoes_curto_prazo {dbl} DEFAULT 0,
+            outras_obrigacoes_circulantes {dbl} DEFAULT 0,
+            total_passivo_circulante {dbl} DEFAULT 0,
 
-            -- Passivo Não Circulante
-            emprestimos_financiamentos_longo_prazo DOUBLE PRECISION DEFAULT 0,
-            debentures DOUBLE PRECISION DEFAULT 0,
-            parcelamentos_longo_prazo DOUBLE PRECISION DEFAULT 0,
-            provisoes_longo_prazo DOUBLE PRECISION DEFAULT 0,
-            contingencias DOUBLE PRECISION DEFAULT 0,
-            outras_obrigacoes_longo_prazo DOUBLE PRECISION DEFAULT 0,
-            total_passivo_nao_circulante DOUBLE PRECISION DEFAULT 0,
+            emprestimos_financiamentos_longo_prazo {dbl} DEFAULT 0,
+            debentures {dbl} DEFAULT 0,
+            parcelamentos_longo_prazo {dbl} DEFAULT 0,
+            provisoes_longo_prazo {dbl} DEFAULT 0,
+            contingencias {dbl} DEFAULT 0,
+            outras_obrigacoes_longo_prazo {dbl} DEFAULT 0,
+            total_passivo_nao_circulante {dbl} DEFAULT 0,
 
-            total_passivo DOUBLE PRECISION DEFAULT 0,
+            total_passivo {dbl} DEFAULT 0,
 
-            -- Patrimônio Líquido
-            capital_social DOUBLE PRECISION DEFAULT 0,
-            reservas_de_capital DOUBLE PRECISION DEFAULT 0,
-            ajustes_de_avaliacao_patrimonial DOUBLE PRECISION DEFAULT 0,
-            reservas_de_lucros DOUBLE PRECISION DEFAULT 0,
-            lucros_acumulados DOUBLE PRECISION DEFAULT 0,
-            prejuizos_acumulados DOUBLE PRECISION DEFAULT 0,
-            acoes_ou_quotas_em_tesouraria DOUBLE PRECISION DEFAULT 0,
-            total_patrimonio_liquido DOUBLE PRECISION DEFAULT 0,
+            capital_social {dbl} DEFAULT 0,
+            reservas_de_capital {dbl} DEFAULT 0,
+            ajustes_de_avaliacao_patrimonial {dbl} DEFAULT 0,
+            reservas_de_lucros {dbl} DEFAULT 0,
+            lucros_acumulados {dbl} DEFAULT 0,
+            prejuizos_acumulados {dbl} DEFAULT 0,
+            acoes_ou_quotas_em_tesouraria {dbl} DEFAULT 0,
+            total_patrimonio_liquido {dbl} DEFAULT 0,
 
-            indicador_fechamento_ok BOOLEAN DEFAULT FALSE,
+            indicador_fechamento_ok BOOLEAN DEFAULT {bool_default},
 
-            criado_em TIMESTAMP DEFAULT NOW(),
-            atualizado_em TIMESTAMP DEFAULT NOW(),
+            criado_em TIMESTAMP DEFAULT {now},
+            atualizado_em TIMESTAMP DEFAULT {now},
             fechado_em TIMESTAMP,
             auditado_em TIMESTAMP,
 
@@ -284,117 +315,98 @@ def m_006_balanco_patrimonial(conn: Connection) -> str:
 
 def m_007_movimentacao_quebra(conn: Connection) -> str:
     """
-    Adiciona suporte ao tipo de movimentação QUEBRA (perda de estoque):
-      1. Coluna `movimentacoes.motivo` (NULLABLE) — vencimento|avaria|desvio|doacao
-      2. CHECK constraints: tipo válido, motivo válido, QUEBRA exige motivo
-      3. Índice (tipo, data) para consultas de histórico/DRE
-      4. Conta contábil 4.2 (Quebras e Perdas, tipo=CMV)
-      5. Coluna `dre_mensal.quebras` (snapshot do valor mensal)
+    Suporte a tipo QUEBRA: coluna motivo + CHECKs + índice + conta 4.2 + dre.quebras.
 
-    Idempotente em todas as etapas — checa estado antes de alterar.
+    SQLite: pula os 3 ALTER TABLE ADD CONSTRAINT CHECK (não suportado).
+    Os CHECKs efetivos vivem no model (Movimentacao via CheckConstraint).
     """
     msgs: List[str] = []
 
-    # 1. Coluna motivo
     if not _has_column(conn, "movimentacoes", "motivo"):
         conn.execute(text("ALTER TABLE movimentacoes ADD COLUMN motivo VARCHAR"))
         msgs.append("col motivo criada")
     else:
         msgs.append("col motivo já existe")
 
-    # 2. CHECK constraints (cada uma idempotente)
-    def _has_constraint(name: str) -> bool:
-        row = conn.execute(text(
-            "SELECT 1 FROM information_schema.table_constraints "
-            "WHERE table_name='movimentacoes' AND constraint_name=:n"
-        ), {"n": name}).first()
-        return row is not None
+    if _is_sqlite(conn):
+        msgs.append("checks (sqlite: vivem no model)")
+    else:
+        if not _has_constraint(conn, "movimentacoes", "mov_tipo_check"):
+            conn.execute(text(
+                "ALTER TABLE movimentacoes ADD CONSTRAINT mov_tipo_check "
+                "CHECK (tipo IN ('ENTRADA','SAIDA','QUEBRA'))"
+            ))
+            msgs.append("check tipo criado")
+        if not _has_constraint(conn, "movimentacoes", "mov_motivo_valid"):
+            conn.execute(text(
+                "ALTER TABLE movimentacoes ADD CONSTRAINT mov_motivo_valid "
+                "CHECK (motivo IS NULL OR motivo IN ('vencimento','avaria','desvio','doacao'))"
+            ))
+            msgs.append("check motivo criado")
+        if not _has_constraint(conn, "movimentacoes", "mov_quebra_exige_motivo"):
+            conn.execute(text(
+                "ALTER TABLE movimentacoes ADD CONSTRAINT mov_quebra_exige_motivo "
+                "CHECK (tipo != 'QUEBRA' OR motivo IS NOT NULL)"
+            ))
+            msgs.append("check quebra-motivo criado")
 
-    if not _has_constraint("mov_tipo_check"):
-        conn.execute(text(
-            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_tipo_check "
-            "CHECK (tipo IN ('ENTRADA','SAIDA','QUEBRA'))"
-        ))
-        msgs.append("check tipo criado")
-    if not _has_constraint("mov_motivo_valid"):
-        conn.execute(text(
-            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_motivo_valid "
-            "CHECK (motivo IS NULL OR motivo IN ('vencimento','avaria','desvio','doacao'))"
-        ))
-        msgs.append("check motivo criado")
-    if not _has_constraint("mov_quebra_exige_motivo"):
-        conn.execute(text(
-            "ALTER TABLE movimentacoes ADD CONSTRAINT mov_quebra_exige_motivo "
-            "CHECK (tipo != 'QUEBRA' OR motivo IS NOT NULL)"
-        ))
-        msgs.append("check quebra-motivo criado")
-
-    # 3. Índice tipo+data
     conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_mov_tipo_data ON movimentacoes(tipo, data)"
     ))
 
-    # 4. Conta contábil 4.2 (Quebras e Perdas)
     existe_conta = conn.execute(text(
         "SELECT 1 FROM contas_contabeis WHERE codigo='4.2'"
     )).first()
     if not existe_conta:
+        true_lit = "1" if _is_sqlite(conn) else "TRUE"
         conn.execute(text(
-            "INSERT INTO contas_contabeis (codigo, nome, tipo, natureza, ativa) "
-            "VALUES ('4.2','Quebras e Perdas de Estoque','CMV','DEBITO',TRUE)"
+            f"INSERT INTO contas_contabeis (codigo, nome, tipo, natureza, ativa) "
+            f"VALUES ('4.2','Quebras e Perdas de Estoque','CMV','DEBITO',{true_lit})"
         ))
         msgs.append("conta 4.2 criada")
     else:
         msgs.append("conta 4.2 já existe")
 
-    # 5. Coluna dre_mensal.quebras
     if _has_table(conn, "dre_mensal") and not _has_column(conn, "dre_mensal", "quebras"):
-        conn.execute(text("ALTER TABLE dre_mensal ADD COLUMN quebras DOUBLE PRECISION DEFAULT 0"))
+        dbl = _double(conn)
+        conn.execute(text(f"ALTER TABLE dre_mensal ADD COLUMN quebras {dbl} DEFAULT 0"))
         msgs.append("dre_mensal.quebras criada")
 
     return "ok: " + ", ".join(msgs)
 
 
 def m_008_engine_promocao(conn: Connection) -> str:
-    """
-    Suporte ao Engine de Promoção orientada a meta (v0.12):
-      1. Coluna `produtos.bloqueado_engine` (BOOLEAN, default FALSE) — blacklist
-      2. Tabela `elasticidade_sku` — cache de elasticidades-preço por SKU
-      3. Tabela `cestas_promocao` — propostas geradas pelo solver
-      4. Tabela `cesta_itens` — SKUs de cada cesta com desconto e projeções
-
-    Idempotente em todas as etapas.
-    """
     msgs: List[str] = []
 
-    # 1. Produto.bloqueado_engine
     if not _has_column(conn, "produtos", "bloqueado_engine"):
+        false_lit = "0" if _is_sqlite(conn) else "FALSE"
         conn.execute(text(
-            "ALTER TABLE produtos ADD COLUMN bloqueado_engine BOOLEAN DEFAULT FALSE NOT NULL"
+            f"ALTER TABLE produtos ADD COLUMN bloqueado_engine BOOLEAN DEFAULT {false_lit} NOT NULL"
         ))
         msgs.append("col produtos.bloqueado_engine criada")
     else:
         msgs.append("col bloqueado_engine já existe")
 
-    # 2. Tabela elasticidade_sku
+    serial = _serial_pk(conn)
+    now = _now_default(conn)
+    dbl = _double(conn)
+
     if not _has_table(conn, "elasticidade_sku"):
-        conn.execute(text(
-            """
+        conn.execute(text(f"""
             CREATE TABLE elasticidade_sku (
               produto_id INTEGER PRIMARY KEY REFERENCES produtos(id) ON DELETE CASCADE,
-              beta DOUBLE PRECISION NOT NULL,
-              r2 DOUBLE PRECISION,
+              beta {dbl} NOT NULL,
+              r2 {dbl},
               n_observacoes INTEGER NOT NULL DEFAULT 0,
-              cv_preco DOUBLE PRECISION,
+              cv_preco {dbl},
               qualidade VARCHAR(10) NOT NULL,
               fonte VARCHAR(20) NOT NULL,
-              recalculado_em TIMESTAMP DEFAULT NOW(),
+              recalculado_em TIMESTAMP DEFAULT {now},
               CHECK (qualidade IN ('alta','media','baixa','prior')),
               CHECK (fonte IN ('regressao','prior_abc_xyz')),
               CHECK (beta >= -3.0 AND beta <= -0.3)
             )
-            """
-        ))
+        """))
         conn.execute(text(
             "CREATE INDEX ix_elasticidade_qualidade ON elasticidade_sku(qualidade)"
         ))
@@ -402,32 +414,29 @@ def m_008_engine_promocao(conn: Connection) -> str:
     else:
         msgs.append("elasticidade_sku já existe")
 
-    # 3. Tabela cestas_promocao
     if not _has_table(conn, "cestas_promocao"):
-        conn.execute(text(
-            """
+        conn.execute(text(f"""
             CREATE TABLE cestas_promocao (
-              id SERIAL PRIMARY KEY,
+              id {serial},
               perfil VARCHAR(20) NOT NULL,
-              meta_margem_pct DOUBLE PRECISION NOT NULL,
+              meta_margem_pct {dbl} NOT NULL,
               janela_dias INTEGER NOT NULL,
               status VARCHAR(15) NOT NULL,
-              margem_atual DOUBLE PRECISION,
-              margem_projetada DOUBLE PRECISION,
-              lucro_semanal_projetado DOUBLE PRECISION,
-              receita_projetada DOUBLE PRECISION,
+              margem_atual {dbl},
+              margem_projetada {dbl},
+              lucro_semanal_projetado {dbl},
+              receita_projetada {dbl},
               qtd_skus INTEGER NOT NULL DEFAULT 0,
-              desconto_medio_pct DOUBLE PRECISION,
+              desconto_medio_pct {dbl},
               motivo_falha VARCHAR(50),
               promocao_id INTEGER REFERENCES promocoes(id) ON DELETE SET NULL,
-              criado_em TIMESTAMP DEFAULT NOW(),
+              criado_em TIMESTAMP DEFAULT {now},
               decidido_em TIMESTAMP,
               motivo_descarte TEXT,
               CHECK (perfil IN ('conservador','balanceado','agressivo')),
               CHECK (status IN ('proposta','aprovada','descartada','expirada'))
             )
-            """
-        ))
+        """))
         conn.execute(text(
             "CREATE INDEX ix_cesta_status ON cestas_promocao(status, criado_em DESC)"
         ))
@@ -435,33 +444,30 @@ def m_008_engine_promocao(conn: Connection) -> str:
     else:
         msgs.append("cestas_promocao já existe")
 
-    # 4. Tabela cesta_itens
     if not _has_table(conn, "cesta_itens"):
-        conn.execute(text(
-            """
+        conn.execute(text(f"""
             CREATE TABLE cesta_itens (
-              id SERIAL PRIMARY KEY,
+              id {serial},
               cesta_id INTEGER NOT NULL REFERENCES cestas_promocao(id) ON DELETE CASCADE,
               produto_id INTEGER NOT NULL REFERENCES produtos(id),
-              desconto_pct DOUBLE PRECISION NOT NULL,
-              preco_atual DOUBLE PRECISION NOT NULL,
-              preco_promo DOUBLE PRECISION NOT NULL,
-              margem_atual DOUBLE PRECISION NOT NULL,
-              margem_pos_acao DOUBLE PRECISION NOT NULL,
-              qtd_baseline DOUBLE PRECISION NOT NULL,
-              qtd_projetada DOUBLE PRECISION NOT NULL,
-              receita_projetada DOUBLE PRECISION NOT NULL,
-              lucro_marginal DOUBLE PRECISION NOT NULL,
-              beta_usado DOUBLE PRECISION NOT NULL,
+              desconto_pct {dbl} NOT NULL,
+              preco_atual {dbl} NOT NULL,
+              preco_promo {dbl} NOT NULL,
+              margem_atual {dbl} NOT NULL,
+              margem_pos_acao {dbl} NOT NULL,
+              qtd_baseline {dbl} NOT NULL,
+              qtd_projetada {dbl} NOT NULL,
+              receita_projetada {dbl} NOT NULL,
+              lucro_marginal {dbl} NOT NULL,
+              beta_usado {dbl} NOT NULL,
               qualidade_elasticidade VARCHAR(10) NOT NULL,
-              cobertura_pos_promo_dias DOUBLE PRECISION,
-              risco_stockout_pct DOUBLE PRECISION,
+              cobertura_pos_promo_dias {dbl},
+              risco_stockout_pct {dbl},
               flag_risco VARCHAR(10),
               ordem_entrada INTEGER NOT NULL DEFAULT 0,
               UNIQUE(cesta_id, produto_id)
             )
-            """
-        ))
+        """))
         conn.execute(text(
             "CREATE INDEX ix_cesta_item_cesta ON cesta_itens(cesta_id)"
         ))
@@ -473,51 +479,24 @@ def m_008_engine_promocao(conn: Connection) -> str:
 
 
 def m_009_indices_performance(conn: Connection) -> str:
-    """
-    Adiciona índices compostos para acelerar:
-      - Reversões de movimentação (excluir_entrada/venda/quebra) que recalculam
-        o produto a partir de TODAS as suas Movimentacoes.
-      - Listagens de histórico filtrando por produto_id (UI Histórico, Engine).
-      - Backfill VendaDiariaSKU e analytics por SKU.
-
-    Antes desta migração:
-      - movimentacoes: só índice em (tipo, data) e PK; produto_id sem índice.
-      - vendas:        só índice em data_fechamento e PK; produto_id sem índice.
-
-    Após:
-      - ix_mov_produto_data:           movimentacoes(produto_id, data DESC)
-      - ix_venda_produto_fechamento:   vendas(produto_id, data_fechamento DESC)
-
-    Idempotente via IF NOT EXISTS.
-    """
     msgs: List[str] = []
-
     conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_mov_produto_data "
         "ON movimentacoes (produto_id, data DESC)"
     ))
     msgs.append("idx mov(produto_id,data) ok")
-
     conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_venda_produto_fechamento "
         "ON vendas (produto_id, data_fechamento DESC)"
     ))
     msgs.append("idx venda(produto_id,data_fechamento) ok")
-
     return "ok: " + ", ".join(msgs)
 
 
 def m_010_drop_peso_medida(conn: Connection) -> str:
     """
-    Remove a coluna `movimentacoes.peso_medida` (campo legado).
-
-    Histórico:
-      - Adicionada em uma versão anterior como 'info livre' ('Legado/Info').
-      - Nunca foi lida pelo código de produção.
-      - Em prod, 100% das linhas sempre estiveram com NULL (escrita explícita
-        em estoque_service.registrar_entrada).
-
-    Idempotente via IF EXISTS no DROP.
+    Remove `movimentacoes.peso_medida` (campo legado, sempre NULL em prod).
+    SQLite suporta DROP COLUMN desde 3.35; Python 3.11+ traz SQLite ≥3.40.
     """
     if not _has_column(conn, "movimentacoes", "peso_medida"):
         return "skip: coluna peso_medida ja removida"
