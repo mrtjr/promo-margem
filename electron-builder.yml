@@ -27,9 +27,15 @@ win:
     - target: nsis
       arch:
         - x64
-  icon: build/icon.ico
+  # icon: build/icon.ico   # TODO: criar build/icon.ico (256x256). Sem isso usa o icone Electron default.
   artifactName: "PromoMargem-Setup-${version}.${ext}"
   publisherName: "PromoMargem"
+  # Pula rcedit/signing — evita baixar/extrair winCodeSign-2.6.0.7z, que
+  # contem symlinks dylib (darwin) que o 7za nao consegue criar no Windows
+  # sem Developer Mode/admin. Custo: o .exe nao tem icone/manifesto custom
+  # editado pelo rcedit, mas instala e roda. Reativar quando habilitar
+  # Developer Mode no Windows ou quando assinar de fato com certificado.
+  signAndEditExecutable: false
 
 nsis:
   oneClick: false
@@ -40,8 +46,8 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: PromoMargem
   uninstallDisplayName: PromoMargem
-  installerIcon: build/icon.ico
-  uninstallerIcon: build/icon.ico
+  # installerIcon: build/icon.ico
+  # uninstallerIcon: build/icon.ico
   deleteAppDataOnUninstall: false
 
 publish:

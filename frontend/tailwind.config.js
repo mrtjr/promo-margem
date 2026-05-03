@@ -1,8 +1,20 @@
+// Tailwind resolve `content` paths relativo a process.cwd(), nao ao
+// diretorio deste config. O electron-vite roda do root do projeto, mas
+// nosso renderer mora em ./frontend/ — paths como "./src/**/*" caem em
+// <root>/src/ (inexistente) e o scan vira vazio (CSS final = so preflight).
+//
+// Fix: paths absolutos calculados a partir deste config. Mesma tecnica
+// do postcss.config.js (Fase 3).
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
+    resolve(here, 'index.html'),
+    resolve(here, 'src/**/*.{js,ts,jsx,tsx}'),
   ],
   theme: {
     extend: {
