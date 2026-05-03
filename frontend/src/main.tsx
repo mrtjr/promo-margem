@@ -26,7 +26,7 @@ async function bootstrap(): Promise<void> {
     }
   } else {
     axios.defaults.baseURL =
-      (import.meta.env.VITE_API_URL as string | undefined) || '/api'
+      (import.meta.env.VITE_API_URL as string | undefined) || ''
   }
 
   createRoot(document.getElementById('root')!).render(

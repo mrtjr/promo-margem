@@ -3,9 +3,11 @@ import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkl
 import axios from 'axios'
 import type { Produto, Grupo, Stats } from './types'
 
-// API base URL — em prod usa nginx proxy ('/api'); em `npm run dev` setar
-// VITE_API_URL=http://localhost:8000 no .env (ver frontend/.env.example).
-const API_URL = (import.meta.env.VITE_API_URL as string | undefined) || '/api'
+// API base URL — no Electron, main.tsx faz axios.defaults.baseURL = porta
+// dinamica do backend embutido. Aqui basta path relativo (''), e o axios
+// junta com a baseURL. Fallback antigo '/api' assumia nginx (Docker) e
+// gerava 404 em todas as rotas no app desktop.
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) || ''
 
 const CIDADES = ["TEIXEIRA DE FREITAS", "ITAMARAJU"]
 
@@ -1169,10 +1171,38 @@ function DashboardPage({ stats, onNavigate }: any) {
     axios.get(`${API_URL}/quebras/resumo`).then(res => setQuebraResumo(res.data)).catch(() => {})
   }, [])
 
-  const marginPct = stats?.margem_semana ? (stats.margem_semana * 100).toFixed(1) : "0.0"
-  const isHealthy = stats?.margem_semana >= 0.17 && stats?.margem_semana <= 0.19
-  const projecaoPct = projecao?.margem_prevista ? (projecao.margem_prevista * 100).toFixed(1) : "—"
+  // 5 faixas alinhadas ao backend _status_meta. 0.0 eh valor valido, nao ausencia.
+  const classificaMargem = (m: number | null | undefined): 'alerta'|'atencao'|'saudavel'|'acima_meta'|'sem_vendas' => {
+    if (m == null) return 'sem_vendas'
+    if (m < 0.17)   return 'alerta'
+    if (m < 0.175)  return 'atencao'
+    if (m <= 0.195) return 'saudavel'
+    return 'acima_meta'
+  }
+  const margemToKpiStatus = (m: number | null | undefined): 'ok'|'alert'|'warn'|'neutral' => {
+    const c = classificaMargem(m)
+    if (c === 'saudavel' || c === 'acima_meta') return 'ok'
+    if (c === 'atencao') return 'warn'
+    if (c === 'alerta') return 'alert'
+    return 'neutral'
+  }
+
+  const marginPct = stats?.margem_semana != null ? (stats.margem_semana * 100).toFixed(1) : null
+  const margemSemanaStatus = classificaMargem(stats?.margem_semana)
+  const margemSemanaPositiva = margemSemanaStatus === 'saudavel' || margemSemanaStatus === 'acima_meta'
+  const projecaoPct = projecao?.margem_prevista != null ? (projecao.margem_prevista * 100).toFixed(1) : null
   const projecaoConfianca = projecao?.confianca_geral || "sem_dados"
+
+  // Tag textual curta por faixa — diferencia `acima_meta` (positivo, mas
+  // acima de 19,5%) de `saudavel` (na faixa-alvo) sem inventar cor nova.
+  const tagMargem = (m: number | null | undefined): string => {
+    const c = classificaMargem(m)
+    if (c === 'acima_meta') return 'acima da meta'
+    if (c === 'saudavel')   return 'na meta'
+    if (c === 'atencao')    return 'perto do piso'
+    if (c === 'alerta')     return 'abaixo crítico'
+    return ''
+  }
 
   // Contadores da série pra microcopy do chart
   const diasSaudaveis = serie.filter(p => p.status === 'saudavel').length
@@ -1216,9 +1246,12 @@ function DashboardPage({ stats, onNavigate }: any) {
         <div className="claude-card p-3 flex items-center gap-4">
           <div className="text-right">
             <p className="section-label leading-none mb-1">Margem Semana</p>
-            <p className={`kpi-value text-2xl leading-none ${isHealthy ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{marginPct}%</p>
+            <p className={`kpi-value text-2xl leading-none ${margemSemanaPositiva ? 'text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'text-[color:var(--claude-stone)]' : 'text-[color:var(--claude-coral)]'}`}>{marginPct != null ? `${marginPct}%` : '—'}</p>
+            {marginPct != null && tagMargem(stats?.margem_semana) && (
+              <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 leading-none lowercase tracking-wide">{tagMargem(stats?.margem_semana)}</p>
+            )}
           </div>
-          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isHealthy ? 'bg-[color:var(--claude-sage)]/12 text-[color:var(--claude-sage)]' : 'bg-[color:var(--claude-coral)]/12 text-[color:var(--claude-coral)]'}`}>
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${margemSemanaPositiva ? 'bg-[color:var(--claude-sage)]/12 text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'bg-[color:var(--claude-stone)]/12 text-[color:var(--claude-stone)]' : 'bg-[color:var(--claude-coral)]/12 text-[color:var(--claude-coral)]'}`}>
             <Gauge size={22} />
           </div>
         </div>
@@ -1228,11 +1261,16 @@ function DashboardPage({ stats, onNavigate }: any) {
       <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <KPICard
           title="Margem (dia)"
-          value={ultMargem != null ? `${ultMargem.toFixed(1)}%` : '—'}
-          status={ultMargem == null ? 'neutral' : ultMargem >= 17 && ultMargem <= 19 ? 'ok' : ultMargem < 17 ? 'alert' : 'warn'}
+          value={stats?.margem_dia != null ? `${(stats.margem_dia * 100).toFixed(1)}%` : (ultMargem != null ? `${ultMargem.toFixed(1)}%` : '—')}
+          status={margemToKpiStatus(stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null))}
           delta={deltaMargem}
           deltaFormat="pp"
-          deltaLabel={mediaPrev7Margem != null ? `vs média 7d (${mediaPrev7Margem.toFixed(1)}%)` : 'Meta 17–19%'}
+          deltaLabel={(() => {
+            const m = stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null)
+            const tag = tagMargem(m)
+            const base = mediaPrev7Margem != null ? `vs média 7d (${mediaPrev7Margem.toFixed(1)}%)` : 'Meta 17–19%'
+            return tag ? `${base} · ${tag}` : base
+          })()}
           sparklineData={spark14Margem}
         />
         <KPICard
@@ -1246,9 +1284,9 @@ function DashboardPage({ stats, onNavigate }: any) {
         />
         <KPICard
           title="Projeção D+1"
-          value={projecaoPct === "—" ? "—" : `${projecaoPct}%`}
+          value={projecaoPct != null ? `${projecaoPct}%` : '—'}
           subValue={`Confiança: ${projecaoConfianca}`}
-          status={projecaoConfianca === "sem_dados" ? "neutral" : (projecao?.margem_prevista >= 0.17 && projecao?.margem_prevista <= 0.19 ? "ok" : "warn")}
+          status={projecaoConfianca === "sem_dados" ? 'neutral' : margemToKpiStatus(projecao?.margem_prevista)}
         />
         <KPICard
           title="Rupturas"
@@ -1256,8 +1294,10 @@ function DashboardPage({ stats, onNavigate }: any) {
           subValue={(() => {
             const rupt = stats?.rupturas ?? 0
             const skus = stats?.total_skus
-            if (skus == null) return rupt > 0 ? `${rupt} zerados · repor` : 'sem dados'
-            return rupt > 0 ? `${rupt}/${skus} zerados · repor` : `${skus} SKUs · 0 zerados`
+            if (skus == null) return rupt > 0 ? `${rupt} zerado${rupt === 1 ? '' : 's'} · repor` : 'sem dados'
+            const skuLabel = skus === 1 ? 'SKU' : 'SKUs'
+            if (rupt > 0) return `${rupt}/${skus} zerado${rupt === 1 ? '' : 's'} · repor`
+            return `${skus} ${skuLabel} · sem rupturas`
           })()}
           status={(stats?.rupturas ?? 0) > 0 ? "alert" : stats?.total_skus == null ? "neutral" : "ok"}
         />
@@ -1266,9 +1306,11 @@ function DashboardPage({ stats, onNavigate }: any) {
           value={quebraResumo
             ? `R$ ${quebraResumo.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
             : '—'}
-          subValue={quebraResumo
-            ? `${(quebraResumo.pct_faturamento * 100).toFixed(2)}% do faturamento · ${quebraResumo.eventos} evento(s)`
-            : 'Sem dados'}
+          subValue={!quebraResumo
+            ? 'Sem dados'
+            : quebraResumo.eventos === 0
+              ? 'Sem quebras registradas no mês'
+              : `${(quebraResumo.pct_faturamento * 100).toFixed(2)}% do faturamento · ${quebraResumo.eventos} evento${quebraResumo.eventos === 1 ? '' : 's'}`}
           status={!quebraResumo ? 'neutral' : quebraResumo.pct_faturamento > 0.02 ? 'alert' : quebraResumo.pct_faturamento > 0.015 ? 'warn' : 'ok'}
         />
       </div>
@@ -1281,7 +1323,7 @@ function DashboardPage({ stats, onNavigate }: any) {
                 <p className="section-label mb-1">Últimos 30 dias</p>
                 <h3 className="headline text-2xl">Tendência de Margem</h3>
                 <p className="text-xs text-[color:var(--claude-stone)] mt-1">
-                  Faixa verde = meta 17–19%. Dots coral = dia em promoção acima da meta. Âmbar = abaixo. Cinza = sem venda.
+                  Faixa verde = meta 17–19%. Dots coral = margem acima da meta (&gt;19,5%). Âmbar = abaixo. Cinza = sem venda.
                 </p>
               </div>
               {diasComVenda > 0 && (
@@ -1549,7 +1591,7 @@ function GroupProgress({ label, margemReal, metaMin, metaMax, faturamento, skusV
         <span className="uppercase tracking-wide">{metaLabel}</span>
         <span className="mono">
           {status === 'sem_vendas'
-            ? `${skusNoGrupo} SKUs · sem vendas`
+            ? 'Sem vendas em 30 dias'
             : `${skusVendidos}/${skusNoGrupo} · R$ ${Number(faturamento).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
           }
         </span>
@@ -5508,6 +5550,8 @@ type DMPLLinha = {
   redutora: boolean
 }
 
+type DMPLAviso = { codigo: string; severidade: string; mensagem: string }
+
 type DMPLMensal = {
   mes: string
   disponivel: boolean
@@ -5515,6 +5559,7 @@ type DMPLMensal = {
   componentes: DMPLLinha[]
   total: DMPLLinha
   fechamento_ok: boolean
+  avisos?: DMPLAviso[]
 }
 
 function DMPLPage() {
@@ -5567,24 +5612,58 @@ function DMPLPage() {
         </div>
       )}
 
-      {!loading && dmpl && dmpl.disponivel && (
+      {!loading && dmpl && dmpl.disponivel && (() => {
+        const avisos = dmpl.avisos || []
+        const bpStale = avisos.some(a => a.codigo === 'bp_pl_nao_inicializado' || a.codigo === 'll_nao_propagado')
+
+        // Quando BP esta stale, "Outras Movim." e residual matematico (sf - si - LL),
+        // nao evento contabil. Substitui o numero literal por rotulo explicito para
+        // nao induzir leitura de movimentacao real (dividendos, reservas, etc).
+        const renderOutras = (v: number, isLucrosAcumulados: boolean) => {
+          if (bpStale && isLucrosAcumulados && Math.abs(v) > 0.01) {
+            return <span className="italic text-[color:var(--claude-stone)] text-xs">BP não atualizado</span>
+          }
+          return v === 0 ? '—' : fmt(v)
+        }
+
+        return (
         <>
           {/* Status fechamento */}
           <div className="claude-card p-4 flex items-center justify-between"
-               style={{ borderLeft: `4px solid ${dmpl.fechamento_ok ? 'var(--claude-sage)' : 'var(--claude-coral)'}` }}>
+               style={{ borderLeft: `4px solid ${dmpl.fechamento_ok && !bpStale ? 'var(--claude-sage)' : bpStale ? 'var(--claude-stone)' : 'var(--claude-coral)'}` }}>
             <div>
               <p className="section-label">Fechamento</p>
               <p className="text-sm mt-1">
-                {dmpl.fechamento_ok
-                  ? <>Total bate com o PL do BP. <strong>R$ {dmpl.total.saldo_final.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></>
-                  : <>Total NÃO bate com o PL do BP — verifique o Balanço.</>
+                {bpStale && Math.abs(dmpl.total.saldo_final) < 0.01
+                  ? <>Sem PL cadastrado — saldos zerados.</>
+                  : dmpl.fechamento_ok
+                    ? <>Total bate com o PL do BP. <strong>R$ {dmpl.total.saldo_final.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></>
+                    : <>Total NÃO bate com o PL do BP — verifique o Balanço.</>
                 }
               </p>
             </div>
-            <span className={`px-3 py-1 rounded-full text-[11px] uppercase tracking-wider font-bold ${dmpl.fechamento_ok ? 'bg-[color:var(--claude-sage)]/20 text-[color:var(--claude-sage)]' : 'bg-[color:var(--claude-coral)]/20 text-[color:var(--claude-coral)]'}`}>
-              {dmpl.fechamento_ok ? 'OK' : 'ATENÇÃO'}
+            <span className={`px-3 py-1 rounded-full text-[11px] uppercase tracking-wider font-bold ${
+              bpStale ? 'bg-[color:var(--claude-stone)]/20 text-[color:var(--claude-stone)]'
+              : dmpl.fechamento_ok ? 'bg-[color:var(--claude-sage)]/20 text-[color:var(--claude-sage)]'
+              : 'bg-[color:var(--claude-coral)]/20 text-[color:var(--claude-coral)]'}`}>
+              {bpStale ? 'BP VAZIO' : dmpl.fechamento_ok ? 'OK' : 'ATENÇÃO'}
             </span>
           </div>
+
+          {/* Avisos diagnosticos do backend (bp_pl_nao_inicializado, ll_nao_propagado) */}
+          {avisos.length > 0 && (
+            <div className="claude-card p-4" style={{ borderLeft: '4px solid var(--claude-amber)' }}>
+              <p className="section-label">Avisos</p>
+              <ul className="mt-2 space-y-2 text-sm text-[color:var(--claude-ink)]">
+                {avisos.map((a, i) => (
+                  <li key={i} className="flex gap-2 items-start">
+                    <span className="inline-block px-1.5 py-0.5 rounded bg-[color:var(--claude-amber)]/15 text-[color:var(--claude-amber)] text-[10px] font-mono uppercase tracking-wider mt-0.5 shrink-0">{a.codigo}</span>
+                    <span>{a.mensagem}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Matriz */}
           <div className="claude-card overflow-hidden">
@@ -5599,20 +5678,23 @@ function DMPLPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[color:var(--border)]">
-                {dmpl.componentes.map(c => (
-                  <tr key={c.componente}>
-                    <td className={`px-4 py-2 ${c.redutora ? 'text-[color:var(--claude-stone)] italic' : ''}`}>{c.componente}</td>
-                    <td className="px-4 py-2 text-right mono">{fmt(c.saldo_inicial)}</td>
-                    <td className={`px-4 py-2 text-right mono ${c.lucro_liquido !== 0 ? (c.lucro_liquido > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50'}`}>{c.lucro_liquido === 0 ? '—' : fmt(c.lucro_liquido)}</td>
-                    <td className={`px-4 py-2 text-right mono ${c.outras_mov !== 0 ? (c.outras_mov > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50'}`}>{c.outras_mov === 0 ? '—' : fmt(c.outras_mov)}</td>
-                    <td className="px-4 py-2 text-right mono font-semibold">{fmt(c.saldo_final)}</td>
-                  </tr>
-                ))}
+                {dmpl.componentes.map(c => {
+                  const isLA = c.componente === 'Lucros Acumulados'
+                  return (
+                    <tr key={c.componente} className={isLA ? 'bg-[color:var(--claude-cream-deep)]/30' : ''}>
+                      <td className={`px-4 py-2 ${isLA ? 'font-semibold text-[color:var(--claude-ink)]' : (c.redutora ? 'text-[color:var(--claude-stone)] italic' : '')}`}>{c.componente}</td>
+                      <td className="px-4 py-2 text-right mono">{fmt(c.saldo_inicial)}</td>
+                      <td className={`px-4 py-2 text-right mono ${c.lucro_liquido !== 0 ? (c.lucro_liquido > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50'}`}>{c.lucro_liquido === 0 ? '—' : fmt(c.lucro_liquido)}</td>
+                      <td className={`px-4 py-2 text-right mono ${(bpStale && isLA) ? '' : (c.outras_mov !== 0 ? (c.outras_mov > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50')}`}>{renderOutras(c.outras_mov, isLA)}</td>
+                      <td className={`px-4 py-2 text-right mono ${isLA ? 'font-bold' : 'font-semibold'}`}>{fmt(c.saldo_final)}</td>
+                    </tr>
+                  )
+                })}
                 <tr className="bg-[color:var(--claude-cream-deep)]/60 font-bold">
                   <td className="px-4 py-3">{dmpl.total.componente}</td>
                   <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.saldo_inicial)}</td>
                   <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.lucro_liquido)}</td>
-                  <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.outras_mov)}</td>
+                  <td className="px-4 py-3 text-right mono">{bpStale && Math.abs(dmpl.total.outras_mov) > 0.01 ? <span className="italic text-[color:var(--claude-stone)] text-xs">BP não atualizado</span> : (dmpl.total.outras_mov === 0 ? '—' : fmt(dmpl.total.outras_mov))}</td>
                   <td className="px-4 py-3 text-right mono text-[color:var(--claude-sage)]">{fmt(dmpl.total.saldo_final)}</td>
                 </tr>
               </tbody>
@@ -5620,10 +5702,11 @@ function DMPLPage() {
           </div>
 
           <p className="text-xs text-[color:var(--claude-stone)] italic">
-            Lucro líquido vai automático para "Lucros Acumulados". O resto das variações cai em "Outras Movimentações" (catch-all): aumentos de capital, dividendos, transferências para reservas, ações em tesouraria.
+            Lucro líquido vai automático para "Lucros Acumulados". "Outras Movimentações" captura o resto (aumentos de capital, dividendos, transferências para reservas, ações em tesouraria) — quando o BP do mês não está inicializado, esse campo é apenas residual matemático e fica rotulado como "BP não atualizado".
           </p>
         </>
-      )}
+        )
+      })()}
     </div>
   )
 }
