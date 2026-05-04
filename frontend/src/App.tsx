@@ -1,12 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkles, ArrowRight, Gauge, ShoppingBag, FileText, Save, Copy, Check, Send, Bot, User, Trash2, Clipboard, AlertCircle, Target, History, ArrowDownCircle, ArrowUpCircle, X, ArrowUpRight, ArrowDownRight, Minus, PieChart, Receipt, Percent, Plus, Scale, Building2, Wallet, BarChart3, Lock, Skull, Wand2, ChevronDown, ChevronRight } from 'lucide-react'
 import axios from 'axios'
 import type { Produto, Grupo, Stats } from './types'
+import { EmptyState } from './components/EmptyState'
+import { formatCurrency, formatDate, formatDateTime, formatNumber, formatPercent } from './lib/format'
 
-// API base URL — no Electron, main.tsx faz axios.defaults.baseURL = porta
-// dinamica do backend embutido. Aqui basta path relativo (''), e o axios
-// junta com a baseURL. Fallback antigo '/api' assumia nginx (Docker) e
-// gerava 404 em todas as rotas no app desktop.
+// API base URL: Electron injeta axios.defaults.baseURL no preload/main.
+// Mantenha relativo; VITE_API_URL so deve sobrescrever em desenvolvimento.
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) || ''
 
 const CIDADES = ["TEIXEIRA DE FREITAS", "ITAMARAJU"]
@@ -16,9 +16,13 @@ function App() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Stats só busca no mount. Páginas que precisam de dados frescos
-  // refazem fetch própio (ex: Dashboard refaz quando volta a ele).
+  // Stats refetch ao montar E sempre que o usuário volta ao Dashboard.
+  // Sem isso, mutations em outras páginas (fechamento do dia, importar CSV,
+  // registrar quebra, exclusão) não eram refletidas nos KPIs do Painel de
+  // Decisão até o app ser reaberto — o stats vinha do mount inicial e
+  // nunca era invalidado.
   useEffect(() => {
+    if (currentPage !== 'dashboard') return
     let cancelado = false
     const fetch = async () => {
       try {
@@ -32,7 +36,7 @@ function App() {
     }
     fetch()
     return () => { cancelado = true }
-  }, [])
+  }, [currentPage])
 
   return (
     <div className="flex h-screen bg-[color:var(--claude-cream)] text-[color:var(--claude-ink)] font-sans">
@@ -66,7 +70,7 @@ function App() {
             icon={<Package size={20} />} 
             label="Produtos" 
           />
-          <div className="pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40">Operações</div>
+          <div className="mt-4 pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40 border-t border-white/10">Operações</div>
           <NavItem 
             isActive={currentPage === 'compras'} 
             onClick={() => setCurrentPage('compras')}
@@ -115,7 +119,7 @@ function App() {
             icon={<Skull size={20} />}
             label="Quebras"
           />
-          <div className="pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40">Financeiro</div>
+          <div className="mt-4 pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40 border-t border-white/10">Financeiro</div>
           <NavItem
             isActive={currentPage === 'dre'}
             onClick={() => setCurrentPage('dre')}
@@ -160,9 +164,7 @@ function App() {
       {/* Main Content */}
       <main className="flex-1 overflow-hidden flex flex-col">
         {loading && !['chat', 'compras', 'produtos', 'dashboard', 'bp', 'promo_engine', 'dfc', 'dmpl'].includes(currentPage) ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[color:var(--claude-coral)]"></div>
-          </div>
+          <EmptyState variant="loading" className="h-full" title="Carregando…" />
         ) : (
           <div className="flex-1 overflow-y-auto">
             {currentPage === 'dashboard' && <DashboardPage stats={stats} onNavigate={setCurrentPage} />}
@@ -585,14 +587,14 @@ function ProdutosPage() {
                     ? <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-bold tracking-wider">{p.codigo}</span>
                     : <span className="text-slate-300 italic">—</span>}
                 </td>
-                <td className="px-6 py-4 text-sm text-slate-600 text-center">R$ {p.custo.toFixed(2)}</td>
+                <td className="px-6 py-4 text-sm text-slate-600 text-center">{formatCurrency(p.custo)}</td>
                 <td className="px-6 py-4 text-center">
                   <span className={`px-2 py-1 rounded-full text-[10px] font-black ${
                     p.margem >= 0.17 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                  }`}>{(p.margem * 100).toFixed(1)}%</span>
+                  }`}>{formatPercent(p.margem)}</span>
                 </td>
-                <td className="px-6 py-4 text-sm text-center font-extrabold text-slate-500">{(p.estoque_qtd || 0).toFixed(0)} <span className="text-[10px] text-slate-400">UN</span></td>
-                <td className="px-6 py-4 text-sm text-center font-black text-blue-600">{(p.estoque_peso || 0).toFixed(1)} <span className="text-[10px] text-slate-400">Kg/L</span></td>
+                <td className="px-6 py-4 text-sm text-center font-extrabold text-slate-500">{formatNumber(p.estoque_qtd || 0, { maximumFractionDigits: 0 })} <span className="text-[10px] text-slate-400">UN</span></td>
+                <td className="px-6 py-4 text-sm text-center font-black text-blue-600">{formatNumber(p.estoque_peso || 0, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} <span className="text-[10px] text-slate-400">Kg/L</span></td>
                 <td className="px-6 py-4 text-right">
                   <button
                     onClick={() => setEditando(p)}
@@ -604,7 +606,14 @@ function ProdutosPage() {
               </tr>
             )) : (
               <tr>
-                <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic font-medium">Nenhum item em estoque. Comece fazendo uma Entrada de Compra.</td>
+                <td colSpan={7} className="px-6 py-8">
+                  <EmptyState
+                    variant="empty"
+                    compact
+                    icon={<Package size={28} />}
+                    title="Nenhum item em estoque. Comece fazendo uma Entrada de Compra."
+                  />
+                </td>
               </tr>
             )}
           </tbody>
@@ -1058,7 +1067,7 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
             fill="var(--claude-stone)"
             fontFamily="JetBrains Mono, monospace"
           >
-            {(t * 100).toFixed(0)}%
+            {formatPercent(t, { maximumFractionDigits: 0 })}
           </text>
         </g>
       ))}
@@ -1076,7 +1085,7 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
             fill="var(--claude-stone)"
             fontFamily="JetBrains Mono, monospace"
           >
-            méd. {(media * 100).toFixed(1)}%
+            méd. {formatPercent(media)}
           </text>
         </>
       )}
@@ -1113,7 +1122,7 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
               strokeWidth={isSemVendas ? 1 : 1.5}
               opacity={isSemVendas ? 0.5 : 1}
             >
-              <title>{`${p.data} (${p.dia_semana}) · ${isSemVendas ? 'sem vendas' : `${(p.margem * 100).toFixed(1)}%`} · R$ ${p.faturamento.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`}</title>
+              <title>{`${p.data} (${p.dia_semana}) · ${isSemVendas ? 'sem vendas' : formatPercent(p.margem)} · ${formatCurrency(p.faturamento)}`}</title>
             </circle>
           </g>
         )
@@ -1131,7 +1140,7 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
             fontWeight="600"
             fill="var(--claude-ink)"
           >
-            {(lastValid.margem * 100).toFixed(1)}%
+            {formatPercent(lastValid.margem)}
           </text>
         </g>
       )}
@@ -1171,11 +1180,10 @@ function DashboardPage({ stats, onNavigate }: any) {
     axios.get(`${API_URL}/quebras/resumo`).then(res => setQuebraResumo(res.data)).catch(() => {})
   }, [])
 
-  // 5 faixas alinhadas ao backend _status_meta. 0.0 eh valor valido, nao ausencia.
   const classificaMargem = (m: number | null | undefined): 'alerta'|'atencao'|'saudavel'|'acima_meta'|'sem_vendas' => {
     if (m == null) return 'sem_vendas'
-    if (m < 0.17)   return 'alerta'
-    if (m < 0.175)  return 'atencao'
+    if (m < 0.17) return 'alerta'
+    if (m < 0.175) return 'atencao'
     if (m <= 0.195) return 'saudavel'
     return 'acima_meta'
   }
@@ -1186,23 +1194,20 @@ function DashboardPage({ stats, onNavigate }: any) {
     if (c === 'alerta') return 'alert'
     return 'neutral'
   }
-
-  const marginPct = stats?.margem_semana != null ? (stats.margem_semana * 100).toFixed(1) : null
-  const margemSemanaStatus = classificaMargem(stats?.margem_semana)
-  const margemSemanaPositiva = margemSemanaStatus === 'saudavel' || margemSemanaStatus === 'acima_meta'
-  const projecaoPct = projecao?.margem_prevista != null ? (projecao.margem_prevista * 100).toFixed(1) : null
-  const projecaoConfianca = projecao?.confianca_geral || "sem_dados"
-
-  // Tag textual curta por faixa — diferencia `acima_meta` (positivo, mas
-  // acima de 19,5%) de `saudavel` (na faixa-alvo) sem inventar cor nova.
   const tagMargem = (m: number | null | undefined): string => {
     const c = classificaMargem(m)
     if (c === 'acima_meta') return 'acima da meta'
-    if (c === 'saudavel')   return 'na meta'
-    if (c === 'atencao')    return 'perto do piso'
-    if (c === 'alerta')     return 'abaixo crítico'
+    if (c === 'saudavel') return 'na meta'
+    if (c === 'atencao') return 'perto do piso'
+    if (c === 'alerta') return 'abaixo critico'
     return ''
   }
+
+  const marginPct = stats?.margem_semana != null ? formatPercent(stats.margem_semana) : null
+  const margemSemanaStatus = classificaMargem(stats?.margem_semana)
+  const margemSemanaPositiva = margemSemanaStatus === 'saudavel' || margemSemanaStatus === 'acima_meta'
+  const projecaoPct = projecao?.margem_prevista != null ? formatPercent(projecao.margem_prevista) : null
+  const projecaoConfianca = projecao?.confianca_geral || "sem_dados"
 
   // Contadores da série pra microcopy do chart
   const diasSaudaveis = serie.filter(p => p.status === 'saudavel').length
@@ -1239,14 +1244,14 @@ function DashboardPage({ stats, onNavigate }: any) {
     <div className="max-w-6xl mx-auto p-8 space-y-8">
       <header className="flex justify-between items-end">
         <div>
-          <p className="section-label mb-2">Visão Geral · {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}</p>
+          <p className="section-label mb-2">Visão Geral · {formatDate(new Date(), { weekday: 'long', day: '2-digit', month: 'long' })}</p>
           <h2 className="headline text-4xl tracking-editorial">Painel de Decisão</h2>
           <p className="text-[color:var(--claude-stone)] mt-1">Inteligência aplicada para garantir seus lucros.</p>
         </div>
         <div className="claude-card p-3 flex items-center gap-4">
           <div className="text-right">
             <p className="section-label leading-none mb-1">Margem Semana</p>
-            <p className={`kpi-value text-2xl leading-none ${margemSemanaPositiva ? 'text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'text-[color:var(--claude-stone)]' : 'text-[color:var(--claude-coral)]'}`}>{marginPct != null ? `${marginPct}%` : '—'}</p>
+            <p className={`kpi-value text-2xl leading-none ${margemSemanaPositiva ? 'text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'text-[color:var(--claude-stone)]' : 'text-[color:var(--claude-coral)]'}`}>{marginPct ?? '—'}</p>
             {marginPct != null && tagMargem(stats?.margem_semana) && (
               <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 leading-none lowercase tracking-wide">{tagMargem(stats?.margem_semana)}</p>
             )}
@@ -1260,31 +1265,31 @@ function DashboardPage({ stats, onNavigate }: any) {
       {/* Stats Grid — Tremor-style: valor + delta + sparkline */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <KPICard
-          title="Margem (dia)"
-          value={stats?.margem_dia != null ? `${(stats.margem_dia * 100).toFixed(1)}%` : (ultMargem != null ? `${ultMargem.toFixed(1)}%` : '—')}
+          title="Margem do Dia"
+          value={stats?.margem_dia != null ? formatPercent(stats.margem_dia) : formatPercent(ultMargem, { scale: 1 })}
           status={margemToKpiStatus(stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null))}
           delta={deltaMargem}
           deltaFormat="pp"
-          deltaLabel={(() => {
+          deltaLabel={() => {
             const m = stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null)
             const tag = tagMargem(m)
-            const base = mediaPrev7Margem != null ? `vs média 7d (${mediaPrev7Margem.toFixed(1)}%)` : 'Meta 17–19%'
+            const base = mediaPrev7Margem != null ? `vs media 7d (${formatPercent(mediaPrev7Margem, { scale: 1 })})` : 'Meta 17-19%'
             return tag ? `${base} · ${tag}` : base
-          })()}
+          }}
           sparklineData={spark14Margem}
         />
         <KPICard
-          title="Vendas (hoje)"
-          value={`R$ ${faturamentoHoje.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          title="Faturamento Hoje"
+          value={formatCurrency(faturamentoHoje)}
           status={faturamentoHoje > 0 ? 'up' : 'neutral'}
           delta={deltaFatPct}
           deltaFormat="pct"
-          deltaLabel={mediaPrev7Fat > 0 ? `vs média 7d (R$ ${mediaPrev7Fat.toLocaleString('pt-BR', { maximumFractionDigits: 0 })})` : 'Faturamento do dia'}
+          deltaLabel={mediaPrev7Fat > 0 ? `vs média 7d (${formatCurrency(mediaPrev7Fat, { minimumFractionDigits: 0, maximumFractionDigits: 0 })})` : 'Faturamento do dia'}
           sparklineData={spark14Fat}
         />
         <KPICard
           title="Projeção D+1"
-          value={projecaoPct != null ? `${projecaoPct}%` : '—'}
+          value={projecaoPct ?? '—'}
           subValue={`Confiança: ${projecaoConfianca}`}
           status={projecaoConfianca === "sem_dados" ? 'neutral' : margemToKpiStatus(projecao?.margem_prevista)}
         />
@@ -1304,13 +1309,13 @@ function DashboardPage({ stats, onNavigate }: any) {
         <KPICard
           title="Quebras (mês)"
           value={quebraResumo
-            ? `R$ ${quebraResumo.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            ? formatCurrency(quebraResumo.valor_total)
             : '—'}
           subValue={!quebraResumo
             ? 'Sem dados'
             : quebraResumo.eventos === 0
-              ? 'Sem quebras registradas no mês'
-              : `${(quebraResumo.pct_faturamento * 100).toFixed(2)}% do faturamento · ${quebraResumo.eventos} evento${quebraResumo.eventos === 1 ? '' : 's'}`}
+              ? 'Sem quebras registradas no mes'
+              : `${formatPercent(quebraResumo.pct_faturamento, { maximumFractionDigits: 2 })} do faturamento · ${quebraResumo.eventos} evento${quebraResumo.eventos === 1 ? '' : 's'}`}
           status={!quebraResumo ? 'neutral' : quebraResumo.pct_faturamento > 0.02 ? 'alert' : quebraResumo.pct_faturamento > 0.015 ? 'warn' : 'ok'}
         />
       </div>
@@ -1323,7 +1328,7 @@ function DashboardPage({ stats, onNavigate }: any) {
                 <p className="section-label mb-1">Últimos 30 dias</p>
                 <h3 className="headline text-2xl">Tendência de Margem</h3>
                 <p className="text-xs text-[color:var(--claude-stone)] mt-1">
-                  Faixa verde = meta 17–19%. Dots coral = margem acima da meta (&gt;19,5%). Âmbar = abaixo. Cinza = sem venda.
+                  Faixa verde = meta 17-19%. Dots coral = margem acima da meta (&gt;19,5%). Ambar = abaixo. Cinza = sem venda.
                 </p>
               </div>
               {diasComVenda > 0 && (
@@ -1386,7 +1391,7 @@ function DashboardPage({ stats, onNavigate }: any) {
                 status={g.status}
               />
             )) : (
-              <p className="text-[color:var(--claude-stone)] text-sm italic serif">Nenhum grupo cadastrado.</p>
+              <EmptyState variant="empty" compact title="Nenhum grupo cadastrado." />
             )}
           </div>
           <div className="mt-6 p-4 bg-[color:var(--claude-cream-deep)]/50 rounded-xl border border-dashed border-[color:var(--border)] flex flex-col items-center text-center">
@@ -1474,9 +1479,9 @@ function BadgeDelta({ value, format = 'pp', invertColor = false }: { value: numb
   const color = isGood ? 'var(--claude-sage)' : 'var(--claude-coral)'
   const Icon = isPositive ? ArrowUpRight : ArrowDownRight
   const label =
-    format === 'pp' ? `${isPositive ? '+' : ''}${value.toFixed(1)}pp`
-    : format === 'pct' ? `${isPositive ? '+' : ''}${value.toFixed(1)}%`
-    : `${isPositive ? '+' : '-'}R$ ${Math.abs(value).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`
+    format === 'pp' ? `${formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 1, signed: true })}pp`
+    : format === 'pct' ? formatPercent(value, { scale: 1, signed: true })
+    : formatCurrency(value, { minimumFractionDigits: 0, maximumFractionDigits: 0, signed: true })
 
   return (
     <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold mono px-1.5 py-0.5 rounded"
@@ -1562,8 +1567,8 @@ function GroupProgress({ label, margemReal, metaMin, metaMax, faturamento, skusV
   const metaMinPos = (metaMin / escalaMax) * 100
   const metaMaxPos = (metaMax / escalaMax) * 100
 
-  const margemLabel = status === 'sem_vendas' ? '—' : `${(margemReal * 100).toFixed(1)}%`
-  const metaLabel = `meta ${(metaMin * 100).toFixed(0)}–${(metaMax * 100).toFixed(0)}%`
+  const margemLabel = status === 'sem_vendas' ? '—' : formatPercent(margemReal)
+  const metaLabel = `meta ${formatPercent(metaMin, { maximumFractionDigits: 0 })}–${formatPercent(metaMax, { maximumFractionDigits: 0 })}`
 
   const statusTextColor: any = {
     saudavel:    'text-[color:var(--claude-sage)]',
@@ -1592,7 +1597,7 @@ function GroupProgress({ label, margemReal, metaMin, metaMax, faturamento, skusV
         <span className="mono">
           {status === 'sem_vendas'
             ? 'Sem vendas em 30 dias'
-            : `${skusVendidos}/${skusNoGrupo} · R$ ${Number(faturamento).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+            : `${skusVendidos}/${skusNoGrupo} · ${formatCurrency(Number(faturamento))}`
           }
         </span>
       </div>
@@ -1677,7 +1682,7 @@ function RelatoriosPage() {
       : summary.status_meta === 'alerta' ? '🚨 Alerta'
       : '📭 Sem vendas'
     const topLines = (summary.top_skus || []).slice(0, 5).map((s: any) =>
-      `• ${s.nome} [${s.classe_abc}${s.classe_xyz}] — ${s.quantidade.toFixed(2)}un / R$ ${s.receita.toFixed(2)}`
+      `• ${s.nome} [${s.classe_abc}${s.classe_xyz}] — ${formatNumber(s.quantidade, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}un / ${formatCurrency(s.receita)}`
     ).join('\n')
     const anomaliaLines = (summary.anomalias || []).slice(0, 5).map((a: any) =>
       `• ${a.severidade === 'alta' ? '🔴' : '🟡'} ${a.descricao}`
@@ -1686,9 +1691,9 @@ function RelatoriosPage() {
     const text =
       `📊 *Fechamento ${summary.data}*\n\n` +
       `Status: ${statusLabel}\n` +
-      `💰 Faturamento: R$ ${summary.faturamento_dia.toFixed(2)}\n` +
-      `🎯 Margem: ${(summary.margem_dia * 100).toFixed(1)}% (média 7d: ${(summary.margem_media_7d * 100).toFixed(1)}%)\n` +
-      `📈 Variação vs 7d: ${summary.variacao_faturamento_7d_pct.toFixed(1)}%\n` +
+      `💰 Faturamento: ${formatCurrency(summary.faturamento_dia)}\n` +
+      `🎯 Margem: ${formatPercent(summary.margem_dia)} (média 7d: ${formatPercent(summary.margem_media_7d)})\n` +
+      `📈 Variação vs 7d: ${formatPercent(summary.variacao_faturamento_7d_pct, { scale: 1 })}\n` +
       `📦 SKUs vendidos: ${summary.total_skus_vendidos}/${summary.total_skus_cadastrados} · Rupturas: ${summary.rupturas}\n\n` +
       (topLines ? `*Top SKUs:*\n${topLines}\n\n` : '') +
       (anomaliaLines ? `*Anomalias:*\n${anomaliaLines}` : '')
@@ -1774,7 +1779,9 @@ function RelatoriosPage() {
               </tr>
             )) : (
               <tr>
-                <td colSpan={3} className="px-6 py-12 text-center text-slate-400 italic">Nenhum produto cadastrado para venda.</td>
+                <td colSpan={3} className="px-6 py-8">
+                  <EmptyState variant="empty" compact title="Nenhum produto cadastrado para venda." />
+                </td>
               </tr>
             )}
           </tbody>
@@ -2022,7 +2029,7 @@ function UploadFase({ arquivo, onArquivo, dataAlvo, onDataAlvo }: any) {
         />
         {arquivo && (
           <p className="text-[11px] text-slate-500 mt-1">
-            {arquivo.name} · {(arquivo.size / 1024).toFixed(1)} KB
+            {arquivo.name} · {formatNumber(arquivo.size / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB
           </p>
         )}
       </div>
@@ -2071,7 +2078,7 @@ function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, gru
         <MiniStat label="OK" valor={preview.linhas_ok} cor="emerald" />
         <MiniStat label="Pendentes" valor={preview.linhas_pendentes} cor="amber" />
         <MiniStat label="Erros" valor={preview.linhas_erro} cor="rose" />
-        <MiniStat label="Receita" valor={`R$ ${preview.receita_total.toFixed(2)}`} cor="blue" />
+        <MiniStat label="Receita" valor={formatCurrency(preview.receita_total)} cor="blue" />
         <MiniStat label="SKUs" valor={preview.skus_distintos} cor="slate" />
       </div>
 
@@ -2117,9 +2124,9 @@ function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, gru
                     </ul>
                   )}
                 </td>
-                <td className="px-3 py-2 text-right font-mono">{l.quantidade.toFixed(2)}</td>
-                <td className="px-3 py-2 text-right font-mono">R$ {l.preco_unitario.toFixed(2)}</td>
-                <td className="px-3 py-2 text-right font-mono font-bold">R$ {l.total.toFixed(2)}</td>
+                <td className="px-3 py-2 text-right font-mono">{formatNumber(l.quantidade, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td className="px-3 py-2 text-right font-mono">{formatCurrency(l.preco_unitario)}</td>
+                <td className="px-3 py-2 text-right font-mono font-bold">{formatCurrency(l.total)}</td>
                 <td className="px-3 py-2 text-center">
                   <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-black ${statusBadge(l.status)}`}>
                     {statusLabel(l.status)}
@@ -2340,16 +2347,14 @@ function ProjecaoPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-      </div>
+      <EmptyState variant="loading" className="h-full" title="Carregando projeção…" />
     )
   }
 
   if (!proj) {
     return (
       <div className="max-w-4xl mx-auto p-8">
-        <p className="text-slate-500 italic">Erro ao carregar projeção.</p>
+        <EmptyState variant="error" title="Erro ao carregar projeção." />
       </div>
     )
   }
@@ -2359,7 +2364,7 @@ function ProjecaoPage() {
       <header className="flex justify-between items-start">
         <div>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Projeção para amanhã</p>
-          <h2 className="text-3xl font-bold tracking-tight capitalize">{proj.dia_semana} · {new Date(proj.data_alvo + 'T12:00').toLocaleDateString('pt-BR')}</h2>
+          <h2 className="text-3xl font-bold tracking-tight capitalize">{proj.dia_semana} · {formatDate(proj.data_alvo)}</h2>
         </div>
         <button
           onClick={carregar}
@@ -2402,19 +2407,21 @@ function ProjecaoCard({ proj }: any) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-white/10 p-4 rounded-xl border border-white/5">
           <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">Faturamento</p>
-          <p className="text-2xl font-black leading-tight mt-1">R$ {proj.faturamento_previsto.toFixed(2)}</p>
+          <p className="text-2xl font-black leading-tight mt-1">{formatCurrency(proj.faturamento_previsto)}</p>
           <p className="text-[10px] text-blue-200 mt-1">
-            {proj.comparacao_media_7d_pct >= 0 ? '+' : ''}{proj.comparacao_media_7d_pct.toFixed(1)}% vs média 7d
+            {proj.confianca_geral === 'sem_dados'
+              ? 'sem comparativo (sem histórico)'
+              : `${formatPercent(proj.comparacao_media_7d_pct, { scale: 1, signed: true })} vs média 7d`}
           </p>
         </div>
         <div className="bg-white/10 p-4 rounded-xl border border-white/5">
           <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">Margem</p>
-          <p className="text-2xl font-black leading-tight mt-1">{(proj.margem_prevista * 100).toFixed(1)}%</p>
+          <p className="text-2xl font-black leading-tight mt-1">{formatPercent(proj.margem_prevista)}</p>
           <p className="text-[10px] text-blue-200 mt-1">Meta 17–19%</p>
         </div>
         <div className="bg-white/10 p-4 rounded-xl border border-white/5">
           <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">Custo projetado</p>
-          <p className="text-2xl font-black leading-tight mt-1">R$ {proj.custo_previsto.toFixed(2)}</p>
+          <p className="text-2xl font-black leading-tight mt-1">{formatCurrency(proj.custo_previsto)}</p>
         </div>
         <div className="bg-white/10 p-4 rounded-xl border border-white/5">
           <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest">SKUs com previsão</p>
@@ -2445,15 +2452,13 @@ function ProjecaoDetalhesSKU({ proj }: any) {
         <TrendingUp size={18} className="text-blue-500" /> Top SKUs previstos
       </h3>
       {skusComPrevisao.length === 0 ? (
-        <div className="p-6 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
-          <AlertTriangle className="text-amber-600 shrink-0" size={18} />
-          <div>
-            <p className="text-sm font-bold text-amber-900">Sem histórico suficiente para projeção.</p>
-            <p className="text-xs text-amber-700 mt-1">
-              Registre ao menos 3 fechamentos diários para começar a gerar previsões. Confiança alta a partir de 21 dias.
-            </p>
-          </div>
-        </div>
+        <EmptyState
+          variant="empty"
+          icon={<AlertTriangle className="text-amber-600" size={22} />}
+          className="bg-amber-50 border border-amber-200 rounded-xl text-amber-900"
+          title="Sem histórico suficiente para projeção."
+          description="Registre ao menos 3 fechamentos diários para começar a gerar previsões. Confiança alta a partir de 21 dias."
+        />
       ) : (
         <table className="w-full text-sm">
           <thead>
@@ -2475,16 +2480,16 @@ function ProjecaoDetalhesSKU({ proj }: any) {
                     {s.confianca} · {s.dias_historico}d
                   </span>
                 </td>
-                <td className="py-2.5 text-right font-mono text-slate-600">{s.quantidade_prevista.toFixed(2)}</td>
-                <td className="py-2.5 text-right font-mono font-bold text-slate-900">R$ {s.receita_prevista.toFixed(2)}</td>
+                <td className="py-2.5 text-right font-mono text-slate-600">{formatNumber(s.quantidade_prevista, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td className="py-2.5 text-right font-mono font-bold text-slate-900">{formatCurrency(s.receita_prevista)}</td>
                 <td className="py-2.5 text-right">
                   <span className={`font-black ${s.margem_prevista >= 0.17 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {(s.margem_prevista * 100).toFixed(1)}%
+                    {formatPercent(s.margem_prevista)}
                   </span>
                 </td>
                 <td className="py-2.5 text-right">
                   <span className={`text-xs font-bold ${s.dow_factor > 1.05 ? 'text-emerald-600' : s.dow_factor < 0.95 ? 'text-rose-600' : 'text-slate-500'}`}>
-                    {s.dow_factor.toFixed(2)}×
+                    {formatNumber(s.dow_factor, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}×
                   </span>
                 </td>
               </tr>
@@ -2531,7 +2536,7 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
       <header className="flex justify-between items-start">
         <div>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Fechamento do dia</p>
-          <h2 className="text-3xl font-bold tracking-tight">{new Date(analise.data + 'T12:00').toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
+          <h2 className="text-3xl font-bold tracking-tight">{formatDate(analise.data, { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
         </div>
         <div className={`${cfg.bg} ${cfg.text} ${cfg.border} border-2 px-6 py-3 rounded-2xl font-black uppercase text-sm tracking-widest shadow-sm`}>
           {cfg.label}
@@ -2540,9 +2545,9 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
 
       {/* KPIs principais */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <KPICard title="Faturamento" value={`R$ ${analise.faturamento_dia.toFixed(2)}`} sub={`vs 7d: ${analise.variacao_faturamento_7d_pct >= 0 ? '+' : ''}${analise.variacao_faturamento_7d_pct.toFixed(1)}%`} tone={analise.variacao_faturamento_7d_pct >= -5 ? 'ok' : 'alert'} />
-        <KPICard title="Margem do Dia" value={`${(analise.margem_dia * 100).toFixed(1)}%`} sub={`Meta: 17–19%`} tone={(analise.status_meta === 'saudavel' || analise.status_meta === 'acima_meta') ? 'ok' : analise.status_meta === 'alerta' ? 'alert' : 'warn'} />
-        <KPICard title="Margem 7d / 30d" value={`${(analise.margem_media_7d * 100).toFixed(1)}%`} sub={`30d: ${(analise.margem_media_30d * 100).toFixed(1)}%`} tone="neutral" />
+        <KPICard title="Faturamento Hoje" value={formatCurrency(analise.faturamento_dia)} sub={`vs 7d: ${formatPercent(analise.variacao_faturamento_7d_pct, { scale: 1, signed: true })}`} tone={analise.variacao_faturamento_7d_pct >= -5 ? 'ok' : 'alert'} />
+        <KPICard title="Margem do Dia" value={formatPercent(analise.margem_dia)} sub={`Meta: 17–19%`} tone={(analise.status_meta === 'saudavel' || analise.status_meta === 'acima_meta') ? 'ok' : analise.status_meta === 'alerta' ? 'alert' : 'warn'} />
+        <KPICard title="Margem 7d / 30d" value={formatPercent(analise.margem_media_7d)} sub={`30d: ${formatPercent(analise.margem_media_30d)}`} tone="neutral" />
         <KPICard title="SKUs vendidos" value={`${analise.total_skus_vendidos}/${analise.total_skus_cadastrados}`} sub={`Rupturas: ${analise.rupturas}`} tone={analise.rupturas > 0 ? 'warn' : 'ok'} />
       </div>
 
@@ -2553,7 +2558,7 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
             <TrendingUp size={18} className="text-blue-500" /> Top SKUs do Dia
           </h3>
           {(analise.top_skus || []).length === 0 ? (
-            <p className="text-sm text-slate-400 italic">Nenhuma venda registrada.</p>
+            <EmptyState variant="empty" compact title="Nenhuma venda registrada." />
           ) : (
             <table className="w-full text-sm">
               <thead>
@@ -2572,11 +2577,11 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
                     <td className="py-2.5 text-center">
                       <span className="inline-flex px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-[10px] font-black tracking-wider">{s.classe_abc}{s.classe_xyz}</span>
                     </td>
-                    <td className="py-2.5 text-right font-mono text-slate-600">{s.quantidade.toFixed(2)}</td>
-                    <td className="py-2.5 text-right font-mono font-bold text-slate-900">R$ {s.receita.toFixed(2)}</td>
+                    <td className="py-2.5 text-right font-mono text-slate-600">{formatNumber(s.quantidade, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="py-2.5 text-right font-mono font-bold text-slate-900">{formatCurrency(s.receita)}</td>
                     <td className="py-2.5 text-right">
                       <span className={`font-black ${s.margem_dia >= 0.17 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                        {(s.margem_dia * 100).toFixed(1)}%
+                        {formatPercent(s.margem_dia)}
                       </span>
                     </td>
                   </tr>
@@ -2624,9 +2629,12 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
           <AlertTriangle size={18} className="text-amber-500" /> Anomalias detectadas ({anomaliasOrdenadas.length})
         </h3>
         {anomaliasOrdenadas.length === 0 ? (
-          <p className="text-sm text-slate-400 italic flex items-center gap-2">
-            <Check size={14} className="text-emerald-500" /> Nenhuma anomalia. Dia dentro do esperado.
-          </p>
+          <EmptyState
+            variant="empty"
+            compact
+            icon={<Check size={18} className="text-emerald-500" />}
+            title="Nenhuma anomalia. Dia dentro do esperado."
+          />
         ) : (
           <ul className="space-y-2">
             {anomaliasOrdenadas.slice(0, 15).map((a: any, i: number) => (
@@ -2714,10 +2722,10 @@ function BriefingPage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-[color:var(--claude-stone)] serif italic">Gerando briefing…</div>
+    return <EmptyState variant="loading" className="h-full" title="Gerando briefing…" />
   }
   if (!briefing) {
-    return <div className="p-8 text-[color:var(--claude-coral)]">Erro ao carregar briefing.</div>
+    return <EmptyState variant="error" className="h-full" title="Erro ao carregar briefing." />
   }
 
   const analise = briefing.analise || {}
@@ -2802,20 +2810,20 @@ function BriefingPage() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <KPICard
             title="Margem do Dia"
-            value={`${margemPct.toFixed(1)}%`}
-            sub={`Meta 17-19% · ${analise.status_meta || '-'}`}
+            value={formatPercent(margemPct, { scale: 1 })}
+            sub={`Meta 17–19% · ${analise.status_meta || '-'}`}
             tone={margemPct >= 17 && margemPct <= 19 ? 'ok' : margemPct < 17 ? 'alert' : 'warn'}
           />
           <KPICard
             title="Faturamento Hoje"
-            value={`R$ ${(analise.faturamento_dia || 0).toFixed(2)}`}
-            sub={`${(analise.variacao_faturamento_7d_pct || 0) > 0 ? '+' : ''}${(analise.variacao_faturamento_7d_pct || 0).toFixed(1)}% vs 7d`}
+            value={formatCurrency(analise.faturamento_dia || 0)}
+            sub={`${formatPercent(analise.variacao_faturamento_7d_pct || 0, { scale: 1, signed: true })} vs 7d`}
             tone={(analise.variacao_faturamento_7d_pct || 0) >= 0 ? 'ok' : 'warn'}
           />
           <KPICard
-            title="Previsão Amanhã"
-            value={`R$ ${(projecao.faturamento_previsto || 0).toFixed(2)}`}
-            sub={`${projecao.dia_semana || '-'} · margem ${margemPrevPct.toFixed(1)}%`}
+            title="Projeção D+1"
+            value={formatCurrency(projecao.faturamento_previsto || 0)}
+            sub={`${projecao.dia_semana || '-'} · margem ${formatPercent(margemPrevPct, { scale: 1 })}`}
             tone="ok"
           />
           <KPICard
@@ -2857,22 +2865,22 @@ function BriefingPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2">
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">Margem atual</p>
-                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">{(simCesta.margem_atual * 100).toFixed(2)}%</p>
+                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">{formatPercent(simCesta.margem_atual, { maximumFractionDigits: 2 })}</p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">Margem pós</p>
                 <p className={`kpi-value text-xl mt-1 ${simCesta.status === 'seguro' ? 'text-[color:var(--claude-sage)]' : simCesta.status === 'alerta' ? 'text-[color:var(--claude-amber)]' : 'text-[color:var(--claude-coral)]'}`}>
-                  {(simCesta.nova_margem_estimada * 100).toFixed(2)}%
+                  {formatPercent(simCesta.nova_margem_estimada, { maximumFractionDigits: 2 })}
                 </p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">Impacto</p>
-                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">-{simCesta.impacto_pp.toFixed(2)}pp</p>
+                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">-{formatNumber(simCesta.impacto_pp, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}pp</p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">SKUs afetados</p>
                 <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">
-                  {simCesta.skus_afetados} <span className="text-xs text-[color:var(--claude-stone)] font-normal">· {simCesta.desconto_medio_ponderado.toFixed(1)}% desc</span>
+                  {simCesta.skus_afetados} <span className="text-xs text-[color:var(--claude-stone)] font-normal">· {formatPercent(simCesta.desconto_medio_ponderado, { scale: 1 })} desc</span>
                 </p>
               </div>
             </div>
@@ -2886,11 +2894,13 @@ function BriefingPage() {
           <div className="space-y-2">
             {recs.map((r: any) => <RecomendacaoCard key={r.produto_id} r={r} />)}
             {recs.length === 0 && (
-              <div className="claude-card p-8 text-center">
-                <ShoppingBag className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={28} />
-                <p className="serif italic text-[color:var(--claude-stone)]">Nenhuma recomendação gerada para esta data.</p>
-                <p className="text-xs text-[color:var(--claude-stone)]/70 mt-1">Registre vendas para o motor de inteligência começar a sugerir movimentos.</p>
-              </div>
+              <EmptyState
+                variant="empty"
+                className="claude-card"
+                icon={<ShoppingBag size={28} />}
+                title="Nenhuma recomendação gerada para esta data."
+                description="Registre vendas para o motor de inteligência começar a sugerir movimentos."
+              />
             )}
           </div>
         </div>
@@ -2952,21 +2962,21 @@ function RecomendacaoCard({ r }: any) {
           {r.desconto_sugerido !== null && r.desconto_sugerido !== undefined && (
             <div>
               <p className="section-label">Desc. sug.</p>
-              <p className="kpi-value text-xl text-[color:var(--claude-coral)]">-{r.desconto_sugerido.toFixed(1)}%</p>
+              <p className="kpi-value text-xl text-[color:var(--claude-coral)]">-{formatPercent(r.desconto_sugerido, { scale: 1 })}</p>
             </div>
           )}
           {r.preco_sugerido && (
             <div>
               <p className="section-label">Preço sug.</p>
-              <p className="kpi-value text-sm text-[color:var(--claude-ink)]">R$ {r.preco_sugerido.toFixed(2)}</p>
+              <p className="kpi-value text-sm text-[color:var(--claude-ink)]">{formatCurrency(r.preco_sugerido)}</p>
             </div>
           )}
           <div>
             <p className="section-label">Margem</p>
             <p className="kpi-value text-sm text-[color:var(--claude-ink)]">
-              {(r.margem_atual * 100).toFixed(1)}%
+              {formatPercent(r.margem_atual)}
               {r.margem_pos_acao !== null && r.margem_pos_acao !== undefined && (
-                <span className="text-[color:var(--claude-stone)]"> → {(r.margem_pos_acao * 100).toFixed(1)}%</span>
+                <span className="text-[color:var(--claude-stone)]"> → {formatPercent(r.margem_pos_acao)}</span>
               )}
             </p>
           </div>
@@ -3069,7 +3079,7 @@ function SimuladorPage({ initialTab = 'manual' }: { initialTab?: 'manual' | 'eng
               className="w-full h-2 bg-slate-100 rounded-lg accent-blue-600 appearance-none cursor-pointer"
             />
             <div className="flex justify-between mt-4">
-              <span className="text-xl font-black text-blue-600">{discount}%</span>
+              <span className="text-xl font-black text-blue-600">{formatPercent(discount, { scale: 1, maximumFractionDigits: 0 })}</span>
               <button 
                 onClick={handleSimulate}
                 className="bg-slate-900 text-white px-8 py-2 rounded-xl font-bold transition-all active:scale-95 shadow-lg shadow-slate-900/20"
@@ -3087,7 +3097,7 @@ function SimuladorPage({ initialTab = 'manual' }: { initialTab?: 'manual' | 'eng
           {result ? (
             <div className="space-y-6">
               <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Margem Estimada Resultante</p>
-              <p className="text-5xl font-black text-slate-900 tracking-tighter">{(result.nova_margem_estimada * 100).toFixed(1)}%</p>
+              <p className="text-5xl font-black text-slate-900 tracking-tighter">{formatPercent(result.nova_margem_estimada)}</p>
               <div className={`p-4 rounded-xl border font-black uppercase text-xs text-center tracking-widest ${
                 result.status === 'seguro'
                   ? 'bg-emerald-50 border-emerald-100 text-emerald-600'
@@ -3100,12 +3110,12 @@ function SimuladorPage({ initialTab = 'manual' }: { initialTab?: 'manual' | 'eng
               <div className="bg-slate-50 rounded-xl p-4 space-y-2 text-xs">
                 <div className="flex justify-between">
                   <span className="text-slate-500 font-semibold">Margem atual</span>
-                  <span className="font-black text-slate-700">{(result.margem_atual * 100).toFixed(1)}%</span>
+                  <span className="font-black text-slate-700">{formatPercent(result.margem_atual)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500 font-semibold">Impacto</span>
                   <span className={`font-black ${result.impacto_pp > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                    {result.impacto_pp > 0 ? '-' : '+'}{Math.abs(result.impacto_pp).toFixed(2)} pp
+                    {result.impacto_pp > 0 ? '-' : '+'}{formatNumber(Math.abs(result.impacto_pp), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} pp
                   </span>
                 </div>
               </div>
@@ -3114,10 +3124,12 @@ function SimuladorPage({ initialTab = 'manual' }: { initialTab?: 'manual' | 'eng
               </p>
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-               <Sparkles className="mb-4 opacity-30" size={48} />
-               <p className="text-sm italic font-medium">Selecione produtos para simular.</p>
-            </div>
+            <EmptyState
+              variant="empty"
+              className="py-12 text-slate-400"
+              icon={<Sparkles size={48} />}
+              title="Selecione produtos para simular."
+            />
           )}
         </div>
       </div>
@@ -3263,7 +3275,7 @@ function EnginePromocaoPanel() {
                 value={meta} onChange={e => setMeta(parseFloat(e.target.value))}
                 className="flex-1 accent-[color:var(--claude-coral)]"
               />
-              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{meta.toFixed(1)}%</span>
+              <span className="mono text-2xl font-bold w-20 text-right text-[color:var(--claude-ink)]">{formatPercent(meta, { scale: 1 })}</span>
             </div>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1">
               Faixa saudável: 17–19%. Meta determina quão agressivo o solver pode ser.
@@ -3355,12 +3367,12 @@ function EnginePromocaoPanel() {
       )}
 
       {!response && !loading && (
-        <div className="claude-card p-12 text-center">
-          <Wand2 className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={36} />
-          <p className="serif italic text-[color:var(--claude-stone)]">
-            Defina a meta e clique em "Gerar 3 propostas" para o engine propor cestas.
-          </p>
-        </div>
+        <EmptyState
+          variant="empty"
+          className="claude-card"
+          icon={<Wand2 size={36} />}
+          title='Defina a meta e clique em "Gerar 3 propostas" para o engine propor cestas.'
+        />
       )}
 
       {toast && (
@@ -3428,19 +3440,19 @@ function CestaCard({
               <div>
                 <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Margem proj.</p>
                 <p className="kpi-value text-xl mono" style={{ color: cesta.atinge_meta ? 'var(--claude-sage)' : 'var(--claude-coral)' }}>
-                  {cesta.margem_projetada != null ? (cesta.margem_projetada * 100).toFixed(1) : '—'}%
+                  {formatPercent(cesta.margem_projetada)}
                 </p>
                 <p className="text-[10px] text-[color:var(--claude-stone)] mono">
-                  meta {(cesta.meta_margem_pct * 100).toFixed(1)}%
+                  meta {formatPercent(cesta.meta_margem_pct)}
                 </p>
               </div>
               <div>
                 <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Lucro semanal</p>
                 <p className="kpi-value text-xl mono text-[color:var(--claude-ink)]">
-                  +R$ {(cesta.lucro_semanal_projetado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                  {formatCurrency(cesta.lucro_semanal_projetado || 0, { minimumFractionDigits: 0, maximumFractionDigits: 0, signed: true })}
                 </p>
                 <p className="text-[10px] text-[color:var(--claude-stone)] mono">
-                  receita R$ {(cesta.receita_projetada || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+                  receita {formatCurrency(cesta.receita_projetada || 0, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                 </p>
               </div>
             </div>
@@ -3451,7 +3463,7 @@ function CestaCard({
               </div>
               <div>
                 <span className="text-[color:var(--claude-stone)]">Desconto médio:</span>{' '}
-                <span className="mono font-semibold">{cesta.desconto_medio_pct?.toFixed(1)}%</span>
+                <span className="mono font-semibold">{formatPercent(cesta.desconto_medio_pct, { scale: 1 })}</span>
               </div>
             </div>
           </>
@@ -3516,14 +3528,14 @@ function CestaItemRow({ item }: { item: CestaItem }) {
             {item.classe_abc && item.classe_xyz && ` · ${item.classe_abc}-${item.classe_xyz}`}
           </p>
         </td>
-        <td className="px-2 py-1.5 text-right mono font-semibold">{item.desconto_pct.toFixed(0)}%</td>
+        <td className="px-2 py-1.5 text-right mono font-semibold">{formatPercent(item.desconto_pct, { scale: 1, maximumFractionDigits: 0 })}</td>
         <td className="px-2 py-1.5 text-right mono">
-          <span className="text-[color:var(--claude-stone)]">{(item.margem_atual * 100).toFixed(0)}</span>
+          <span className="text-[color:var(--claude-stone)]">{formatPercent(item.margem_atual, { maximumFractionDigits: 0 }).replace('%', '')}</span>
           <span className="text-[color:var(--claude-stone)]/60">→</span>
-          <span style={{ color: item.margem_pos_acao >= 0.10 ? 'var(--claude-ink)' : 'var(--claude-coral)' }}>{(item.margem_pos_acao * 100).toFixed(0)}%</span>
+          <span style={{ color: item.margem_pos_acao >= 0.10 ? 'var(--claude-ink)' : 'var(--claude-coral)' }}>{formatPercent(item.margem_pos_acao, { maximumFractionDigits: 0 })}</span>
         </td>
         <td className="px-2 py-1.5 text-right mono font-semibold text-[color:var(--claude-sage)]">
-          +R$ {item.lucro_marginal.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+          {formatCurrency(item.lucro_marginal, { minimumFractionDigits: 0, maximumFractionDigits: 0, signed: true })}
         </td>
         <td className="px-2 py-1.5 text-center">
           <span className="inline-block w-2 h-2 rounded-full" style={{ background: corRisco }} />
@@ -3535,15 +3547,15 @@ function CestaItemRow({ item }: { item: CestaItem }) {
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <span className="text-[color:var(--claude-stone)]">Preço:</span>{' '}
-                <span className="mono">R$ {item.preco_atual.toFixed(2)} → R$ {item.preco_promo.toFixed(2)}</span>
+                <span className="mono">{formatCurrency(item.preco_atual)} → {formatCurrency(item.preco_promo)}</span>
               </div>
               <div>
                 <span className="text-[color:var(--claude-stone)]">Qtd projetada:</span>{' '}
-                <span className="mono">{item.qtd_projetada.toFixed(0)} ({item.qtd_baseline.toFixed(1)}/dia × fator)</span>
+                <span className="mono">{formatNumber(item.qtd_projetada, { maximumFractionDigits: 0 })} ({formatNumber(item.qtd_baseline, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}/dia × fator)</span>
               </div>
               <div>
                 <span className="text-[color:var(--claude-stone)]">Elasticidade β:</span>{' '}
-                <span className="mono">{item.beta_usado.toFixed(2)}</span>
+                <span className="mono">{formatNumber(item.beta_usado, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 <span className="ml-1 text-[10px] uppercase px-1.5 py-0.5 rounded"
                       style={{
                         background: item.qualidade_elasticidade === 'alta' ? 'color-mix(in srgb, var(--claude-sage) 20%, transparent)' :
@@ -3556,8 +3568,8 @@ function CestaItemRow({ item }: { item: CestaItem }) {
               <div>
                 <span className="text-[color:var(--claude-stone)]">Cobertura pós-promo:</span>{' '}
                 <span className="mono">
-                  {item.cobertura_pos_promo_dias != null ? `${item.cobertura_pos_promo_dias.toFixed(1)}d` : '∞'}
-                  {item.risco_stockout_pct != null && ` (risco ${(item.risco_stockout_pct * 100).toFixed(0)}%)`}
+                  {item.cobertura_pos_promo_dias != null ? `${formatNumber(item.cobertura_pos_promo_dias, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}d` : '∞'}
+                  {item.risco_stockout_pct != null && ` (risco ${formatPercent(item.risco_stockout_pct, { maximumFractionDigits: 0 })})`}
                 </span>
               </div>
             </div>
@@ -3720,22 +3732,22 @@ function HistoricoPage() {
         <div className="claude-card p-4">
           <p className="section-label">Entradas</p>
           <p className="kpi-value text-2xl text-[color:var(--claude-sage)] mt-1">{totais.entradas}</p>
-          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorEntradas.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">{formatCurrency(totais.valorEntradas)}</p>
         </div>
         <div className="claude-card p-4">
           <p className="section-label">Saídas</p>
           <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">{totais.saidas}</p>
-          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorSaidas.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">{formatCurrency(totais.valorSaidas)}</p>
         </div>
         <div className="claude-card p-4">
           <p className="section-label">Quebras</p>
           <p className="kpi-value text-2xl text-[color:var(--claude-amber)] mt-1">{totais.quebras}</p>
-          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">R$ {totais.valorQuebras.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">{formatCurrency(totais.valorQuebras)}</p>
         </div>
         <div className="claude-card p-4">
           <p className="section-label">Fluxo líquido</p>
           <p className={`kpi-value text-2xl mt-1 ${totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
-            {totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? '+' : ''}R$ {(totais.valorSaidas - totais.valorEntradas - totais.valorQuebras).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+            {formatCurrency(totais.valorSaidas - totais.valorEntradas - totais.valorQuebras, { signed: true })}
           </p>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1">Receita − Custo entradas − Quebras</p>
         </div>
@@ -3744,15 +3756,14 @@ function HistoricoPage() {
       {/* Tabela */}
       <div className="claude-card overflow-hidden">
         {loading ? (
-          <div className="p-12 flex justify-center">
-            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[color:var(--claude-coral)]"></div>
-          </div>
+          <EmptyState variant="loading" title="Carregando…" />
         ) : movs.length === 0 ? (
-          <div className="p-12 text-center">
-            <FileText className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={32} />
-            <p className="serif italic text-[color:var(--claude-stone)]">Nenhuma movimentação no período.</p>
-            <p className="text-xs text-[color:var(--claude-stone)]/70 mt-1">Lance entradas e vendas pra começar o histórico.</p>
-          </div>
+          <EmptyState
+            variant="empty"
+            icon={<FileText size={32} />}
+            title="Nenhuma movimentação no período."
+            description="Lance entradas e vendas pra começar o histórico."
+          />
         ) : (
           <table className="w-full text-left">
             <thead>
@@ -3774,9 +3785,7 @@ function HistoricoPage() {
                 const isQuebra = m.tipo === 'QUEBRA'
                 const acentColor = isEntrada ? 'var(--claude-sage)' : isQuebra ? 'var(--claude-amber)' : 'var(--claude-coral)'
                 const Icon = isEntrada ? ArrowDownCircle : isQuebra ? Skull : ArrowUpCircle
-                const dataFmt = m.data
-                  ? new Date(m.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-                  : '—'
+                const dataFmt = formatDateTime(m.data)
                 const podeExcluir = isEntrada || isQuebra || m.venda_id !== null
                 return (
                   <tr key={`${m.tipo}-${m.movimentacao_id}`} className="hover:bg-[color:var(--claude-cream-deep)]/30 transition-colors">
@@ -3793,11 +3802,11 @@ function HistoricoPage() {
                       <p className="text-sm font-medium text-[color:var(--claude-ink)] truncate max-w-[220px]">{m.produto_nome}</p>
                       {m.produto_sku && <p className="text-[10px] text-[color:var(--claude-stone)] mono">{m.produto_sku}</p>}
                     </td>
-                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{m.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</td>
-                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-stone)]">{m.peso > 0 ? m.peso.toFixed(2) : '—'}</td>
-                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">R$ {m.custo_unitario.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{formatNumber(m.quantidade, { maximumFractionDigits: 2 })}</td>
+                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-stone)]">{m.peso > 0 ? formatNumber(m.peso, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
+                    <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{formatCurrency(m.custo_unitario)}</td>
                     <td className="px-4 py-3 text-right mono text-sm font-semibold" style={{ color: acentColor }}>
-                      R$ {m.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                      {formatCurrency(m.valor_total)}
                     </td>
                     <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)]">{m.cidade || '—'}</td>
                     <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)] mono">{dataFmt}</td>
@@ -3843,8 +3852,8 @@ function HistoricoPage() {
 
             <div className="space-y-2 text-sm text-[color:var(--claude-ink)] mb-5">
               <p><span className="text-[color:var(--claude-stone)]">Produto:</span> <span className="font-medium">{confirmando.produto_nome}</span></p>
-              <p><span className="text-[color:var(--claude-stone)]">Quantidade:</span> <span className="mono">{confirmando.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</span></p>
-              <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">R$ {confirmando.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Quantidade:</span> <span className="mono">{formatNumber(confirmando.quantidade, { maximumFractionDigits: 2 })}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">{formatCurrency(confirmando.valor_total)}</span></p>
               <div className="mt-3 p-3 rounded-lg text-xs"
                    style={{ background: 'color-mix(in srgb, var(--claude-amber) 10%, transparent)', color: 'var(--claude-ink)' }}>
                 {confirmando.tipo === 'ENTRADA' && (
@@ -4028,7 +4037,7 @@ function QuebrasPage() {
       const res = await axios.post(`${API_URL}/quebras`, payload)
       setToast({
         tipo: 'ok',
-        msg: `Quebra registrada: ${q} un. de ${produtoSelecionado.nome} (R$ ${res.data.valor_total.toFixed(2)}).`,
+        msg: `Quebra registrada: ${formatNumber(q, { maximumFractionDigits: 2 })} un. de ${produtoSelecionado.nome} (${formatCurrency(res.data.valor_total)}).`,
       })
       // limpa formulário
       setProdutoSelecionado(null)
@@ -4081,21 +4090,21 @@ function QuebrasPage() {
           <div className="claude-card p-4">
             <p className="section-label">Valor perdido · {resumo.mes}</p>
             <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">
-              R$ {resumo.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+              {formatCurrency(resumo.valor_total)}
             </p>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1">{resumo.eventos} evento(s)</p>
           </div>
           <div className="claude-card p-4">
             <p className="section-label">Quantidade total</p>
             <p className="kpi-value text-2xl text-[color:var(--claude-ink)] mt-1 mono">
-              {resumo.quantidade_total.toLocaleString('pt-BR', {maximumFractionDigits: 2})}
+              {formatNumber(resumo.quantidade_total, { maximumFractionDigits: 2 })}
             </p>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1">unidades baixadas</p>
           </div>
           <div className="claude-card p-4">
             <p className="section-label">% do faturamento</p>
             <p className={`kpi-value text-2xl mt-1 ${resumo.pct_faturamento > 0.02 ? 'text-[color:var(--claude-coral)]' : 'text-[color:var(--claude-amber)]'}`}>
-              {(resumo.pct_faturamento * 100).toFixed(2)}%
+              {formatPercent(resumo.pct_faturamento, { maximumFractionDigits: 2 })}
             </p>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1">benchmark ABRAS: 1,5–2%</p>
           </div>
@@ -4106,7 +4115,7 @@ function QuebrasPage() {
             </p>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">
               {resumo.por_motivo[0]
-                ? `R$ ${resumo.por_motivo[0].valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+                ? formatCurrency(resumo.por_motivo[0].valor)
                 : 'sem registros'}
             </p>
           </div>
@@ -4140,7 +4149,7 @@ function QuebrasPage() {
                 <div>
                   <p className="text-sm font-medium text-[color:var(--claude-ink)]">{produtoSelecionado.nome}</p>
                   <p className="text-xs text-[color:var(--claude-stone)] mono mt-0.5">
-                    {produtoSelecionado.sku} · estoque: {produtoSelecionado.estoque_qtd} un. · custo: R$ {produtoSelecionado.custo?.toFixed(2)}
+                    {produtoSelecionado.sku} · estoque: {formatNumber(produtoSelecionado.estoque_qtd, { maximumFractionDigits: 2 })} un. · custo: {formatCurrency(produtoSelecionado.custo)}
                   </p>
                 </div>
                 <button
@@ -4169,7 +4178,7 @@ function QuebrasPage() {
                       >
                         <p className="text-sm font-medium text-[color:var(--claude-ink)]">{p.nome}</p>
                         <p className="text-xs text-[color:var(--claude-stone)] mono">
-                          {p.sku} · estoque: {p.estoque_qtd} · custo: R$ {p.custo?.toFixed(2)}
+                          {p.sku} · estoque: {formatNumber(p.estoque_qtd, { maximumFractionDigits: 2 })} · custo: {formatCurrency(p.custo)}
                         </p>
                       </button>
                     ))}
@@ -4192,7 +4201,7 @@ function QuebrasPage() {
               />
               {produtoSelecionado && quantidade && parseFloat(quantidade.replace(',', '.')) > 0 && (
                 <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">
-                  Valor: R$ {(parseFloat(quantidade.replace(',', '.')) * (produtoSelecionado.custo || 0)).toFixed(2)}
+                  Valor: {formatCurrency(parseFloat(quantidade.replace(',', '.')) * (produtoSelecionado.custo || 0))}
                 </p>
               )}
             </div>
@@ -4285,15 +4294,14 @@ function QuebrasPage() {
           {/* Tabela */}
           <div className="claude-card overflow-hidden">
             {loading ? (
-              <div className="p-12 flex justify-center">
-                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[color:var(--claude-coral)]"></div>
-              </div>
+              <EmptyState variant="loading" title="Carregando…" />
             ) : quebras.length === 0 ? (
-              <div className="p-12 text-center">
-                <Skull className="mx-auto mb-3 text-[color:var(--claude-stone)]/40" size={32} />
-                <p className="serif italic text-[color:var(--claude-stone)]">Nenhuma quebra no período.</p>
-                <p className="text-xs text-[color:var(--claude-stone)]/70 mt-1">Bom sinal! Continue de olho no estoque.</p>
-              </div>
+              <EmptyState
+                variant="empty"
+                icon={<Skull size={32} />}
+                title="Nenhuma quebra no período."
+                description="Bom sinal! Continue de olho no estoque."
+              />
             ) : (
               <table className="w-full text-left">
                 <thead>
@@ -4310,9 +4318,7 @@ function QuebrasPage() {
                 </thead>
                 <tbody className="divide-y divide-[color:var(--border)]">
                   {quebras.map(q => {
-                    const dataFmt = q.data
-                      ? new Date(q.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-                      : '—'
+                    const dataFmt = formatDateTime(q.data)
                     return (
                       <tr key={q.movimentacao_id} className="hover:bg-[color:var(--claude-cream-deep)]/30 transition-colors">
                         <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)] mono">{dataFmt}</td>
@@ -4329,10 +4335,10 @@ function QuebrasPage() {
                             {q.motivo}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{q.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</td>
-                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-stone)]">R$ {q.custo_unitario.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-ink)]">{formatNumber(q.quantidade, { maximumFractionDigits: 2 })}</td>
+                        <td className="px-4 py-3 text-right mono text-sm text-[color:var(--claude-stone)]">{formatCurrency(q.custo_unitario)}</td>
                         <td className="px-4 py-3 text-right mono text-sm font-semibold text-[color:var(--claude-coral)]">
-                          R$ {q.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                          {formatCurrency(q.valor_total)}
                         </td>
                         <td className="px-4 py-3 text-xs text-[color:var(--claude-stone)]">{q.cidade || '—'}</td>
                         <td className="px-4 py-3 text-center">
@@ -4367,7 +4373,7 @@ function QuebrasPage() {
                       </div>
                     </div>
                     <p className="mono text-sm font-semibold text-[color:var(--claude-coral)]">
-                      R$ {p.valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                      {formatCurrency(p.valor)}
                     </p>
                   </div>
                 ))}
@@ -4402,8 +4408,8 @@ function QuebrasPage() {
             <div className="space-y-2 text-sm text-[color:var(--claude-ink)] mb-5">
               <p><span className="text-[color:var(--claude-stone)]">Produto:</span> <span className="font-medium">{confirmando.produto_nome}</span></p>
               <p><span className="text-[color:var(--claude-stone)]">Motivo:</span> <span className="capitalize">{confirmando.motivo}</span></p>
-              <p><span className="text-[color:var(--claude-stone)]">Quantidade:</span> <span className="mono">{confirmando.quantidade.toLocaleString('pt-BR', {maximumFractionDigits: 2})}</span></p>
-              <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">R$ {confirmando.valor_total.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Quantidade:</span> <span className="mono">{formatNumber(confirmando.quantidade, { maximumFractionDigits: 2 })}</span></p>
+              <p><span className="text-[color:var(--claude-stone)]">Valor:</span> <span className="mono">{formatCurrency(confirmando.valor_total)}</span></p>
               <div className="mt-3 p-3 rounded-lg text-xs"
                    style={{ background: 'color-mix(in srgb, var(--claude-amber) 10%, transparent)', color: 'var(--claude-ink)' }}>
                 ↩ Estoque voltará +{confirmando.quantidade} un. CMP do produto será recalculado. Linha 4.2 do DRE será decrementada.
@@ -4536,15 +4542,6 @@ type ConfigTributaria = {
   vigencia_fim?: string | null
 }
 
-function formatBRL(v: number): string {
-  const sig = v < 0 ? '-' : ''
-  return sig + 'R$ ' + Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function formatPct(v: number): string {
-  return (v * 100).toFixed(2) + '%'
-}
-
 function mesHojeString(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -4643,7 +4640,7 @@ function DRECascataView({ dre, comparativo, loading, mes, onMesChange, onFechame
   onFechamento: () => void
 }) {
   if (loading || !dre) {
-    return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Calculando…</div>
+    return <EmptyState variant="loading" title="Calculando…" />
   }
 
   // Sparkline data (6 meses)
@@ -4695,41 +4692,41 @@ function DRECascataView({ dre, comparativo, loading, mes, onMesChange, onFechame
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
           title="Receita Bruta"
-          value={formatBRL(dre.receita_bruta)}
+          value={formatCurrency(dre.receita_bruta)}
           subValue={`${comparativo.length} meses no gráfico`}
           status="neutral"
           delta={deltaReceitaPct}
           deltaFormat="pct"
-          deltaLabel={mediaPrevReceita > 0 ? `vs média (${formatBRL(mediaPrevReceita)})` : 'Sem histórico'}
+          deltaLabel={mediaPrevReceita > 0 ? `vs média (${formatCurrency(mediaPrevReceita)})` : '1º mês registrado'}
           sparklineData={sparkReceita}
           sparklineTone="sage"
         />
         <KPICard
           title="Margem Bruta"
-          value={formatPct(dre.margem_bruta_pct)}
-          subValue={formatBRL(dre.lucro_bruto)}
+          value={formatPercent(dre.margem_bruta_pct, { maximumFractionDigits: 2 })}
+          subValue={formatCurrency(dre.lucro_bruto)}
           status={dre.margem_bruta_pct >= 0.2 ? 'up' : dre.margem_bruta_pct >= 0.15 ? 'ok' : 'warn'}
           delta={deltaMB}
           deltaFormat="pp"
-          deltaLabel={mediaPrevMB > 0 ? `vs média (${mediaPrevMB.toFixed(1)}%)` : 'Sem histórico'}
+          deltaLabel={mediaPrevMB > 0 ? `vs média (${formatPercent(mediaPrevMB, { scale: 1 })})` : '1º mês registrado'}
           sparklineData={margemBrutaHist}
           sparklineTone="coral"
         />
         <KPICard
           title="EBITDA"
-          value={formatBRL(dre.ebitda)}
-          subValue={`${formatPct(dre.ebitda_pct)} da receita`}
+          value={formatCurrency(dre.ebitda)}
+          subValue={`${formatPercent(dre.ebitda_pct, { maximumFractionDigits: 2 })} da receita`}
           status={dre.ebitda_pct >= 0.1 ? 'up' : dre.ebitda_pct >= 0.05 ? 'ok' : dre.ebitda >= 0 ? 'warn' : 'alert'}
           delta={deltaEb}
           deltaFormat="pp"
-          deltaLabel={mediaPrevEb !== 0 ? `vs média (${mediaPrevEb.toFixed(1)}%)` : 'Sem histórico'}
+          deltaLabel={mediaPrevEb !== 0 ? `vs média (${formatPercent(mediaPrevEb, { scale: 1 })})` : '1º mês registrado'}
           sparklineData={ebitdaPctHist}
           sparklineTone="amber"
         />
         <KPICard
           title="Lucro Líquido"
-          value={formatBRL(dre.lucro_liquido)}
-          subValue={formatPct(dre.margem_liquida_pct)}
+          value={formatCurrency(dre.lucro_liquido)}
+          subValue={formatPercent(dre.margem_liquida_pct, { maximumFractionDigits: 2 })}
           status={dre.lucro_liquido > 0 ? 'up' : dre.lucro_liquido === 0 ? 'ok' : 'alert'}
           sparklineData={sparkLiquido}
           sparklineTone={dre.lucro_liquido >= 0 ? 'sage' : 'coral'}
@@ -4768,8 +4765,11 @@ function DRECascataView({ dre, comparativo, loading, mes, onMesChange, onFechame
               const wRec = (p.receita_bruta / maxRec) * 100
               const wEbi = Math.max(0, (p.ebitda / maxRec)) * 100
               const isNeg = p.ebitda < 0
+              // Mes sem nenhum dado real (receita, ebitda e LL todos zerados):
+              // dessatura visualmente para nao competir com meses preenchidos.
+              const isVazio = p.receita_bruta === 0 && p.ebitda === 0 && p.lucro_liquido === 0
               return (
-                <div key={i} className="flex items-center gap-4 text-xs">
+                <div key={i} className={`flex items-center gap-4 text-xs ${isVazio ? 'opacity-40' : ''}`}>
                   <span className="w-16 font-mono text-[color:var(--claude-ink)]/60">{p.mes}</span>
                   <div className="flex-1 h-6 bg-[color:var(--claude-ink)]/5 rounded relative overflow-hidden">
                     <div className="h-full bg-[color:var(--claude-sage)]/30" style={{ width: `${wRec}%` }} />
@@ -4778,9 +4778,9 @@ function DRECascataView({ dre, comparativo, loading, mes, onMesChange, onFechame
                     )}
                     {isNeg && <div className="absolute top-0 left-0 h-full bg-[color:var(--claude-coral)]/40" style={{ width: `${wRec}%` }} />}
                   </div>
-                  <span className="w-24 text-right font-mono">{formatBRL(p.receita_bruta)}</span>
-                  <span className={`w-20 text-right font-mono text-xs ${p.lucro_liquido >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
-                    {formatBRL(p.lucro_liquido)}
+                  <span className="w-24 text-right font-mono">{isVazio ? '—' : formatCurrency(p.receita_bruta)}</span>
+                  <span className={`w-20 text-right font-mono text-xs ${isVazio ? 'text-[color:var(--claude-ink)]/40' : (p.lucro_liquido >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]')}`}>
+                    {isVazio ? '—' : formatCurrency(p.lucro_liquido)}
                   </span>
                 </div>
               )
@@ -4816,10 +4816,10 @@ function DRELinhaRow({ linha }: { linha: DRELinha }) {
       <td className={`px-6 py-2 text-sm text-right font-mono tabular-nums ${
         isResultado ? 'font-bold text-base' : isSubtotal ? 'font-semibold' : ''
       } ${positivo ? 'text-[color:var(--claude-ink)]' : 'text-[color:var(--claude-coral)]'}`}>
-        {formatBRL(linha.valor)}
+        {formatCurrency(linha.valor)}
       </td>
       <td className="px-6 py-2 text-sm text-right font-mono tabular-nums text-[color:var(--claude-ink)]/50">
-        {linha.pct_receita.toFixed(1)}%
+        {formatPercent(linha.pct_receita, { scale: 1 })}
       </td>
     </tr>
   )
@@ -4943,7 +4943,7 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
           {Object.entries(totalPorTipo).map(([tipo, total]) => (
             <div key={tipo} className="bg-white rounded-lg border border-[color:var(--claude-ink)]/8 p-4">
               <p className="text-[10px] uppercase tracking-wider text-[color:var(--claude-ink)]/50">{tipo.replace('_', ' ')}</p>
-              <p className="text-lg font-semibold mt-1 font-mono tabular-nums">{formatBRL(total)}</p>
+              <p className="text-lg font-semibold mt-1 font-mono tabular-nums">{formatCurrency(total)}</p>
             </div>
           ))}
         </div>
@@ -5014,11 +5014,9 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
       {/* Lista */}
       <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
         {loading ? (
-          <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
+          <EmptyState variant="loading" title="Carregando…" />
         ) : lancamentos.length === 0 ? (
-          <div className="p-8 text-center text-[color:var(--claude-ink)]/50">
-            Nenhum lançamento em {mes}. Clique em "Novo lançamento" pra começar.
-          </div>
+          <EmptyState variant="empty" title={`Nenhum lançamento em ${mes}. Clique em "Novo lançamento" pra começar.`} />
         ) : (
           <table className="w-full">
             <thead>
@@ -5039,7 +5037,7 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
                     {l.conta_nome}
                   </td>
                   <td className="px-6 py-3 text-sm text-[color:var(--claude-ink)]/70">{l.descricao || '—'}</td>
-                  <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(l.valor)}</td>
+                  <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatCurrency(l.valor)}</td>
                   <td className="px-6 py-3 text-center">
                     <button onClick={() => handleExcluir(l.id)} className="p-1 hover:bg-[color:var(--claude-coral)]/10 rounded text-[color:var(--claude-ink)]/40 hover:text-[color:var(--claude-coral)]">
                       <Trash2 size={14} />
@@ -5105,7 +5103,7 @@ function DRETributarioView() {
     }
   }
 
-  if (!config) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
+  if (!config) return <EmptyState variant="loading" title="Carregando…" />
 
   const display = editando && form ? form : config
   const isSimples = display.regime === 'SIMPLES_NACIONAL'
@@ -5194,7 +5192,7 @@ function AliquotaRow({ label, valor, editando, onChange }: { label: string; valo
           className="col-span-2 px-3 py-2 rounded-lg border border-[color:var(--claude-ink)]/15 bg-white text-sm font-mono"
         />
       ) : (
-        <p className="col-span-2 text-sm font-mono tabular-nums">{(valor * 100).toFixed(2)}% <span className="text-[color:var(--claude-ink)]/40">({valor.toFixed(4)})</span></p>
+        <p className="col-span-2 text-sm font-mono tabular-nums">{formatPercent(valor, { maximumFractionDigits: 2 })} <span className="text-[color:var(--claude-ink)]/40">({formatNumber(valor, { minimumFractionDigits: 4, maximumFractionDigits: 4 })})</span></p>
       )}
     </div>
   )
@@ -5420,7 +5418,7 @@ function DFCPage() {
         />
       </header>
 
-      {loading && <div className="claude-card p-12 text-center text-[color:var(--claude-stone)]">Carregando…</div>}
+      {loading && <EmptyState variant="loading" className="claude-card" title="Carregando…" />}
 
       {!loading && dfc && !dfc.disponivel && (
         <div className="claude-card p-6" style={{ borderLeft: '4px solid var(--claude-amber)' }}>
@@ -5438,22 +5436,22 @@ function DFCPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="claude-card p-4">
               <p className="section-label">Caixa inicial</p>
-              <p className="kpi-value text-xl mt-1 mono">R$ {dfc.caixa_inicial.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+              <p className="kpi-value text-xl mt-1 mono">{formatCurrency(dfc.caixa_inicial)}</p>
             </div>
             <div className="claude-card p-4">
               <p className="section-label">Caixa final</p>
-              <p className="kpi-value text-xl mt-1 mono text-[color:var(--claude-sage)]">R$ {dfc.caixa_final.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+              <p className="kpi-value text-xl mt-1 mono text-[color:var(--claude-sage)]">{formatCurrency(dfc.caixa_final)}</p>
             </div>
             <div className="claude-card p-4">
               <p className="section-label">Variação líquida</p>
               <p className={`kpi-value text-xl mt-1 mono ${dfc.variacao_caixa_real >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
-                {dfc.variacao_caixa_real >= 0 ? '+' : ''}R$ {dfc.variacao_caixa_real.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                {formatCurrency(dfc.variacao_caixa_real, { signed: true })}
               </p>
             </div>
             <div className="claude-card p-4">
               <p className="section-label">Reconciliação</p>
               <p className={`kpi-value text-xl mt-1 ${dfc.reconciliacao_ok ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-amber)]'}`}>
-                {dfc.reconciliacao_ok ? 'OK' : `Δ R$ ${dfc.diferenca_reconciliacao.toFixed(2)}`}
+                {dfc.reconciliacao_ok ? 'OK' : `Δ ${formatCurrency(dfc.diferenca_reconciliacao)}`}
               </p>
               <p className="text-[10px] text-[color:var(--claude-stone)] mt-1">|calc − real| &lt; 0,01</p>
             </div>
@@ -5485,7 +5483,7 @@ function DFCPage() {
                       </td>
                       <td className={`px-4 py-2 text-right mono ${negativo ? 'text-[color:var(--claude-coral)]' : isRes ? 'text-[color:var(--claude-sage)]' : ''}`}>
                         {isCab && l.valor === 0 ? '' : (
-                          (negativo ? '−' : '') + 'R$ ' + Math.abs(l.valor).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                          formatCurrency(l.valor, { negativeSign: '−' })
                         )}
                       </td>
                     </tr>
@@ -5516,11 +5514,11 @@ function DFCPage() {
                       <td className="py-2 mono">{c.mes}</td>
                       {c.disponivel ? (
                         <>
-                          <td className={`py-2 text-right mono ${c.total_operacional >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{c.total_operacional.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
-                          <td className={`py-2 text-right mono ${c.total_investimento >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{c.total_investimento.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
-                          <td className={`py-2 text-right mono ${c.total_financiamento >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{c.total_financiamento.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
-                          <td className="py-2 text-right mono font-semibold">{c.variacao_caixa_real >= 0 ? '+' : ''}{c.variacao_caixa_real.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
-                          <td className="py-2 text-right mono">{c.caixa_final.toLocaleString('pt-BR', {maximumFractionDigits: 0})}</td>
+                          <td className={`py-2 text-right mono ${c.total_operacional >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{formatNumber(c.total_operacional, { maximumFractionDigits: 0 })}</td>
+                          <td className={`py-2 text-right mono ${c.total_investimento >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{formatNumber(c.total_investimento, { maximumFractionDigits: 0 })}</td>
+                          <td className={`py-2 text-right mono ${c.total_financiamento >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>{formatNumber(c.total_financiamento, { maximumFractionDigits: 0 })}</td>
+                          <td className="py-2 text-right mono font-semibold">{formatNumber(c.variacao_caixa_real, { maximumFractionDigits: 0, signed: true })}</td>
+                          <td className="py-2 text-right mono">{formatNumber(c.caixa_final, { maximumFractionDigits: 0 })}</td>
                         </>
                       ) : (
                         <td colSpan={5} className="py-2 text-xs italic text-[color:var(--claude-stone)]">sem BP no mês</td>
@@ -5580,11 +5578,6 @@ function DMPLPage() {
   }
   useEffect(() => { fetchDMPL() }, [mes])
 
-  const fmt = (v: number) => {
-    const sig = v < 0 ? '−' : ''
-    return sig + 'R$ ' + Math.abs(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-  }
-
   return (
     <div className="max-w-6xl mx-auto p-8 space-y-6">
       <header className="flex justify-between items-end">
@@ -5603,7 +5596,7 @@ function DMPLPage() {
         />
       </header>
 
-      {loading && <div className="claude-card p-12 text-center text-[color:var(--claude-stone)]">Carregando…</div>}
+      {loading && <EmptyState variant="loading" className="claude-card" title="Carregando…" />}
 
       {!loading && dmpl && !dmpl.disponivel && (
         <div className="claude-card p-6" style={{ borderLeft: '4px solid var(--claude-amber)' }}>
@@ -5616,14 +5609,11 @@ function DMPLPage() {
         const avisos = dmpl.avisos || []
         const bpStale = avisos.some(a => a.codigo === 'bp_pl_nao_inicializado' || a.codigo === 'll_nao_propagado')
 
-        // Quando BP esta stale, "Outras Movim." e residual matematico (sf - si - LL),
-        // nao evento contabil. Substitui o numero literal por rotulo explicito para
-        // nao induzir leitura de movimentacao real (dividendos, reservas, etc).
         const renderOutras = (v: number, isLucrosAcumulados: boolean) => {
           if (bpStale && isLucrosAcumulados && Math.abs(v) > 0.01) {
-            return <span className="italic text-[color:var(--claude-stone)] text-xs">BP não atualizado</span>
+            return <span className="italic text-[color:var(--claude-stone)] text-xs">BP nao atualizado</span>
           }
-          return v === 0 ? '—' : fmt(v)
+          return v === 0 ? '—' : formatCurrency(v, { negativeSign: '−' })
         }
 
         return (
@@ -5635,10 +5625,10 @@ function DMPLPage() {
               <p className="section-label">Fechamento</p>
               <p className="text-sm mt-1">
                 {bpStale && Math.abs(dmpl.total.saldo_final) < 0.01
-                  ? <>Sem PL cadastrado — saldos zerados.</>
+                  ? <>Sem PL cadastrado - saldos zerados.</>
                   : dmpl.fechamento_ok
-                    ? <>Total bate com o PL do BP. <strong>R$ {dmpl.total.saldo_final.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></>
-                    : <>Total NÃO bate com o PL do BP — verifique o Balanço.</>
+                  ? <>Total bate com o PL do BP. <strong>{formatCurrency(dmpl.total.saldo_final)}</strong></>
+                  : <>Total NÃO bate com o PL do BP — verifique o Balanço.</>
                 }
               </p>
             </div>
@@ -5650,7 +5640,6 @@ function DMPLPage() {
             </span>
           </div>
 
-          {/* Avisos diagnosticos do backend (bp_pl_nao_inicializado, ll_nao_propagado) */}
           {avisos.length > 0 && (
             <div className="claude-card p-4" style={{ borderLeft: '4px solid var(--claude-amber)' }}>
               <p className="section-label">Avisos</p>
@@ -5683,26 +5672,26 @@ function DMPLPage() {
                   return (
                     <tr key={c.componente} className={isLA ? 'bg-[color:var(--claude-cream-deep)]/30' : ''}>
                       <td className={`px-4 py-2 ${isLA ? 'font-semibold text-[color:var(--claude-ink)]' : (c.redutora ? 'text-[color:var(--claude-stone)] italic' : '')}`}>{c.componente}</td>
-                      <td className="px-4 py-2 text-right mono">{fmt(c.saldo_inicial)}</td>
-                      <td className={`px-4 py-2 text-right mono ${c.lucro_liquido !== 0 ? (c.lucro_liquido > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50'}`}>{c.lucro_liquido === 0 ? '—' : fmt(c.lucro_liquido)}</td>
+                      <td className="px-4 py-2 text-right mono">{formatCurrency(c.saldo_inicial, { negativeSign: '−' })}</td>
+                      <td className={`px-4 py-2 text-right mono ${c.lucro_liquido !== 0 ? (c.lucro_liquido > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50'}`}>{c.lucro_liquido === 0 ? '—' : formatCurrency(c.lucro_liquido, { negativeSign: '−' })}</td>
                       <td className={`px-4 py-2 text-right mono ${(bpStale && isLA) ? '' : (c.outras_mov !== 0 ? (c.outras_mov > 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]') : 'text-[color:var(--claude-stone)]/50')}`}>{renderOutras(c.outras_mov, isLA)}</td>
-                      <td className={`px-4 py-2 text-right mono ${isLA ? 'font-bold' : 'font-semibold'}`}>{fmt(c.saldo_final)}</td>
+                      <td className={`px-4 py-2 text-right mono ${isLA ? 'font-bold' : 'font-semibold'}`}>{formatCurrency(c.saldo_final, { negativeSign: '−' })}</td>
                     </tr>
                   )
                 })}
                 <tr className="bg-[color:var(--claude-cream-deep)]/60 font-bold">
                   <td className="px-4 py-3">{dmpl.total.componente}</td>
-                  <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.saldo_inicial)}</td>
-                  <td className="px-4 py-3 text-right mono">{fmt(dmpl.total.lucro_liquido)}</td>
-                  <td className="px-4 py-3 text-right mono">{bpStale && Math.abs(dmpl.total.outras_mov) > 0.01 ? <span className="italic text-[color:var(--claude-stone)] text-xs">BP não atualizado</span> : (dmpl.total.outras_mov === 0 ? '—' : fmt(dmpl.total.outras_mov))}</td>
-                  <td className="px-4 py-3 text-right mono text-[color:var(--claude-sage)]">{fmt(dmpl.total.saldo_final)}</td>
+                  <td className="px-4 py-3 text-right mono">{formatCurrency(dmpl.total.saldo_inicial, { negativeSign: '−' })}</td>
+                  <td className="px-4 py-3 text-right mono">{formatCurrency(dmpl.total.lucro_liquido, { negativeSign: '−' })}</td>
+                  <td className="px-4 py-3 text-right mono">{bpStale && Math.abs(dmpl.total.outras_mov) > 0.01 ? <span className="italic text-[color:var(--claude-stone)] text-xs">BP nao atualizado</span> : (dmpl.total.outras_mov === 0 ? '—' : formatCurrency(dmpl.total.outras_mov, { negativeSign: '−' }))}</td>
+                  <td className="px-4 py-3 text-right mono text-[color:var(--claude-sage)]">{formatCurrency(dmpl.total.saldo_final, { negativeSign: '−' })}</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p className="text-xs text-[color:var(--claude-stone)] italic">
-            Lucro líquido vai automático para "Lucros Acumulados". "Outras Movimentações" captura o resto (aumentos de capital, dividendos, transferências para reservas, ações em tesouraria) — quando o BP do mês não está inicializado, esse campo é apenas residual matemático e fica rotulado como "BP não atualizado".
+            Lucro liquido vai automatico para "Lucros Acumulados". "Outras Movimentacoes" captura o resto (aumentos de capital, dividendos, transferencias para reservas, acoes em tesouraria); quando o BP do mes nao esta inicializado, esse campo e apenas residual matematico e fica rotulado como "BP nao atualizado".
           </p>
         </>
         )
@@ -5810,7 +5799,7 @@ function BPPage() {
     } catch (e: any) {
       const d = e.response?.data?.detail
       if (d && typeof d === 'object' && d.diferenca !== undefined) {
-        alert(`BP não balanceia.\n\nAtivo: R$ ${d.total_ativo.toLocaleString('pt-BR')}\nPassivo + PL: R$ ${(d.total_passivo + d.total_patrimonio_liquido).toLocaleString('pt-BR')}\nDiferença: R$ ${d.diferenca.toLocaleString('pt-BR')}`)
+        alert(`BP não balanceia.\n\nAtivo: ${formatCurrency(d.total_ativo)}\nPassivo + PL: ${formatCurrency(d.total_passivo + d.total_patrimonio_liquido)}\nDiferença: ${formatCurrency(d.diferenca)}`)
       } else {
         alert('Falha ao fechar: ' + (d || e.message))
       }
@@ -5931,7 +5920,7 @@ function BPPage() {
       </div>
 
       {loading || !bp ? (
-        <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
+        <EmptyState variant="loading" title="Carregando…" />
       ) : (
         <>
           {tab === 'resumo' && <BPResumoView bp={bp} comparativo={comparativo} />}
@@ -5985,31 +5974,31 @@ function BPResumoView({ bp, comparativo }: { bp: BP; comparativo: BPCompPonto[] 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
           title="Total Ativo"
-          value={formatBRL(bp.total_ativo)}
-          subValue={`AC ${formatBRL(bp.total_ativo_circulante)} · ANC ${formatBRL(bp.total_ativo_nao_circulante)}`}
+          value={formatCurrency(bp.total_ativo)}
+          subValue={`AC ${formatCurrency(bp.total_ativo_circulante)} · ANC ${formatCurrency(bp.total_ativo_nao_circulante)}`}
           status="neutral"
           sparklineData={sparkAtivo}
           sparklineTone="sage"
         />
         <KPICard
           title="Total Passivo"
-          value={formatBRL(bp.total_passivo)}
-          subValue={`PC ${formatBRL(bp.total_passivo_circulante)} · PNC ${formatBRL(bp.total_passivo_nao_circulante)}`}
+          value={formatCurrency(bp.total_passivo)}
+          subValue={`PC ${formatCurrency(bp.total_passivo_circulante)} · PNC ${formatCurrency(bp.total_passivo_nao_circulante)}`}
           status="neutral"
           sparklineData={sparkPassivo}
           sparklineTone="coral"
         />
         <KPICard
           title="Patrimônio Líquido"
-          value={formatBRL(bp.total_patrimonio_liquido)}
-          subValue={`${(plRatio * 100).toFixed(1)}% do ativo`}
+          value={formatCurrency(bp.total_patrimonio_liquido)}
+          subValue={`${formatPercent(plRatio)} do ativo`}
           status={bp.total_patrimonio_liquido > 0 ? 'up' : 'alert'}
           sparklineData={sparkPL}
           sparklineTone={bp.total_patrimonio_liquido >= 0 ? 'sage' : 'coral'}
         />
         <KPICard
           title="Equação Fundamental"
-          value={bp.indicador_fechamento_ok ? 'OK' : `Δ ${formatBRL(bp.diferenca_balanceamento)}`}
+          value={bp.indicador_fechamento_ok ? 'OK' : `Δ ${formatCurrency(bp.diferenca_balanceamento)}`}
           subValue={bp.indicador_fechamento_ok ? 'Ativo = Passivo + PL' : 'Ativo ≠ Passivo + PL'}
           status={bp.indicador_fechamento_ok ? 'up' : 'alert'}
         />
@@ -6065,9 +6054,9 @@ function BPResumoView({ bp, comparativo }: { bp: BP; comparativo: BPCompPonto[] 
                     <div className="h-full bg-[color:var(--claude-sage)]/30" style={{ width: `${wAtivo}%` }} />
                     <div className="h-full bg-[color:var(--claude-sage)] absolute top-0 left-0" style={{ width: `${wPL}%` }} />
                   </div>
-                  <span className="w-28 text-right font-mono">{formatBRL(p.total_ativo)}</span>
+                  <span className="w-28 text-right font-mono">{formatCurrency(p.total_ativo)}</span>
                   <span className={`w-28 text-right font-mono text-xs ${p.total_patrimonio_liquido >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
-                    PL {formatBRL(p.total_patrimonio_liquido)}
+                    PL {formatCurrency(p.total_patrimonio_liquido)}
                   </span>
                 </div>
               )
@@ -6088,7 +6077,7 @@ function BPResumoRow({ label, valor, bold, indent }: { label: string; valor: num
     <tr className={`border-b border-[color:var(--claude-ink)]/5 ${bold ? 'bg-[color:var(--claude-ink)]/[0.03]' : ''}`}>
       <td className={`py-2 text-sm ${indent ? 'pl-10' : 'pl-6'} pr-6 ${bold ? 'font-semibold' : 'text-[color:var(--claude-ink)]/75'}`}>{label}</td>
       <td className={`px-6 py-2 text-sm text-right font-mono tabular-nums ${bold ? 'font-semibold' : ''} ${valor < 0 ? 'text-[color:var(--claude-coral)]' : ''}`}>
-        {formatBRL(valor)}
+        {formatCurrency(valor)}
       </td>
     </tr>
   )
@@ -6143,7 +6132,7 @@ function BPAtivoView({ bp, editavel, onChange }: { bp: BP; editavel: boolean; on
 
       <div className="bg-[color:var(--claude-sage)]/5 rounded-xl border border-[color:var(--claude-sage)]/20 px-6 py-4 flex items-center justify-between">
         <span className="headline text-[18px] tracking-editorial">Total Ativo</span>
-        <span className="text-[22px] font-mono tabular-nums font-semibold">{formatBRL(bp.total_ativo)}</span>
+        <span className="text-[22px] font-mono tabular-nums font-semibold">{formatCurrency(bp.total_ativo)}</span>
       </div>
     </div>
   )
@@ -6176,7 +6165,7 @@ function BPPassivoView({ bp, editavel, onChange }: { bp: BP; editavel: boolean; 
 
       <div className="bg-[color:var(--claude-coral)]/5 rounded-xl border border-[color:var(--claude-coral)]/20 px-6 py-4 flex items-center justify-between">
         <span className="headline text-[18px] tracking-editorial">Total Passivo</span>
-        <span className="text-[22px] font-mono tabular-nums font-semibold">{formatBRL(bp.total_passivo)}</span>
+        <span className="text-[22px] font-mono tabular-nums font-semibold">{formatCurrency(bp.total_passivo)}</span>
       </div>
     </div>
   )
@@ -6198,7 +6187,7 @@ function BPPLView({ bp, editavel, onChange }: { bp: BP; editavel: boolean; onCha
       <div className="bg-[color:var(--claude-ink)]/5 rounded-xl border border-[color:var(--claude-ink)]/15 px-6 py-4 flex items-center justify-between">
         <span className="headline text-[18px] tracking-editorial">Total Patrimônio Líquido</span>
         <span className={`text-[22px] font-mono tabular-nums font-semibold ${bp.total_patrimonio_liquido < 0 ? 'text-[color:var(--claude-coral)]' : ''}`}>
-          {formatBRL(bp.total_patrimonio_liquido)}
+          {formatCurrency(bp.total_patrimonio_liquido)}
         </span>
       </div>
     </div>
@@ -6210,7 +6199,7 @@ function BPGrupo({ titulo, total, children }: { titulo: string; total: number; c
     <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
       <div className="px-6 py-3 border-b border-[color:var(--claude-ink)]/8 flex items-center justify-between">
         <h3 className="headline text-[16px] tracking-editorial">{titulo}</h3>
-        <span className="text-sm font-mono tabular-nums font-semibold">{formatBRL(total)}</span>
+        <span className="text-sm font-mono tabular-nums font-semibold">{formatCurrency(total)}</span>
       </div>
       <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
         {children}
@@ -6236,7 +6225,7 @@ function BPField({ label, valor, onChange, editavel, redutora }: { label: string
         />
       ) : (
         <span className={`w-40 text-sm font-mono tabular-nums text-right px-3 ${redutora ? 'text-[color:var(--claude-coral)]' : ''}`}>
-          {formatBRL(valor)}
+          {formatCurrency(valor)}
         </span>
       )}
     </div>
@@ -6244,7 +6233,7 @@ function BPField({ label, valor, onChange, editavel, redutora }: { label: string
 }
 
 function BPIndicadoresView({ bp, indicadores }: { bp: BP; indicadores: BPIndicadores | null }) {
-  if (!indicadores) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Sem dados suficientes para calcular indicadores.</div>
+  if (!indicadores) return <EmptyState variant="empty" title="Sem dados suficientes para calcular indicadores." />
 
   const tone = (v: number, bom: number, ruim: number, invertido = false) => {
     if (invertido) return v <= bom ? 'sage' : v <= ruim ? 'amber' : 'coral'
@@ -6284,10 +6273,10 @@ function BPIndicadoresView({ bp, indicadores }: { bp: BP; indicadores: BPIndicad
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {grupo.itens.map(item => {
               const valorFmt = item.formato === 'brl'
-                ? formatBRL(item.valor)
+                ? formatCurrency(item.valor)
                 : item.formato === 'pct'
-                  ? `${(item.valor * 100).toFixed(1)}%`
-                  : item.valor.toFixed(2)
+                  ? formatPercent(item.valor)
+                  : formatNumber(item.valor, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
               const bgMap: Record<string, string> = {
                 sage: 'var(--claude-sage)',
                 amber: 'var(--claude-amber)',
@@ -6319,10 +6308,10 @@ function BPIndicadoresView({ bp, indicadores }: { bp: BP; indicadores: BPIndicad
             <p className="text-sm text-[color:var(--claude-ink)]/70 mt-1">Ativo = Passivo + Patrimônio Líquido</p>
           </div>
           <div className="text-right font-mono tabular-nums text-sm">
-            <div>Ativo: <span className="font-semibold">{formatBRL(bp.total_ativo)}</span></div>
-            <div>Passivo + PL: <span className="font-semibold">{formatBRL(bp.total_passivo + bp.total_patrimonio_liquido)}</span></div>
+            <div>Ativo: <span className="font-semibold">{formatCurrency(bp.total_ativo)}</span></div>
+            <div>Passivo + PL: <span className="font-semibold">{formatCurrency(bp.total_passivo + bp.total_patrimonio_liquido)}</span></div>
             {!bp.indicador_fechamento_ok && (
-              <div className="text-[color:var(--claude-coral)]">Diferença: {formatBRL(bp.diferenca_balanceamento)}</div>
+              <div className="text-[color:var(--claude-coral)]">Diferença: {formatCurrency(bp.diferenca_balanceamento)}</div>
             )}
           </div>
         </div>
@@ -6350,8 +6339,8 @@ function BPHistoricoView({ onSelect }: { onSelect: (mes: string) => void }) {
     load()
   }, [])
 
-  if (loading) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Carregando…</div>
-  if (itens.length === 0) return <div className="p-8 text-center text-[color:var(--claude-ink)]/50">Nenhum BP cadastrado ainda.</div>
+  if (loading) return <EmptyState variant="loading" title="Carregando…" />
+  if (itens.length === 0) return <EmptyState variant="empty" title="Nenhum BP cadastrado ainda." />
 
   return (
     <div className="bg-white rounded-xl border border-[color:var(--claude-ink)]/8 overflow-hidden">
@@ -6372,9 +6361,9 @@ function BPHistoricoView({ onSelect }: { onSelect: (mes: string) => void }) {
             <tr key={item.id} className="border-b border-[color:var(--claude-ink)]/5 hover:bg-[color:var(--claude-ink)]/[0.02]">
               <td className="px-6 py-3 text-sm font-mono">{item.competencia}</td>
               <td className="px-6 py-3"><BPStatusBadge status={item.status} /></td>
-              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(item.total_ativo)}</td>
-              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(item.total_passivo)}</td>
-              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatBRL(item.total_patrimonio_liquido)}</td>
+              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatCurrency(item.total_ativo)}</td>
+              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatCurrency(item.total_passivo)}</td>
+              <td className="px-6 py-3 text-sm text-right font-mono tabular-nums">{formatCurrency(item.total_patrimonio_liquido)}</td>
               <td className="px-6 py-3 text-center">
                 {item.indicador_fechamento_ok ? (
                   <Check size={16} className="inline text-[color:var(--claude-sage)]" />
