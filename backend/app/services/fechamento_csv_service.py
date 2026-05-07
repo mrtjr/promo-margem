@@ -3,8 +3,11 @@ Importação de Fechamento de Vendas via CSV (formato ERP: xRelVendaAnalitica).
 
 Pipeline:
   1. parse_csv()         → decodifica (latin-1), extrai linhas "Pedido"
-  2. build_preview()     → matching por código / nome + validação aritmética
-  3. commit_importacao() → aplica resoluções, cria vendas, substitui fechamento do dia
+  2. _agregar_linhas()   → soma qty e calcula preço médio ponderado por SKU
+                           (mesmo produto vendido em N pedidos diferentes vira
+                            1 linha agregada no preview — facilita revisão)
+  3. build_preview()     → matching por código / nome + validação aritmética
+  4. commit_importacao() → aplica resoluções, cria vendas, substitui fechamento do dia
 
 Camadas de verificação:
   Identidade:
@@ -13,15 +16,23 @@ Camadas de verificação:
     - Conflito (código casa A, nome casa B) → "conflito" (user resolve)
     - Sem match → "sem_match" (user resolve)
 
-  Aritmética:
-    - |qtd × v_unit − total| ≤ 0,02
+  Aritmética (na linha agregada):
+    - |qtd × v_unit − total| ≤ max(0,05, total × 0,1%)
+        → tolerância 5 centavos absoluta OU 0,1 % relativa, o maior dos dois.
+        Cobre arredondamento do ERP em pedidos grandes (ex: 30 × 9,47 = 284,10
+        mas total CSV = 284,00) sem mascarar erros materiais.
     - qtd > 0 e qtd < 10000
+
+  Janela temporal:
+    - Linhas com data fora de `data_alvo` recebem status "fora_periodo" e NÃO
+      entram no totalizador nem viram venda. Aparecem no preview separadas.
 
 Custo usado nas vendas = `produto.custo` atual (CMP). CMV do CSV é ignorado
 por decisão de produto (entrada manual é a fonte de verdade pro custo).
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -72,34 +83,40 @@ def _parse_data_br(s: str) -> Optional[date]:
         return None
 
 
-def parse_csv(conteudo_bytes: bytes) -> List[LinhaCSV]:
+def _detectar_formato(texto: str) -> str:
     """
-    Parse do CSV ERP. Expectativa:
-      - encoding latin-1 (ISO-8859-1)
-      - separador ';'
-      - linhas relevantes começam com 'Pedido'; as alternativas (detalhe com
-        vendedor/margem) são ignoradas
-      - colunas de interesse na linha 'Pedido':
-          0: 'Pedido'
-          1: nº pedido
-          2: data (DD/MM/YYYY)
-          3: código do produto (ERP)
-          4: nome do produto
-          10: quantidade (BR decimal)
-          11: valor unitário (BR decimal)
-          12: total (BR decimal)
+    Retorna 'analitico' (xRelVendaAnalitica — col0 == 'Pedido') ou
+    'dinamico' (xRelatorioDinamico — col0 == 'NNNN / PV / Emp: N').
 
-    Tentamos latin-1 → utf-8 como fallback silencioso.
+    Default 'analitico' mantém retrocompat com instalações antigas.
     """
-    for enc in ("latin-1", "utf-8", "cp1252"):
-        try:
-            texto = conteudo_bytes.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        raise ValueError("Não foi possível decodificar o CSV (latin-1/utf-8/cp1252).")
+    for linha in texto.splitlines()[:30]:
+        col0 = linha.split(";", 1)[0].strip()
+        if col0 == "Pedido":
+            return "analitico"
+        if "/ PV /" in col0 or "/ NF /" in col0:
+            return "dinamico"
+        if col0 == "Documento":
+            # header do xRelatorioDinamico
+            return "dinamico"
+    return "analitico"
 
+
+_PRODUTO_DINAMICO_RE = re.compile(r"^(\S+?)-(.+)$")
+
+
+def _parse_csv_analitico(texto: str) -> List[LinhaCSV]:
+    """
+    Parser para o formato xRelVendaAnalitica (legado). 13+ colunas:
+      0: 'Pedido'
+      1: nº pedido
+      2: data (DD/MM/YYYY)
+      3: código do produto (ERP)
+      4: nome do produto
+      10: quantidade (BR decimal)
+      11: valor unitário (BR decimal)
+      12: total (BR decimal)
+    """
     linhas: List[LinhaCSV] = []
     idx = 0
     for raw in StringIO(texto):
@@ -111,7 +128,7 @@ def parse_csv(conteudo_bytes: bytes) -> List[LinhaCSV]:
 
         nome = parts[4].strip()
         if not nome:
-            continue  # linha sem produto — ignora
+            continue
 
         idx += 1
         linhas.append(LinhaCSV(
@@ -125,6 +142,205 @@ def parse_csv(conteudo_bytes: bytes) -> List[LinhaCSV]:
             data=_parse_data_br(parts[2]),
         ))
     return linhas
+
+
+def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
+    """
+    Parser para o formato xRelatorioDinamico (novo, 11 colunas):
+      0: Documento  → 'NNNN / PV / Emp: N'
+      1: Data       → DD/MM/YYYY
+      2: Cliente
+      3: Vend.
+      4: Produto    → '<codigo>-<nome>' (ex: '54-CEBOLA ROXA CX1')
+      5: Unid       → 'SC', 'KG', 'UN'...
+      6: Qtd        → BR decimal
+      7: CMV Total  → BR decimal (ignorado: custo vem do CMP no banco)
+      8: Liquido Total → total real cobrado (entra como `total`)
+      9: (vazio)
+      10: Lista Total → preço de tabela (ignorado)
+
+    Preço unitário não vem explícito no CSV — calculado como
+    `total_liquido / qtd`. Tolerância aritmética (±0,1%) em _validar_linha
+    absorve diferenças de arredondamento do ERP.
+    """
+    linhas: List[LinhaCSV] = []
+    idx = 0
+    for raw in StringIO(texto):
+        parts = raw.rstrip("\r\n").split(";")
+        if len(parts) < 9:
+            continue
+        col0 = parts[0].strip()
+        # Filtros: ignora header / linhas de relatorio / branco
+        if not col0 or col0 == "Documento":
+            continue
+        if "Emiss" in col0 or "Vendas" in parts[0] or "Página" in raw:
+            continue
+        if "/ PV /" not in col0 and "/ NF /" not in col0:
+            continue
+
+        produto_str = parts[4].strip()
+        if not produto_str:
+            continue
+
+        # Extrai <codigo>-<nome>; se nao bater, mantem nome puro sem codigo
+        m = _PRODUTO_DINAMICO_RE.match(produto_str)
+        if m:
+            codigo = m.group(1).strip()
+            nome = m.group(2).strip()
+        else:
+            codigo = None
+            nome = produto_str
+
+        qtd = _parse_num_br(parts[6])
+        total = _parse_num_br(parts[8])  # Liquido Total
+        preco_unit = (total / qtd) if qtd > 0 else 0.0
+
+        # numero do pedido = parte antes do primeiro '/'
+        pedido_num = col0.split("/", 1)[0].strip() or None
+
+        idx += 1
+        linhas.append(LinhaCSV(
+            idx=idx,
+            pedido=pedido_num,
+            codigo=codigo,
+            nome=nome,
+            quantidade=qtd,
+            preco_unitario=round(preco_unit, 4),
+            total=total,
+            data=_parse_data_br(parts[1]),
+        ))
+    return linhas
+
+
+def parse_csv(conteudo_bytes: bytes) -> List[LinhaCSV]:
+    """
+    Parser dispatcher. Detecta automaticamente entre dois formatos do ERP:
+      - xRelVendaAnalitica (legado, col0 = 'Pedido', 13+ colunas com v_unit)
+      - xRelatorioDinamico (novo,  col0 = 'NNNN / PV / Emp: N', 11 colunas)
+
+    Tenta latin-1 → utf-8 → cp1252 como fallback silencioso de encoding.
+    """
+    for enc in ("latin-1", "utf-8", "cp1252"):
+        try:
+            texto = conteudo_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError("Não foi possível decodificar o CSV (latin-1/utf-8/cp1252).")
+
+    formato = _detectar_formato(texto)
+    if formato == "dinamico":
+        return _parse_csv_dinamico(texto)
+    return _parse_csv_analitico(texto)
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Agregação por SKU
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LinhaAgregada:
+    """
+    Soma de N linhas do CSV que apontam para o mesmo SKU.
+    Preserva idx originais para auditoria. preco_unitario é a média ponderada
+    pela quantidade.
+    """
+    idx: int                 # idx do primeiro grupo (estável p/ resolução)
+    pedidos: List[str]       # lista de números de pedido envolvidos
+    codigo: Optional[str]
+    nome: str
+    quantidade: float        # soma
+    preco_unitario: float    # média ponderada
+    total: float             # soma
+    data: Optional[date]     # data da janela (todas as linhas têm data == data_alvo após filtro)
+    ocorrencias: int         # nº de linhas CSV que viraram este agregado
+    idx_originais: List[int] # auditoria
+
+
+def _chave_agregacao(linha: LinhaCSV) -> str:
+    """
+    Chave para agrupar linhas do mesmo SKU. Prioridade:
+      1. código ERP, se preenchido (sem ambiguidade)
+      2. nome normalizado (sem acento, lowercase) como fallback
+    Linhas sem código nem nome ficariam num bucket "" — descartadas.
+    """
+    if linha.codigo and linha.codigo.strip():
+        return f"COD::{linha.codigo.strip()}"
+    if linha.nome:
+        return f"NOM::{normalizar_nome(linha.nome)}"
+    return ""
+
+
+def _agregar_linhas(linhas: List[LinhaCSV]) -> List[LinhaAgregada]:
+    """
+    Agrupa linhas por SKU (código ou nome normalizado), soma quantidades e
+    calcula preço unitário médio ponderado pela quantidade.
+
+    Por que agregar antes do preview?
+      Um único dia tem várias vendas para o mesmo SKU (caixas, cliente A,
+      cliente B…). Mostrar 8× MANGA PALMER no preview força o usuário a
+      resolver match 8 vezes. Agregando, ele resolve 1 vez.
+
+    Idempotência aritmética: a média ponderada permite que o `total_agg ≈
+    qtd_agg × preco_agg` valide igual ao raw — mantém a checagem de sanidade
+    útil mesmo após agregação.
+    """
+    grupos: Dict[str, Dict] = {}
+    ordem_chaves: List[str] = []
+
+    for l in linhas:
+        chave = _chave_agregacao(l)
+        if not chave:
+            # linha sem identidade — preserva como agregado isolado
+            chave = f"ORF::{l.idx}"
+
+        if chave not in grupos:
+            ordem_chaves.append(chave)
+            grupos[chave] = {
+                "idx_primeiro": l.idx,
+                "pedidos": [],
+                "codigo": l.codigo,
+                "nome": l.nome,
+                "qtd_total": 0.0,
+                "soma_receita": 0.0,    # Σ(qtd × preco)
+                "soma_total_csv": 0.0,  # Σ(total CSV)
+                "data_primeira": l.data,
+                "ocorrencias": 0,
+                "idx_originais": [],
+            }
+
+        g = grupos[chave]
+        if l.pedido and l.pedido not in g["pedidos"]:
+            g["pedidos"].append(l.pedido)
+        g["qtd_total"] += l.quantidade
+        g["soma_receita"] += l.quantidade * l.preco_unitario
+        g["soma_total_csv"] += l.total
+        g["ocorrencias"] += 1
+        g["idx_originais"].append(l.idx)
+
+    # Materializa em LinhaAgregada (preço médio ponderado pela quantidade)
+    result: List[LinhaAgregada] = []
+    for chave in ordem_chaves:
+        g = grupos[chave]
+        qtd = g["qtd_total"]
+        preco_medio = (g["soma_receita"] / qtd) if qtd > 0 else 0.0
+        result.append(LinhaAgregada(
+            idx=g["idx_primeiro"],
+            pedidos=g["pedidos"],
+            codigo=g["codigo"],
+            nome=g["nome"],
+            quantidade=qtd,
+            preco_unitario=round(preco_medio, 4),
+            total=round(g["soma_total_csv"], 2),
+            data=g["data_primeira"],
+            ocorrencias=g["ocorrencias"],
+            idx_originais=g["idx_originais"],
+        ))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +415,18 @@ def _match(
 # Validação aritmética
 # ---------------------------------------------------------------------------
 
-def _validar_linha(linha: LinhaCSV) -> List[str]:
-    """Retorna lista de erros. Vazia = linha aritmeticamente válida."""
+def _validar_linha(linha) -> List[str]:
+    """
+    Retorna lista de erros. Vazia = linha aritmeticamente válida.
+
+    Aceita LinhaCSV ou LinhaAgregada (mesmos campos relevantes:
+    quantidade, preco_unitario, total).
+
+    Tolerância aritmética: max(0,05 absoluto, 0,1% relativo do total).
+    Reduz falso-positivo em pedidos grandes onde o ERP arredonda preço
+    unitário antes de gravar (ex: 30 × 9,47 = 284,10 mas total = 284,00 —
+    diferença 0,10 é aceitável).
+    """
     erros: List[str] = []
     if linha.quantidade <= 0:
         erros.append(f"Quantidade inválida: {linha.quantidade}.")
@@ -209,10 +435,13 @@ def _validar_linha(linha: LinhaCSV) -> List[str]:
     if linha.preco_unitario <= 0:
         erros.append(f"Preço unitário inválido: {linha.preco_unitario}.")
     esperado = round(linha.quantidade * linha.preco_unitario, 2)
-    if abs(esperado - linha.total) > 0.02:
+    diff = abs(esperado - linha.total)
+    tolerancia = max(0.05, abs(linha.total) * 0.001)
+    if diff > tolerancia:
         erros.append(
             f"Aritmética inconsistente: {linha.quantidade} × {linha.preco_unitario} "
-            f"= {esperado:.2f}, mas total no CSV = {linha.total:.2f}."
+            f"= {esperado:.2f}, mas total no CSV = {linha.total:.2f} "
+            f"(diferença {diff:.2f}, tolerância {tolerancia:.2f})."
         )
     return erros
 
@@ -224,9 +453,29 @@ def _validar_linha(linha: LinhaCSV) -> List[str]:
 def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
     """
     Retorna dict compatível com schemas.CSVImportPreview.
+
+    Pipeline:
+      1. parse: linhas CSV individuais (1 por item de pedido)
+      2. filtro temporal: linhas com data != data_alvo viram itens
+         "fora_periodo" (não entram no total nem viram venda).
+      3. agregação por SKU: mesmo produto vendido em vários pedidos vira
+         uma linha de preview com qty somada e preço médio ponderado.
+      4. matching + validação aritmética por agregado.
     """
-    linhas_csv = parse_csv(conteudo_bytes)
+    raw_linhas = parse_csv(conteudo_bytes)
     por_codigo, por_nome = _indices_produtos(db)
+
+    # 1. separa as linhas que estão dentro / fora da janela alvo
+    linhas_no_periodo: List[LinhaCSV] = []
+    linhas_fora: List[LinhaCSV] = []
+    for l in raw_linhas:
+        if l.data is None or l.data == data_alvo:
+            linhas_no_periodo.append(l)
+        else:
+            linhas_fora.append(l)
+
+    # 2. agrega por SKU as que entrarão no fechamento
+    agregadas = _agregar_linhas(linhas_no_periodo)
 
     linhas_out: List[Dict] = []
     receita_total = 0.0
@@ -234,29 +483,38 @@ def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
     skus_distintos: set = set()
     ok = pend = erro = 0
 
-    for l in linhas_csv:
+    def _ocorrencias_label(n: int) -> str:
+        return "" if n <= 1 else f" (×{n} pedidos)"
+
+    for ag in agregadas:
         mensagens: List[str] = []
         status = "ok"
 
-        # Validação aritmética
-        erros_arit = _validar_linha(l)
+        # Validação aritmética (no agregado)
+        erros_arit = _validar_linha(ag)
         if erros_arit:
             mensagens.extend(erros_arit)
             status = "erro"
 
-        # Matching
-        status_match, produto, msgs_match = _match(l, por_codigo, por_nome)
+        # Matching (LinhaAgregada compartilha .codigo e .nome com LinhaCSV
+        # — _match só lê esses dois campos)
+        status_match, produto, msgs_match = _match(ag, por_codigo, por_nome)
         mensagens.extend(msgs_match)
-        if status != "erro":  # só sobrescreve se não tem erro aritmético
+        if status != "erro":
             status = status_match
 
-        # Produto matched mas com custo<=0: vira pendente "sem_custo". O usuário
-        # precisa informar o custo antes de gerar a SAÍDA (senão margem = 100%).
         if status == "ok" and produto and (produto.custo or 0) <= 0:
             status = "sem_custo"
             mensagens.append(
                 f"Produto '{produto.nome}' (SKU {produto.sku}) está sem custo unitário. "
                 "Informe o custo para gerar a venda."
+            )
+
+        if ag.ocorrencias > 1:
+            mensagens.insert(
+                0,
+                f"Linha agregada de {ag.ocorrencias} ocorrência(s) do mesmo SKU "
+                f"(qtd somada, preço médio ponderado).",
             )
 
         if status == "ok":
@@ -268,17 +526,29 @@ def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
         else:
             pend += 1
 
-        # Alerta de data
-        if l.data and l.data != data_alvo:
-            mensagens.append(
-                f"Data da linha ({l.data.isoformat()}) diferente da data alvo ({data_alvo.isoformat()})."
-            )
-
-        # Totais só contam linhas OK (resto o user resolve)
         if status == "ok":
-            receita_total += l.total
-            qtd_total += l.quantidade
+            receita_total += ag.total
+            qtd_total += ag.quantidade
 
+        linhas_out.append({
+            "idx": ag.idx,
+            "pedido": ", ".join(ag.pedidos[:3]) + ("…" if len(ag.pedidos) > 3 else "") if ag.pedidos else None,
+            "codigo_csv": ag.codigo,
+            "nome_csv": ag.nome + _ocorrencias_label(ag.ocorrencias),
+            "quantidade": ag.quantidade,
+            "preco_unitario": ag.preco_unitario,
+            "total": ag.total,
+            "data_csv": ag.data.isoformat() if ag.data else None,
+            "status": status,
+            "produto_id": produto.id if produto and status in ("ok", "sem_custo") else None,
+            "produto_nome": produto.nome if produto and status in ("ok", "sem_custo") else None,
+            "mensagens": mensagens,
+            "ocorrencias": ag.ocorrencias,
+            "idx_originais": ag.idx_originais,
+        })
+
+    # 3. linhas fora_periodo: entram no preview como referência (não somam)
+    for l in linhas_fora:
         linhas_out.append({
             "idx": l.idx,
             "pedido": l.pedido,
@@ -288,13 +558,17 @@ def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
             "preco_unitario": l.preco_unitario,
             "total": l.total,
             "data_csv": l.data.isoformat() if l.data else None,
-            "status": status,
-            "produto_id": produto.id if produto and status in ("ok", "sem_custo") else None,
-            "produto_nome": produto.nome if produto and status in ("ok", "sem_custo") else None,
-            "mensagens": mensagens,
+            "status": "fora_periodo",
+            "produto_id": None,
+            "produto_nome": None,
+            "mensagens": [
+                f"Data {l.data.isoformat() if l.data else '—'} fora da janela alvo "
+                f"({data_alvo.isoformat()}); ignorada no fechamento."
+            ],
+            "ocorrencias": 1,
+            "idx_originais": [l.idx],
         })
 
-    # Verifica se já existe fechamento do dia
     ja_existe = db.query(models.Venda).filter(
         models.Venda.data_fechamento == data_alvo
     ).first() is not None
@@ -305,6 +579,9 @@ def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
         "linhas_ok": ok,
         "linhas_pendentes": pend,
         "linhas_erro": erro,
+        "linhas_fora_periodo": len(linhas_fora),
+        "linhas_csv_brutas": len(raw_linhas),
+        "linhas_agregadas": len(agregadas),
         "receita_total": round(receita_total, 2),
         "qtd_total": round(qtd_total, 2),
         "skus_distintos": len(skus_distintos),
@@ -428,8 +705,10 @@ def commit_importacao(
     res_by_idx: Dict[int, Dict] = {r["idx"]: r for r in resolucoes}
 
     # Valida resoluções: todas pendentes/erro precisam ter resolução
+    # Linhas "fora_periodo" são ignoradas silenciosamente — nunca viram venda
+    # nem precisam de resolução (estão fora da janela alvo por construção).
     for l in linhas:
-        if l["status"] == "ok":
+        if l["status"] in ("ok", "fora_periodo"):
             continue
         res = res_by_idx.get(l["idx"])
         if not res:
@@ -462,6 +741,8 @@ def commit_importacao(
     # vindo do CMP (entradas anteriores) ou informado no "criar".
     produtos_sem_custo: List[str] = []
     for l in linhas:
+        if l["status"] == "fora_periodo":
+            continue
         if l["status"] == "ok":
             p = db.query(models.Produto).filter(models.Produto.id == l["produto_id"]).first()
             if not p:
@@ -514,6 +795,10 @@ def commit_importacao(
         # uma ENTRADA espelho — sem ela ficaria débito sem crédito no
         # Histórico de Movimentações e no CMP.
         estabeleceu_custo = False
+
+        # Linhas fora_periodo nunca viram venda (estão fora da janela)
+        if l["status"] == "fora_periodo":
+            continue
 
         if l["status"] == "ok":
             produto = db.query(models.Produto).filter(

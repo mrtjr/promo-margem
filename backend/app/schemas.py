@@ -590,7 +590,13 @@ class CSVLinhaResolucao(BaseModel):
 
 
 class CSVLinhaPreview(BaseModel):
-    """Linha do CSV após parsing + matching. Usada no preview."""
+    """Linha do CSV após parsing + matching. Usada no preview.
+
+    A partir da v0.14, cada linha do preview é um SKU AGREGADO — somando
+    quantidade e preço médio ponderado de N ocorrências do mesmo produto
+    no CSV. `ocorrencias > 1` sinaliza agregação; `idx_originais` lista as
+    linhas brutas que viraram este agregado.
+    """
     idx: int
     pedido: Optional[str] = None
     codigo_csv: Optional[str] = None
@@ -600,19 +606,25 @@ class CSVLinhaPreview(BaseModel):
     total: float
     data_csv: Optional[str] = None
     # Resultado do matching
-    status: str  # "ok" | "conflito" | "sem_match" | "sem_custo" | "erro"
+    status: str  # "ok" | "conflito" | "sem_match" | "sem_custo" | "erro" | "fora_periodo"
     produto_id: Optional[int] = None   # se casou
     produto_nome: Optional[str] = None
     mensagens: List[str] = []          # avisos/erros específicos desta linha
+    # Metadados de agregação (default 1 = sem agregação)
+    ocorrencias: int = 1
+    idx_originais: List[int] = []
 
 
 class CSVImportPreview(BaseModel):
     """Retorno do POST /fechamento/importar-csv?modo=preview."""
     data_alvo: str
-    total_linhas: int
-    linhas_ok: int
-    linhas_pendentes: int
-    linhas_erro: int
+    total_linhas: int                    # nº de itens visíveis no preview
+    linhas_ok: int                       # agregados ok
+    linhas_pendentes: int                # conflito/sem_match/sem_custo
+    linhas_erro: int                     # aritmética inválida
+    linhas_fora_periodo: int = 0         # linhas com data != data_alvo
+    linhas_csv_brutas: int = 0           # nº de linhas originais no CSV
+    linhas_agregadas: int = 0            # nº de SKUs distintos após agregação
     receita_total: float
     qtd_total: float
     skus_distintos: int

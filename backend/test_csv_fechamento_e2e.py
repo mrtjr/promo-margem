@@ -295,19 +295,25 @@ def test_6_reimport_idempotente():
         linha_pedido(2, "25/04/2026", "IDM", "Produto Idempotencia", 3.0, 15.00, 45.00),
     ])
 
-    # 1ª importação
+    # 1ª importação — 2 linhas do mesmo SKU viram 1 agregado (8 unidades)
     preview1 = fechamento_csv_service.build_preview(db, payload, data_alvo)
-    assert preview1["linhas_ok"] == 2
+    assert preview1["linhas_ok"] == 1, f"esperava 1 agregado ok, got {preview1}"
+    assert preview1["linhas_csv_brutas"] == 2
+    assert preview1["linhas_agregadas"] == 1
+    assert preview1["linhas"][0]["ocorrencias"] == 2
+    assert abs(preview1["linhas"][0]["quantidade"] - 8.0) < 0.001  # 5 + 3
+    assert abs(preview1["linhas"][0]["total"] - 120.0) < 0.01      # 75 + 45
+
     fechamento_csv_service.commit_importacao(db, preview1["linhas"], [], data_alvo)
     db.refresh(p)
     estoque_apos_1 = p.estoque_qtd
-    custo_apos_1 = p.custo
     vendas_apos_1 = db.query(models.Venda).filter(
         models.Venda.data_fechamento == data_alvo
     ).count()
 
-    assert vendas_apos_1 == 2, f"1a importacao deveria criar 2 vendas, got {vendas_apos_1}"
-    # Estoque deveria ter caido em 8 (5+3)
+    # Pós agregação: 1 venda por SKU agregado no dia (era 2 antes do v0.14)
+    assert vendas_apos_1 == 1, f"1a importacao deveria criar 1 venda agregada, got {vendas_apos_1}"
+    # Estoque deveria ter caido em 8 (5+3 agregados)
     assert abs(estoque_apos_1 - (200 - 8)) < 0.01, f"estoque apos 1a: {estoque_apos_1}"
 
     # 2ª importação (mesmo CSV, mesmo dia) — deve substituir, nao duplicar
@@ -320,8 +326,8 @@ def test_6_reimport_idempotente():
         models.Venda.data_fechamento == data_alvo
     ).count()
 
-    assert vendas_apos_2 == 2, \
-        f"re-import deveria manter 2 vendas (substituicao), got {vendas_apos_2}"
+    assert vendas_apos_2 == 1, \
+        f"re-import deveria manter 1 venda agregada (substituicao), got {vendas_apos_2}"
     # Estoque deve ficar IGUAL ao apos a 1a (idempotente)
     assert abs(estoque_apos_2 - estoque_apos_1) < 0.01, \
         f"estoque mudou entre imports: {estoque_apos_1} -> {estoque_apos_2}"
