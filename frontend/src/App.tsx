@@ -2876,17 +2876,25 @@ function BriefingPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2">
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">Margem atual</p>
-                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">{formatPercent(simCesta.margem_atual, { maximumFractionDigits: 2 })}</p>
+                <p className="mt-1">
+                  <MetricValue value={formatPercent(simCesta.margem_atual, { maximumFractionDigits: 2 })} size="xl" />
+                </p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">Margem pós</p>
-                <p className={`kpi-value text-xl mt-1 ${simCesta.status === 'seguro' ? 'text-[color:var(--claude-sage)]' : simCesta.status === 'alerta' ? 'text-[color:var(--claude-amber)]' : 'text-[color:var(--claude-coral)]'}`}>
-                  {formatPercent(simCesta.nova_margem_estimada, { maximumFractionDigits: 2 })}
+                <p className="mt-1">
+                  <MetricValue
+                    value={formatPercent(simCesta.nova_margem_estimada, { maximumFractionDigits: 2 })}
+                    size="xl"
+                    toneClass={simCesta.status === 'seguro' ? 'text-[color:var(--claude-sage)]' : simCesta.status === 'alerta' ? 'text-[color:var(--claude-amber)]' : 'text-[color:var(--claude-coral)]'}
+                  />
                 </p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">Impacto</p>
-                <p className="kpi-value text-xl text-[color:var(--claude-ink)] mt-1">-{formatNumber(simCesta.impacto_pp, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}pp</p>
+                <p className="mt-1">
+                  <MetricValue value={`-${formatNumber(simCesta.impacto_pp, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}pp`} size="xl" />
+                </p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-[color:var(--border)]">
                 <p className="section-label">SKUs afetados</p>
@@ -3346,17 +3354,25 @@ function EnginePromocaoPanel() {
         <div className="grid grid-cols-3 gap-4">
           <div className="claude-card p-3 text-center">
             <p className="section-label">Candidatos elegíveis</p>
-            <p className="kpi-value text-xl text-[color:var(--claude-sage)] mt-1 mono">
-              {response.candidatos_total - response.candidatos_bloqueados - response.candidatos_promo_ativa}
+            <p className="mt-1 inline-block">
+              <MetricValue
+                value={response.candidatos_total - response.candidatos_bloqueados - response.candidatos_promo_ativa}
+                size="xl"
+                toneClass="text-[color:var(--claude-sage)]"
+              />
             </p>
           </div>
           <div className="claude-card p-3 text-center">
             <p className="section-label">Bloqueados (blacklist)</p>
-            <p className="kpi-value text-xl text-[color:var(--claude-stone)] mt-1 mono">{response.candidatos_bloqueados}</p>
+            <p className="mt-1 inline-block">
+              <MetricValue value={response.candidatos_bloqueados} size="xl" toneClass="text-[color:var(--claude-stone)]" />
+            </p>
           </div>
           <div className="claude-card p-3 text-center">
             <p className="section-label">Já em promoção ativa</p>
-            <p className="kpi-value text-xl text-[color:var(--claude-stone)] mt-1 mono">{response.candidatos_promo_ativa}</p>
+            <p className="mt-1 inline-block">
+              <MetricValue value={response.candidatos_promo_ativa} size="xl" toneClass="text-[color:var(--claude-stone)]" />
+            </p>
           </div>
         </div>
       )}
@@ -3450,8 +3466,12 @@ function CestaCard({
             <div className="grid grid-cols-2 gap-2 mt-3">
               <div>
                 <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Margem proj.</p>
-                <p className="kpi-value text-xl mono" style={{ color: cesta.atinge_meta ? 'var(--claude-sage)' : 'var(--claude-coral)' }}>
-                  {formatPercent(cesta.margem_projetada)}
+                <p>
+                  <MetricValue
+                    value={formatPercent(cesta.margem_projetada)}
+                    size="xl"
+                    toneClass={cesta.atinge_meta ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}
+                  />
                 </p>
                 <p className="text-[10px] text-[color:var(--claude-stone)] mono">
                   meta {formatPercent(cesta.meta_margem_pct)}
@@ -3459,8 +3479,11 @@ function CestaCard({
               </div>
               <div>
                 <p className="text-[10px] text-[color:var(--claude-stone)] uppercase">Lucro semanal</p>
-                <p className="kpi-value text-xl mono text-[color:var(--claude-ink)]">
-                  {formatCurrency(cesta.lucro_semanal_projetado || 0, { minimumFractionDigits: 0, maximumFractionDigits: 0, signed: true })}
+                <p>
+                  <MetricValue
+                    value={formatCurrency(cesta.lucro_semanal_projetado || 0, { minimumFractionDigits: 0, maximumFractionDigits: 0, signed: true })}
+                    size="xl"
+                  />
                 </p>
                 <p className="text-[10px] text-[color:var(--claude-stone)] mono">
                   receita {formatCurrency(cesta.receita_projetada || 0, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
@@ -3742,23 +3765,33 @@ function HistoricoPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="claude-card p-4">
           <p className="section-label">Entradas</p>
-          <p className="kpi-value text-2xl text-[color:var(--claude-sage)] mt-1">{totais.entradas}</p>
+          <p className="mt-1">
+            <MetricValue value={totais.entradas} size="2xl" toneClass="text-[color:var(--claude-sage)]" />
+          </p>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">{formatCurrency(totais.valorEntradas)}</p>
         </div>
         <div className="claude-card p-4">
           <p className="section-label">Saídas</p>
-          <p className="kpi-value text-2xl text-[color:var(--claude-coral)] mt-1">{totais.saidas}</p>
+          <p className="mt-1">
+            <MetricValue value={totais.saidas} size="2xl" toneClass="text-[color:var(--claude-coral)]" />
+          </p>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">{formatCurrency(totais.valorSaidas)}</p>
         </div>
         <div className="claude-card p-4">
           <p className="section-label">Quebras</p>
-          <p className="kpi-value text-2xl text-[color:var(--claude-amber)] mt-1">{totais.quebras}</p>
+          <p className="mt-1">
+            <MetricValue value={totais.quebras} size="2xl" toneClass="text-[color:var(--claude-amber)]" />
+          </p>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1 mono">{formatCurrency(totais.valorQuebras)}</p>
         </div>
         <div className="claude-card p-4">
           <p className="section-label">Fluxo líquido</p>
-          <p className={`kpi-value text-2xl mt-1 ${totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}`}>
-            {formatCurrency(totais.valorSaidas - totais.valorEntradas - totais.valorQuebras, { signed: true })}
+          <p className="mt-1">
+            <MetricValue
+              value={formatCurrency(totais.valorSaidas - totais.valorEntradas - totais.valorQuebras, { signed: true })}
+              size="2xl"
+              toneClass={totais.valorSaidas - totais.valorEntradas - totais.valorQuebras >= 0 ? 'text-[color:var(--claude-sage)]' : 'text-[color:var(--claude-coral)]'}
+            />
           </p>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1">Receita − Custo entradas − Quebras</p>
         </div>
