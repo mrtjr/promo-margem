@@ -3,6 +3,7 @@ import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkl
 import axios from 'axios'
 import type { Produto, Grupo, Stats } from './types'
 import { EmptyState } from './components/EmptyState'
+import { MetricValue } from './components/MetricValue'
 import { formatCurrency, formatDate, formatDateTime, formatNumber, formatPercent } from './lib/format'
 
 // API base URL: Electron injeta axios.defaults.baseURL no preload/main.
@@ -1251,7 +1252,11 @@ function DashboardPage({ stats, onNavigate }: any) {
         <div className="claude-card p-3 flex items-center gap-4">
           <div className="text-right">
             <p className="section-label leading-none mb-1">Margem Semana</p>
-            <p className={`kpi-value text-2xl leading-none ${margemSemanaPositiva ? 'text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'text-[color:var(--claude-stone)]' : 'text-[color:var(--claude-coral)]'}`}>{marginPct ?? '—'}</p>
+            <MetricValue
+              value={marginPct ?? '—'}
+              size="2xl"
+              toneClass={margemSemanaPositiva ? 'text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'text-[color:var(--claude-stone)]' : 'text-[color:var(--claude-coral)]'}
+            />
             {marginPct != null && tagMargem(stats?.margem_semana) && (
               <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 leading-none lowercase tracking-wide">{tagMargem(stats?.margem_semana)}</p>
             )}
@@ -1527,13 +1532,16 @@ function KPICard({
   }
   const hasSpark = sparklineData && sparklineData.length >= 2
 
+  const subText = deltaLabel || effectiveSub || ''
   return (
     <div className="claude-card p-5 transition-all hover:shadow-[0_4px_16px_-8px_rgba(28,27,23,0.16)]">
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-2 min-h-[18px]">
         <p className="section-label">{title}</p>
         {delta !== undefined && <BadgeDelta value={delta} format={deltaFormat} invertColor={deltaInvertColor} />}
       </div>
-      <p className="kpi-value text-[28px] leading-none text-[color:var(--claude-ink)] mt-2">{value}</p>
+      <p className="mt-2 min-h-[28px]">
+        <MetricValue value={value} size="28px" />
+      </p>
       {hasSpark ? (
         <div className="mt-3 -mx-1" aria-hidden="true">
           <Sparkline data={sparklineData!} tone={sparkTone} height={28} />
@@ -1541,11 +1549,14 @@ function KPICard({
       ) : (
         <div className="mt-3 h-[28px]" />
       )}
-      <div className="mt-1 flex items-center justify-between">
-        <p className="text-[10px] font-medium text-[color:var(--claude-stone)] uppercase tracking-wide">
-          {deltaLabel || effectiveSub}
+      <div className="mt-1 flex items-center justify-between gap-2 min-h-[14px]">
+        <p
+          className="text-[10px] font-medium text-[color:var(--claude-stone)] uppercase tracking-wide line-clamp-1 flex-1"
+          title={typeof subText === 'string' ? subText : undefined}
+        >
+          {subText}
         </p>
-        <span className={`w-2 h-2 rounded-full ${dotColor[effectiveStatus]}`}></span>
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor[effectiveStatus]}`}></span>
       </div>
     </div>
   )
