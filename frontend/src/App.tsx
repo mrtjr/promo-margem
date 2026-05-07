@@ -65,11 +65,17 @@ function App() {
             icon={<Sparkles size={20} />} 
             label="Chat com IA" 
           />
-          <NavItem 
-            isActive={currentPage === 'produtos'} 
+          <NavItem
+            isActive={currentPage === 'produtos'}
             onClick={() => setCurrentPage('produtos')}
-            icon={<Package size={20} />} 
-            label="Produtos" 
+            icon={<Package size={20} />}
+            label="Produtos"
+          />
+          <NavItem
+            isActive={currentPage === 'clientes'}
+            onClick={() => setCurrentPage('clientes')}
+            icon={<User size={20} />}
+            label="Clientes"
           />
           <div className="mt-4 pt-4 pb-2 px-4 section-label text-[color:var(--claude-cream)]/40 border-t border-white/10">Operações</div>
           <NavItem 
@@ -171,6 +177,7 @@ function App() {
             {currentPage === 'dashboard' && <DashboardPage stats={stats} onNavigate={setCurrentPage} />}
             {currentPage === 'chat' && <ChatPage />}
             {currentPage === 'produtos' && <ProdutosPage />}
+            {currentPage === 'clientes' && <ClientesPage />}
             {currentPage === 'compras' && <ComprasPage onComplete={() => setCurrentPage('produtos')} />}
             {currentPage === 'relatorios' && <RelatoriosPage />}
             {currentPage === 'briefing' && <BriefingPage />}
@@ -3735,6 +3742,292 @@ type Movimentacao = {
   cidade: string | null
   motivo: string | null
   data: string | null
+}
+
+// ============================================================================
+// CLIENTES — ranking RFM + top compradores por produto
+// ============================================================================
+
+interface ClienteRankingItem {
+  cliente_id: number
+  nome: string
+  is_consumidor_final: boolean
+  total_compras_periodo: number
+  valor_periodo: number
+  ticket_medio: number
+  ultima_compra: string | null
+  primeira_compra: string | null
+  dias_desde_ultima: number | null
+  score_r: number
+  score_f: number
+  score_m: number
+  segmento: string
+  segmento_label: string
+}
+
+interface TopCompradorItem {
+  cliente_id: number
+  nome: string
+  is_consumidor_final: boolean
+  quantidade: number
+  valor: number
+  transacoes: number
+  ultima_compra: string | null
+}
+
+const SEGMENTO_TONE: Record<string, string> = {
+  champion: 'pill-ok',
+  loyal: 'pill-ok',
+  big_spender: 'pill-warn',
+  at_risk: 'pill-warn',
+  lost: 'pill-alert',
+  new: 'pill-muted',
+  regular: 'pill-muted',
+}
+
+function ClientesPage() {
+  const [aba, setAba] = useState<'ranking' | 'por_produto'>('ranking')
+  const [periodo, setPeriodo] = useState(30)
+  const [incluirCF, setIncluirCF] = useState(false)
+  const [ranking, setRanking] = useState<ClienteRankingItem[]>([])
+  const [loadingRanking, setLoadingRanking] = useState(true)
+
+  const [produtos, setProdutos] = useState<Produto[]>([])
+  const [produtoSel, setProdutoSel] = useState<number | null>(null)
+  const [topCompradores, setTopCompradores] = useState<TopCompradorItem[]>([])
+  const [loadingTop, setLoadingTop] = useState(false)
+
+  useEffect(() => {
+    setLoadingRanking(true)
+    axios
+      .get(`${API_URL}/clientes/ranking`, {
+        params: {
+          periodo_dias: periodo,
+          limit: 100,
+          incluir_consumidor_final: incluirCF,
+        },
+      })
+      .then((res) => setRanking(res.data))
+      .catch((err) => console.error('Erro ao carregar ranking:', err))
+      .finally(() => setLoadingRanking(false))
+  }, [periodo, incluirCF])
+
+  useEffect(() => {
+    if (aba !== 'por_produto') return
+    if (produtos.length > 0) return
+    axios.get(`${API_URL}/produtos`).then((res) => {
+      setProdutos(res.data)
+      if (res.data.length && produtoSel === null) setProdutoSel(res.data[0].id)
+    })
+  }, [aba])
+
+  useEffect(() => {
+    if (aba !== 'por_produto' || produtoSel === null) return
+    setLoadingTop(true)
+    axios
+      .get(`${API_URL}/produtos/${produtoSel}/top-compradores`, {
+        params: { periodo_dias: periodo, limit: 15, incluir_consumidor_final: true },
+      })
+      .then((res) => setTopCompradores(res.data.compradores || []))
+      .catch((err) => console.error('Erro ao carregar top compradores:', err))
+      .finally(() => setLoadingTop(false))
+  }, [aba, produtoSel, periodo])
+
+  return (
+    <div className="max-w-7xl mx-auto p-8 space-y-6">
+      <header className="flex justify-between items-end">
+        <div>
+          <p className="section-label mb-1">Análise comercial · {periodo} dias</p>
+          <h2 className="headline text-4xl tracking-editorial">Clientes</h2>
+          <p className="text-[color:var(--claude-stone)] mt-1 text-sm">
+            Ranking de compradores com segmentação RFM (Recency / Frequency / Monetary).
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <select
+            value={periodo}
+            onChange={(e) => setPeriodo(Number(e.target.value))}
+            className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+          >
+            <option value={7}>7 dias</option>
+            <option value={30}>30 dias</option>
+            <option value={60}>60 dias</option>
+            <option value={90}>90 dias</option>
+            <option value={180}>180 dias</option>
+            <option value={365}>1 ano</option>
+          </select>
+        </div>
+      </header>
+
+      <div className="flex gap-2 border-b border-[color:var(--border)]">
+        {(['ranking', 'por_produto'] as const).map((a) => (
+          <button
+            key={a}
+            onClick={() => setAba(a)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
+              aba === a
+                ? 'border-[color:var(--claude-coral)] text-[color:var(--claude-ink)]'
+                : 'border-transparent text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)]'
+            }`}
+          >
+            {a === 'ranking' ? 'Ranking de clientes' : 'Top compradores por produto'}
+          </button>
+        ))}
+      </div>
+
+      {aba === 'ranking' && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 text-xs">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={incluirCF}
+                onChange={(e) => setIncluirCF(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-[color:var(--claude-stone)]">Incluir CONSUMIDOR FINAL (balcão anônimo)</span>
+            </label>
+          </div>
+
+          <div className="claude-card overflow-hidden">
+            {loadingRanking ? (
+              <EmptyState variant="loading" title="Calculando RFM…" />
+            ) : ranking.length === 0 ? (
+              <EmptyState
+                variant="empty"
+                icon={<User size={32} />}
+                title="Nenhum cliente com vendas no período."
+                description="Importe um CSV de fechamento para popular o ranking."
+              />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-[color:var(--claude-cream-deep)]/40 text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+                    <th className="px-4 py-3 text-left">Cliente</th>
+                    <th className="px-4 py-3 text-right">Valor ({periodo}d)</th>
+                    <th className="px-4 py-3 text-right">Compras</th>
+                    <th className="px-4 py-3 text-right">Ticket méd.</th>
+                    <th className="px-4 py-3 text-right">Última</th>
+                    <th className="px-4 py-3 text-center">R / F / M</th>
+                    <th className="px-4 py-3 text-left">Segmento</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[color:var(--border)]">
+                  {ranking.map((c) => (
+                    <tr key={c.cliente_id} className="hover:bg-[color:var(--claude-cream-deep)]/20">
+                      <td className="px-4 py-2.5">
+                        <div className="font-medium text-[color:var(--claude-ink)]">{c.nome}</div>
+                        {c.is_consumidor_final && (
+                          <div className="text-[10px] text-[color:var(--claude-stone)] uppercase">balcão anônimo</div>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        <MetricValue value={formatCurrency(c.valor_periodo)} size="sm" />
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono tabular-nums">{c.total_compras_periodo}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        <MetricValue value={formatCurrency(c.ticket_medio)} size="sm" />
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono tabular-nums text-[color:var(--claude-stone)]">
+                        {c.dias_desde_ultima === null
+                          ? '—'
+                          : c.dias_desde_ultima === 0
+                            ? 'hoje'
+                            : `${c.dias_desde_ultima}d`}
+                      </td>
+                      <td className="px-4 py-2.5 text-center font-mono tabular-nums text-xs">
+                        <span className="inline-flex gap-1">
+                          <span className="px-1.5 py-0.5 rounded bg-[color:var(--claude-cream-deep)]">{c.score_r}</span>
+                          <span className="px-1.5 py-0.5 rounded bg-[color:var(--claude-cream-deep)]">{c.score_f}</span>
+                          <span className="px-1.5 py-0.5 rounded bg-[color:var(--claude-cream-deep)]">{c.score_m}</span>
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`pill ${SEGMENTO_TONE[c.segmento] || 'pill-muted'}`}>
+                          {c.segmento_label}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="text-[11px] text-[color:var(--claude-stone)]">
+            <strong>RFM:</strong> Recency (R, dias desde última compra) · Frequency (F, nº de transações) ·
+            Monetary (M, R$ acumulado). Score 1–5 por dimensão; 5 é melhor.
+          </div>
+        </div>
+      )}
+
+      {aba === 'por_produto' && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-[color:var(--claude-stone)] uppercase tracking-wide">Produto:</label>
+            <select
+              value={produtoSel ?? ''}
+              onChange={(e) => setProdutoSel(Number(e.target.value))}
+              className="flex-1 px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white"
+            >
+              {produtos.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.nome} ({p.sku})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="claude-card overflow-hidden">
+            {loadingTop ? (
+              <EmptyState variant="loading" title="Carregando…" />
+            ) : topCompradores.length === 0 ? (
+              <EmptyState variant="empty" compact title="Nenhum comprador no período." />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-[color:var(--claude-cream-deep)]/40 text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+                    <th className="px-4 py-3 text-left">Cliente</th>
+                    <th className="px-4 py-3 text-right">Quantidade</th>
+                    <th className="px-4 py-3 text-right">Valor</th>
+                    <th className="px-4 py-3 text-right">Transações</th>
+                    <th className="px-4 py-3 text-right">Última</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[color:var(--border)]">
+                  {topCompradores.map((c, idx) => (
+                    <tr key={c.cliente_id} className="hover:bg-[color:var(--claude-cream-deep)]/20">
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[color:var(--claude-stone)] font-mono tabular-nums w-6">
+                            {idx + 1}.
+                          </span>
+                          <span className="font-medium text-[color:var(--claude-ink)]">{c.nome}</span>
+                          {c.is_consumidor_final && (
+                            <span className="text-[10px] text-[color:var(--claude-stone)] uppercase">balcão</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono tabular-nums">
+                        {formatNumber(c.quantidade, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        <MetricValue value={formatCurrency(c.valor)} size="sm" />
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono tabular-nums">{c.transacoes}</td>
+                      <td className="px-4 py-2.5 text-right font-mono tabular-nums text-[color:var(--claude-stone)]">
+                        {c.ultima_compra || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function HistoricoPage() {

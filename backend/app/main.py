@@ -31,6 +31,7 @@ from .services import (
     engine_promocao_service,
     dfc_service,
     dmpl_service,
+    cliente_service,
 )
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
@@ -1335,3 +1336,110 @@ async def webhook_pdv_vendas(
         "venda_id": venda_id,
         "idempotency_key": evento.idempotency_key,
     }
+
+
+# ============================================================================
+# Clientes — ranking RFM + top compradores por produto
+# ============================================================================
+
+@app.get("/clientes/ranking")
+def clientes_ranking(
+    periodo_dias: int = 30,
+    limit: int = 50,
+    incluir_consumidor_final: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Ranking de clientes na janela de N dias com scores R/F/M e segmento.
+
+    Default: exclui CONSUMIDOR FINAL (balcão anônimo) — passe
+    `?incluir_consumidor_final=true` se quiser ele incluído.
+    """
+    return cliente_service.top_clientes(
+        db,
+        periodo_dias=periodo_dias,
+        limit=limit,
+        incluir_consumidor_final=incluir_consumidor_final,
+    )
+
+
+@app.get("/clientes/{cliente_id}")
+def cliente_detalhe(
+    cliente_id: int,
+    periodo_dias: int = 90,
+    top_skus_n: int = 10,
+    db: Session = Depends(get_db),
+):
+    detalhe = cliente_service.detalhe_cliente(
+        db, cliente_id, periodo_dias=periodo_dias, top_skus_n=top_skus_n,
+    )
+    if not detalhe:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado.")
+    return detalhe
+
+
+@app.get("/produtos/{produto_id}/top-compradores")
+def produto_top_compradores(
+    produto_id: int,
+    periodo_dias: int = 30,
+    limit: int = 10,
+    incluir_consumidor_final: bool = True,
+    db: Session = Depends(get_db),
+):
+    """
+    Top N compradores de um SKU específico na janela. Por default INCLUI
+    consumidor final (balcão pode ser fatia relevante por produto).
+    """
+    produto = db.query(models.Produto).filter(models.Produto.id == produto_id).first()
+    if not produto:
+        raise HTTPException(status_code=404, detail="Produto não encontrado.")
+    return {
+        "produto": {"id": produto.id, "sku": produto.sku, "nome": produto.nome},
+        "periodo_dias": periodo_dias,
+        "compradores": cliente_service.top_compradores_produto(
+            db, produto_id,
+            periodo_dias=periodo_dias,
+            limit=limit,
+            incluir_consumidor_final=incluir_consumidor_final,
+        ),
+    }
+
+
+# ============================================================================
+# CSV multi-data — listar datas + commit todas
+# ============================================================================
+
+@app.post("/fechamento/datas-no-csv")
+async def fechamento_datas_no_csv(arquivo: UploadFile = File(...)):
+    """
+    Inspeciona um CSV e devolve as datas distintas presentes (sem importar
+    nada). Usado pelo frontend pra perguntar "CSV tem N dias — importar
+    todos?" antes de chamar /fechamento/importar-multi-data.
+    """
+    conteudo = await arquivo.read()
+    try:
+        datas = fechamento_csv_service.datas_no_csv(conteudo)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {
+        "datas": [d.isoformat() for d in datas],
+        "total_datas": len(datas),
+    }
+
+
+@app.post("/fechamento/importar-multi-data")
+async def fechamento_importar_multi_data(
+    arquivo: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Importa TODAS as datas presentes no CSV de uma vez.
+    Cada dia substitui apenas o seu fechamento. Linhas pendentes (sem_match,
+    conflito, sem_custo) BLOQUEIAM a operação — resolva com o fluxo
+    single-day primeiro ou reimporte com produtos pré-cadastrados.
+    """
+    conteudo = await arquivo.read()
+    try:
+        return fechamento_csv_service.commit_todas_datas(db, conteudo)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))

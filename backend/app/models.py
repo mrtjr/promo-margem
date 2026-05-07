@@ -69,11 +69,44 @@ class HistoricoMargem(Base):
     custo_total = Column(Float)
     alerta_disparado = Column(Boolean, default=False)
 
+class Cliente(Base):
+    """
+    Cliente identificado pelo CSV de fechamento. Chave de identidade é o
+    `nome_normalizado` (sem acento, lowercase, espaços colapsados) — único.
+
+    "CONSUMIDOR FINAL" é tratado como cliente especial (flag) — agrega todas
+    as vendas de balcão sem identificação. Demais nomes são clientes reais.
+
+    Counters denormalizados (`total_compras_*`, `primeira_compra`,
+    `ultima_compra`) são atualizados na importação de CSV. Vem com
+    eventual-consistency — em caso de drift, recalcular via job offline.
+    """
+    __tablename__ = "clientes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, nullable=False)
+    nome_normalizado = Column(String, unique=True, index=True, nullable=False)
+    is_consumidor_final = Column(Boolean, default=False, nullable=False, index=True)
+    cidade = Column(String, nullable=True)
+
+    # Denormalized counters (atualizados na importação)
+    primeira_compra = Column(Date, nullable=True)
+    ultima_compra = Column(Date, nullable=True, index=True)
+    total_compras_count = Column(Integer, default=0, nullable=False)
+    total_compras_valor = Column(Float, default=0, nullable=False)
+
+    criado_em = Column(DateTime, server_default=func.now())
+    atualizado_em = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    vendas = relationship("Venda", back_populates="cliente")
+
+
 class Venda(Base):
     __tablename__ = "vendas"
 
     id = Column(Integer, primary_key=True, index=True)
     produto_id = Column(Integer, ForeignKey("produtos.id"))
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True, index=True)
     quantidade = Column(Float)  # aceita decimais (vendas por peso)
     preco_venda = Column(Float)
     custo_total = Column(Float)
@@ -81,6 +114,7 @@ class Venda(Base):
     data_fechamento = Column(Date, nullable=True, index=True)  # dia contábil da venda (fonte de verdade pros agregados)
 
     produto = relationship("Produto")
+    cliente = relationship("Cliente", back_populates="vendas")
 
 class Movimentacao(Base):
     __tablename__ = "movimentacoes"

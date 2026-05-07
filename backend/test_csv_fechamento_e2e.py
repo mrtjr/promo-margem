@@ -311,8 +311,9 @@ def test_6_reimport_idempotente():
         models.Venda.data_fechamento == data_alvo
     ).count()
 
-    # Pós agregação: 1 venda por SKU agregado no dia (era 2 antes do v0.14)
-    assert vendas_apos_1 == 1, f"1a importacao deveria criar 1 venda agregada, got {vendas_apos_1}"
+    # Preview agrega no UI (1 linha), mas commit cria 1 Venda por linha bruta
+    # (preserva cliente). Aqui sao 2 atomos sem cliente (legado analitico) → 2 vendas.
+    assert vendas_apos_1 == 2, f"1a importacao deveria criar 2 vendas (1 por atomo bruto), got {vendas_apos_1}"
     # Estoque deveria ter caido em 8 (5+3 agregados)
     assert abs(estoque_apos_1 - (200 - 8)) < 0.01, f"estoque apos 1a: {estoque_apos_1}"
 
@@ -326,8 +327,8 @@ def test_6_reimport_idempotente():
         models.Venda.data_fechamento == data_alvo
     ).count()
 
-    assert vendas_apos_2 == 1, \
-        f"re-import deveria manter 1 venda agregada (substituicao), got {vendas_apos_2}"
+    assert vendas_apos_2 == 2, \
+        f"re-import deveria manter 2 vendas (substituicao), got {vendas_apos_2}"
     # Estoque deve ficar IGUAL ao apos a 1a (idempotente)
     assert abs(estoque_apos_2 - estoque_apos_1) < 0.01, \
         f"estoque mudou entre imports: {estoque_apos_1} -> {estoque_apos_2}"

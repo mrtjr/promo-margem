@@ -504,6 +504,49 @@ def m_010_drop_peso_medida(conn: Connection) -> str:
     return "ok: coluna peso_medida removida"
 
 
+def m_011_clientes_e_vendas_cliente_id(conn: Connection) -> str:
+    """
+    Cria tabela `clientes` e adiciona `vendas.cliente_id` (FK nullable).
+
+    create_all() cria a tabela em DBs novos; este migration so atua em
+    bancos legados sem a tabela ou sem o link em `vendas`.
+    """
+    msgs: List[str] = []
+
+    serial = _serial_pk(conn)
+    now = _now_default(conn)
+    bool_default = "0" if _is_sqlite(conn) else "FALSE"
+    dbl = _double(conn)
+
+    if not _has_table(conn, "clientes"):
+        conn.execute(text(f"""
+            CREATE TABLE clientes (
+                id {serial},
+                nome VARCHAR NOT NULL,
+                nome_normalizado VARCHAR NOT NULL,
+                is_consumidor_final BOOLEAN DEFAULT {bool_default} NOT NULL,
+                cidade VARCHAR,
+                primeira_compra DATE,
+                ultima_compra DATE,
+                total_compras_count INTEGER DEFAULT 0 NOT NULL,
+                total_compras_valor {dbl} DEFAULT 0 NOT NULL,
+                criado_em TIMESTAMP DEFAULT {now},
+                atualizado_em TIMESTAMP DEFAULT {now}
+            )
+        """))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_clientes_nome_norm ON clientes(nome_normalizado)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_clientes_consumidor ON clientes(is_consumidor_final)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_clientes_ultima_compra ON clientes(ultima_compra)"))
+        msgs.append("clientes criada")
+
+    if not _has_column(conn, "vendas", "cliente_id"):
+        conn.execute(text("ALTER TABLE vendas ADD COLUMN cliente_id INTEGER REFERENCES clientes(id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_vendas_cliente_id ON vendas(cliente_id)"))
+        msgs.append("vendas.cliente_id criado")
+
+    return ("ok: " + ", ".join(msgs)) if msgs else "skip: tabela e coluna ja existem"
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
@@ -515,6 +558,7 @@ MIGRATIONS: List[Callable[[Connection], str]] = [
     m_008_engine_promocao,
     m_009_indices_performance,
     m_010_drop_peso_medida,
+    m_011_clientes_e_vendas_cliente_id,
 ]
 
 

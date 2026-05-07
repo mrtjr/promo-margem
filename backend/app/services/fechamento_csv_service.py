@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from io import StringIO
 from typing import Dict, List, Optional, Tuple
@@ -60,6 +60,7 @@ class LinhaCSV:
     preco_unitario: float
     total: float
     data: Optional[date]
+    cliente: Optional[str] = None  # nome do cliente (formato dinamico); None no legado
 
 
 def _parse_num_br(s: str) -> float:
@@ -198,6 +199,8 @@ def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
         # numero do pedido = parte antes do primeiro '/'
         pedido_num = col0.split("/", 1)[0].strip() or None
 
+        cliente_str = parts[2].strip() if len(parts) > 2 else None
+
         idx += 1
         linhas.append(LinhaCSV(
             idx=idx,
@@ -208,6 +211,7 @@ def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
             preco_unitario=round(preco_unit, 4),
             total=total,
             data=_parse_data_br(parts[1]),
+            cliente=cliente_str or None,
         ))
     return linhas
 
@@ -235,6 +239,72 @@ def parse_csv(conteudo_bytes: bytes) -> List[LinhaCSV]:
     return _parse_csv_analitico(texto)
 
 
+def datas_no_csv(conteudo_bytes: bytes) -> List[date]:
+    """
+    Lista as datas distintas presentes no CSV, ordenadas. Use no frontend
+    pra perguntar "CSV tem 4 dias — importar todos?" antes de chamar
+    commit_todas_datas().
+    """
+    linhas = parse_csv(conteudo_bytes)
+    return sorted({l.data for l in linhas if l.data is not None})
+
+
+def commit_todas_datas(
+    db: Session,
+    conteudo_bytes: bytes,
+    resolucoes_por_dia: Optional[Dict[str, List[Dict]]] = None,
+) -> Dict:
+    """
+    Importa TODAS as datas presentes no CSV em sequencia.
+
+    Para cada dia: build_preview(db, csv, dia) → commit_importacao(linhas, ...).
+    Substituicao acontece por dia (cada dia substitui apenas o seu fechamento).
+
+    `resolucoes_por_dia`: dict opcional `{"2026-05-04": [{idx, acao, ...}], ...}`
+    Em uma chamada multi-dia tipica, o frontend processou cada preview
+    individualmente e mandou as resolucoes do user agrupadas por dia.
+
+    Retorna agregado por dia + totais. Em caso de erro num dia, levanta
+    ValueError (transacao do dia eh atomica; dias anteriores ja
+    commitados permanecem).
+    """
+    resolucoes_por_dia = resolucoes_por_dia or {}
+    datas = datas_no_csv(conteudo_bytes)
+    if not datas:
+        raise ValueError("CSV nao tem nenhuma data reconhecivel.")
+
+    resultados: List[Dict] = []
+    total_vendas = 0
+    total_substituidas = 0
+    total_clientes_afetados: set = set()
+
+    for d in datas:
+        d_iso = d.isoformat()
+        preview_d = build_preview(db, conteudo_bytes, d)
+        res_dia = resolucoes_por_dia.get(d_iso, [])
+        try:
+            commit_res = commit_importacao(
+                db, preview_d["linhas"], res_dia, d
+            )
+        except ValueError as e:
+            raise ValueError(f"Erro ao processar {d_iso}: {e}") from e
+
+        resultados.append({
+            "data": d_iso,
+            **commit_res,
+        })
+        total_vendas += commit_res.get("vendas_criadas", 0)
+        total_substituidas += commit_res.get("vendas_removidas_antes", 0)
+
+    return {
+        "datas_processadas": [d.isoformat() for d in datas],
+        "total_dias": len(datas),
+        "total_vendas_criadas": total_vendas,
+        "total_vendas_removidas_antes": total_substituidas,
+        "por_dia": resultados,
+    }
+
+
 
 
 
@@ -246,8 +316,8 @@ def parse_csv(conteudo_bytes: bytes) -> List[LinhaCSV]:
 class LinhaAgregada:
     """
     Soma de N linhas do CSV que apontam para o mesmo SKU.
-    Preserva idx originais para auditoria. preco_unitario é a média ponderada
-    pela quantidade.
+    Preserva idx originais e os atomos brutos para o commit gerar 1 venda
+    por (cliente, sku, dia) — preserva quem comprou o quê.
     """
     idx: int                 # idx do primeiro grupo (estável p/ resolução)
     pedidos: List[str]       # lista de números de pedido envolvidos
@@ -259,6 +329,10 @@ class LinhaAgregada:
     data: Optional[date]     # data da janela (todas as linhas têm data == data_alvo após filtro)
     ocorrencias: int         # nº de linhas CSV que viraram este agregado
     idx_originais: List[int] # auditoria
+    # Linhas brutas (uma por venda atomica, com cliente preservado).
+    # Usadas no commit pra gerar Vendas individuais com cliente_id.
+    # Cada item: {"cliente": str|None, "qtd": float, "preco": float, "total": float, "data": str|None}
+    linhas_brutas: List[Dict] = field(default_factory=list)
 
 
 def _chave_agregacao(linha: LinhaCSV) -> str:
@@ -311,6 +385,7 @@ def _agregar_linhas(linhas: List[LinhaCSV]) -> List[LinhaAgregada]:
                 "data_primeira": l.data,
                 "ocorrencias": 0,
                 "idx_originais": [],
+                "linhas_brutas": [],
             }
 
         g = grupos[chave]
@@ -321,6 +396,15 @@ def _agregar_linhas(linhas: List[LinhaCSV]) -> List[LinhaAgregada]:
         g["soma_total_csv"] += l.total
         g["ocorrencias"] += 1
         g["idx_originais"].append(l.idx)
+        # Preserva atomos pra commit gerar Vendas separadas por cliente/data
+        g["linhas_brutas"].append({
+            "cliente": l.cliente,
+            "qtd": l.quantidade,
+            "preco": l.preco_unitario,
+            "total": l.total,
+            "data": l.data.isoformat() if l.data else None,
+            "pedido": l.pedido,
+        })
 
     # Materializa em LinhaAgregada (preço médio ponderado pela quantidade)
     result: List[LinhaAgregada] = []
@@ -339,6 +423,7 @@ def _agregar_linhas(linhas: List[LinhaCSV]) -> List[LinhaAgregada]:
             data=g["data_primeira"],
             ocorrencias=g["ocorrencias"],
             idx_originais=g["idx_originais"],
+            linhas_brutas=g["linhas_brutas"],
         ))
     return result
 
@@ -545,6 +630,7 @@ def build_preview(db: Session, conteudo_bytes: bytes, data_alvo: date) -> Dict:
             "mensagens": mensagens,
             "ocorrencias": ag.ocorrencias,
             "idx_originais": ag.idx_originais,
+            "linhas_brutas": ag.linhas_brutas,
         })
 
     # 3. linhas fora_periodo: entram no preview como referência (não somam)
@@ -670,6 +756,60 @@ def _apagar_fechamento_do_dia(db: Session, dia: date) -> int:
     return n
 
 
+def _find_or_create_cliente(db: Session, nome_raw: Optional[str]) -> Optional[models.Cliente]:
+    """
+    Localiza cliente por nome_normalizado; cria se nao existir.
+    Retorna None se nome_raw estiver vazio. Nao atualiza counters aqui — fica
+    a cargo de `_recalc_cliente_counters` ser chamado apos commit das vendas.
+    """
+    if not nome_raw or not str(nome_raw).strip():
+        return None
+    nome = str(nome_raw).strip()
+    nome_norm = normalizar_nome(nome)
+    if not nome_norm:
+        return None
+
+    cliente = db.query(models.Cliente).filter(
+        models.Cliente.nome_normalizado == nome_norm
+    ).first()
+    if cliente:
+        return cliente
+
+    is_cf = "consumidor final" in nome_norm
+    cliente = models.Cliente(
+        nome=nome,
+        nome_normalizado=nome_norm,
+        is_consumidor_final=is_cf,
+    )
+    db.add(cliente)
+    db.flush()
+    return cliente
+
+
+def _recalc_cliente_counters(db: Session, cliente_ids: set) -> None:
+    """
+    Recalcula primeira/ultima_compra + total_compras_count + total_compras_valor
+    a partir das Vendas no banco. Idempotente — chame apos qualquer mudanca
+    em vendas vinculadas aos clientes afetados.
+    """
+    if not cliente_ids:
+        return
+    for cid in cliente_ids:
+        cliente = db.query(models.Cliente).filter(models.Cliente.id == cid).first()
+        if not cliente:
+            continue
+        agg = db.query(
+            func.count(models.Venda.id),
+            func.coalesce(func.sum(models.Venda.preco_venda * models.Venda.quantidade), 0.0),
+            func.min(models.Venda.data_fechamento),
+            func.max(models.Venda.data_fechamento),
+        ).filter(models.Venda.cliente_id == cid).first()
+        cliente.total_compras_count = int(agg[0] or 0)
+        cliente.total_compras_valor = float(agg[1] or 0)
+        cliente.primeira_compra = agg[2]
+        cliente.ultima_compra = agg[3]
+
+
 def _proximo_sku_auto(db: Session) -> str:
     """Gera um SKU AUTO-xxxxxx que ainda não existe."""
     import uuid
@@ -776,6 +916,14 @@ def commit_importacao(
         )
 
     # Substitui fechamento do dia se necessário
+    # Capture clientes afetados ANTES de apagar pra recalcular counters depois.
+    clientes_afetados_pre: set = set(
+        cid for (cid,) in db.query(models.Venda.cliente_id).filter(
+            models.Venda.data_fechamento == data_alvo,
+            models.Venda.cliente_id.isnot(None),
+        ).distinct()
+    )
+
     n_removidas = _apagar_fechamento_do_dia(db, data_alvo)
     if n_removidas:
         mensagens.append(f"{n_removidas} venda(s) do dia {data_alvo.isoformat()} removida(s) antes de reimportar.")
@@ -784,6 +932,7 @@ def commit_importacao(
     produtos_associados = 0
     linhas_ignoradas = 0
     vendas_criadas = 0
+    clientes_afetados_post: set = set()
 
     # Acumulador pra VendaDiariaSKU
     agg_sku: Dict[int, Dict] = {}
@@ -904,82 +1053,93 @@ def commit_importacao(
             if not tem_entrada:
                 estabeleceu_custo = True
 
-        qtd = float(l["quantidade"])
-        preco = float(l["preco_unitario"])
+        # ===== Quantidade total agregada (para ajustar estoque + ENTRADA espelho) =====
+        qtd_total_agregada = float(l["quantidade"])
         custo_unit = produto.custo or 0.0
-        custo_total = qtd * custo_unit
-        receita = qtd * preco
 
-        # Timestamp da venda: fim do dia para ficar após qualquer entrada do mesmo dia
+        # Timestamp base: fim do dia (vem após qualquer ENTRADA do mesmo dia)
         ts = datetime.combine(data_alvo, datetime.min.time()) + timedelta(hours=23, minutes=59)
 
-        # ENTRADA espelho: quando o produto foi criado/reativado/teve custo
-        # corrigido nesta importação OU quando ele perdeu o histórico de
-        # ENTRADA na substituição, a SAÍDA da venda fica sem origem contábil.
-        #
-        # Regra (v0.13.1+): cria ENTRADA-espelho APENAS na quantidade que
-        # falta para atender a venda — `max(0, qtd_venda - estoque_atual)`.
-        # Quando o estoque já cobre a venda, não cria nada (evita poluir o
-        # histórico com ENTRADAs fantasmas que não correspondem a compra real).
-        #   - Caso 1 (produto novo): estoque=0 → entra qtd total da venda.
-        #   - Caso 2 (estoque suficiente): nada é criado.
-        #   - Caso 3 (estoque parcial): entra só o déficit.
+        # ENTRADA espelho — calculada sobre a qtd TOTAL agregada (não por linha bruta),
+        # pois o estoque é único por produto. Mesma lógica anterior, mas reposicionada.
         if estabeleceu_custo:
             estoque_atual = produto.estoque_qtd or 0
-            qtd_entrada = max(0.0, qtd - estoque_atual)
+            qtd_entrada = max(0.0, qtd_total_agregada - estoque_atual)
             if qtd_entrada > 0:
                 ts_entrada = datetime.combine(data_alvo, datetime.min.time())
                 mov_in = models.Movimentacao(
                     produto_id=produto.id,
                     tipo="ENTRADA",
                     quantidade=qtd_entrada,
-                    peso=0,  # CSV de fechamento não traz peso; entra zerado
+                    peso=0,
                     custo_unitario=custo_unit,
                     data=ts_entrada,
                 )
                 db.add(mov_in)
-                # Atualiza estoque para refletir a entrada parcial antes da
-                # SAÍDA. Sem isso, a baixa abaixo deixaria o produto com
-                # qtd negativa virtual quando estoque < venda.
                 produto.estoque_qtd = estoque_atual + qtd_entrada
 
-        # Baixa estoque proporcional ao peso médio atual
-        peso_baixado = 0.0
-        if (produto.estoque_qtd or 0) > 0:
-            peso_medio = (produto.estoque_peso or 0) / produto.estoque_qtd if (produto.estoque_qtd or 0) > 0 else 0
-            peso_baixado = qtd * peso_medio
-            produto.estoque_qtd = max(0.0, (produto.estoque_qtd or 0) - qtd)
-            produto.estoque_peso = max(0.0, (produto.estoque_peso or 0) - peso_baixado)
+        # ===== Para cada LINHA BRUTA (atomo), gera 1 Venda preservando cliente =====
+        # Se nao houver linhas_brutas (CSV legado analitico), cai num atomo unico
+        # com qtd/preco do agregado e cliente=None.
+        atomos = l.get("linhas_brutas") or [{
+            "cliente": None,
+            "qtd": qtd_total_agregada,
+            "preco": float(l["preco_unitario"]),
+            "total": float(l["total"]),
+        }]
 
-        # Registra venda
-        venda = models.Venda(
-            produto_id=produto.id,
-            quantidade=qtd,
-            preco_venda=preco,
-            custo_total=custo_total,
-            data=ts,
-            data_fechamento=data_alvo,
-        )
-        db.add(venda)
+        # Baixa de estoque proporcional, em ordem (sequencial)
+        for atomo in atomos:
+            qtd_a = float(atomo.get("qtd") or 0)
+            if qtd_a <= 0:
+                continue
+            preco_a = float(atomo.get("preco") or l["preco_unitario"])
+            custo_total_a = qtd_a * custo_unit
+            receita_a = qtd_a * preco_a
 
-        # Movimentação SAIDA espelho
-        mov = models.Movimentacao(
-            produto_id=produto.id,
-            tipo="SAIDA",
-            quantidade=qtd,
-            peso=peso_baixado,
-            custo_unitario=preco,
-            data=ts,
-        )
-        db.add(mov)
+            # Find/create cliente desta linha bruta
+            cliente_obj = _find_or_create_cliente(db, atomo.get("cliente"))
+            cliente_id = cliente_obj.id if cliente_obj else None
 
-        # Agregado para VDS
-        agg = agg_sku.setdefault(produto.id, {"qtd": 0.0, "receita": 0.0, "custo": 0.0})
-        agg["qtd"] += qtd
-        agg["receita"] += receita
-        agg["custo"] += custo_total
+            # Baixa proporcional do estoque (peso medio na hora)
+            peso_baixado = 0.0
+            if (produto.estoque_qtd or 0) > 0:
+                peso_medio = (produto.estoque_peso or 0) / produto.estoque_qtd if (produto.estoque_qtd or 0) > 0 else 0
+                peso_baixado = qtd_a * peso_medio
+                produto.estoque_qtd = max(0.0, (produto.estoque_qtd or 0) - qtd_a)
+                produto.estoque_peso = max(0.0, (produto.estoque_peso or 0) - peso_baixado)
 
-        vendas_criadas += 1
+            venda = models.Venda(
+                produto_id=produto.id,
+                cliente_id=cliente_id,
+                quantidade=qtd_a,
+                preco_venda=preco_a,
+                custo_total=custo_total_a,
+                data=ts,
+                data_fechamento=data_alvo,
+            )
+            db.add(venda)
+
+            mov = models.Movimentacao(
+                produto_id=produto.id,
+                tipo="SAIDA",
+                quantidade=qtd_a,
+                peso=peso_baixado,
+                custo_unitario=preco_a,
+                data=ts,
+            )
+            db.add(mov)
+
+            if cliente_id:
+                clientes_afetados_post.add(cliente_id)
+
+            # Agregado para VDS
+            agg = agg_sku.setdefault(produto.id, {"qtd": 0.0, "receita": 0.0, "custo": 0.0})
+            agg["qtd"] += qtd_a
+            agg["receita"] += receita_a
+            agg["custo"] += custo_total_a
+
+            vendas_criadas += 1
 
     # VendaDiariaSKU (upsert por produto na data)
     for pid, agg in agg_sku.items():
@@ -1028,6 +1188,11 @@ def commit_importacao(
             alerta_disparado=alerta,
         ))
 
+    # Recalcula counters denormalizados dos clientes afetados (pre + post)
+    todos_afetados = clientes_afetados_pre | clientes_afetados_post
+    if todos_afetados:
+        _recalc_cliente_counters(db, todos_afetados)
+
     db.commit()
 
     return {
@@ -1037,5 +1202,6 @@ def commit_importacao(
         "produtos_criados": produtos_criados,
         "produtos_associados": produtos_associados,
         "linhas_ignoradas": linhas_ignoradas,
+        "clientes_afetados": len(todos_afetados),
         "mensagens": mensagens,
     }

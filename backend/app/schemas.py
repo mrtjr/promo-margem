@@ -613,6 +613,9 @@ class CSVLinhaPreview(BaseModel):
     # Metadados de agregação (default 1 = sem agregação)
     ocorrencias: int = 1
     idx_originais: List[int] = []
+    # Atomos brutos preservados pra commit gerar Venda por (cliente, sku, dia)
+    # Cada item: {"cliente", "qtd", "preco", "total", "data", "pedido"}
+    linhas_brutas: List[dict] = []
 
 
 class CSVImportPreview(BaseModel):
