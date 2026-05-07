@@ -1224,6 +1224,10 @@ function DashboardPage({ stats, onNavigate }: any) {
   const spark14Fat = serieUltimos14
     .filter(p => p.status !== 'sem_vendas')
     .map(p => p.faturamento)
+  // Sparkline 30d para o hero card (mais largo)
+  const spark30Margem = serie
+    .filter(p => p.status !== 'sem_vendas')
+    .map(p => p.margem * 100)
 
   // Delta de margem: última vs média dos 7 anteriores (em pontos percentuais)
   const comVendaAll = serie.filter(p => p.status !== 'sem_vendas').map(p => p.margem * 100)
@@ -1241,144 +1245,197 @@ function DashboardPage({ stats, onNavigate }: any) {
   const faturamentoHoje = stats?.total_vendas_hoje || 0
   const deltaFatPct = mediaPrev7Fat > 0 ? ((faturamentoHoje - mediaPrev7Fat) / mediaPrev7Fat) * 100 : 0
 
+  // Tone do hero (Margem Semana) — usado no border-left, gradient e sparkline
+  const heroToneVar =
+    margemSemanaStatus === 'sem_vendas' ? 'var(--claude-stone)'
+    : margemSemanaPositiva ? 'var(--claude-sage)'
+    : margemSemanaStatus === 'atencao' ? 'var(--claude-amber)'
+    : 'var(--claude-coral)'
+  const heroToneClass =
+    margemSemanaStatus === 'sem_vendas' ? 'text-[color:var(--claude-stone)]'
+    : margemSemanaPositiva ? 'text-[color:var(--claude-sage)]'
+    : margemSemanaStatus === 'atencao' ? 'text-[color:var(--claude-amber)]'
+    : 'text-[color:var(--claude-coral)]'
+  const heroPillClass =
+    margemSemanaStatus === 'sem_vendas' ? 'pill pill-muted'
+    : margemSemanaPositiva ? 'pill pill-ok'
+    : margemSemanaStatus === 'atencao' ? 'pill pill-warn'
+    : 'pill pill-alert'
+  const heroSparkTone: SparkTone =
+    margemSemanaStatus === 'sem_vendas' ? 'stone'
+    : margemSemanaPositiva ? 'sage'
+    : margemSemanaStatus === 'atencao' ? 'amber'
+    : 'coral'
+  const heroDeltaSemana = ultMargem != null && mediaPrev7Margem != null ? ultMargem - mediaPrev7Margem : 0
+
   return (
-    <div className="max-w-6xl mx-auto p-8 space-y-8">
-      <header className="flex justify-between items-end">
-        <div>
-          <p className="section-label mb-2">Visão Geral · {formatDate(new Date(), { weekday: 'long', day: '2-digit', month: 'long' })}</p>
-          <h2 className="headline text-4xl tracking-editorial">Painel de Decisão</h2>
-          <p className="text-[color:var(--claude-stone)] mt-1">Inteligência aplicada para garantir seus lucros.</p>
-        </div>
-        <div className="claude-card p-3 flex items-center gap-4">
-          <div className="text-right">
-            <p className="section-label leading-none mb-1">Margem Semana</p>
-            <MetricValue
-              value={marginPct ?? '—'}
-              size="2xl"
-              toneClass={margemSemanaPositiva ? 'text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'text-[color:var(--claude-stone)]' : 'text-[color:var(--claude-coral)]'}
-            />
-            {marginPct != null && tagMargem(stats?.margem_semana) && (
-              <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 leading-none lowercase tracking-wide">{tagMargem(stats?.margem_semana)}</p>
-            )}
-          </div>
-          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${margemSemanaPositiva ? 'bg-[color:var(--claude-sage)]/12 text-[color:var(--claude-sage)]' : margemSemanaStatus === 'sem_vendas' ? 'bg-[color:var(--claude-stone)]/12 text-[color:var(--claude-stone)]' : 'bg-[color:var(--claude-coral)]/12 text-[color:var(--claude-coral)]'}`}>
-            <Gauge size={22} />
-          </div>
-        </div>
+    <div className="max-w-7xl mx-auto p-8 space-y-5">
+      {/* Header compacto — sem KPI lateral (movido pra hero) */}
+      <header>
+        <p className="section-label mb-1">Visão Geral · {formatDate(new Date(), { weekday: 'long', day: '2-digit', month: 'long' })}</p>
+        <h2 className="headline text-4xl tracking-editorial">Painel de Decisão</h2>
+        <p className="text-[color:var(--claude-stone)] mt-1 text-sm">Inteligência aplicada para garantir seus lucros.</p>
       </header>
 
-      {/* Stats Grid — Tremor-style: valor + delta + sparkline */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-        <KPICard
-          title="Margem do Dia"
-          value={stats?.margem_dia != null ? formatPercent(stats.margem_dia) : formatPercent(ultMargem, { scale: 1 })}
-          status={margemToKpiStatus(stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null))}
-          delta={deltaMargem}
-          deltaFormat="pp"
-          deltaLabel={() => {
-            const m = stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null)
-            const tag = tagMargem(m)
-            const base = mediaPrev7Margem != null ? `vs media 7d (${formatPercent(mediaPrev7Margem, { scale: 1 })})` : 'Meta 17-19%'
-            return tag ? `${base} · ${tag}` : base
+      {/* ===================================================================
+          BENTO ROW 1 — Hero (col-span-7) + 2 KPIs medium (col-span-5)
+          Inspirado em Muzli/Orbix 2026: hero metric com 2.6x peso visual
+          dos satellites; 12-col grid com 20px gutters.
+          =================================================================== */}
+      <div className="grid grid-cols-12 gap-5">
+        {/* HERO: Margem Semana com sparkline 30d e badge premium */}
+        <div
+          className="col-span-12 lg:col-span-6 claude-card relative overflow-hidden p-7"
+          style={{
+            background: `radial-gradient(circle at 100% 0%, color-mix(in srgb, ${heroToneVar} 10%, transparent) 0%, transparent 55%), linear-gradient(180deg, #FFFFFF 0%, color-mix(in srgb, var(--claude-cream-deep) 50%, white) 100%)`,
+            borderLeft: `3px solid ${heroToneVar}`,
           }}
-          sparklineData={spark14Margem}
-        />
-        <KPICard
-          title="Faturamento Hoje"
-          value={formatCurrency(faturamentoHoje)}
-          status={faturamentoHoje > 0 ? 'up' : 'neutral'}
-          delta={deltaFatPct}
-          deltaFormat="pct"
-          deltaLabel={mediaPrev7Fat > 0 ? `vs média 7d (${formatCurrency(mediaPrev7Fat, { minimumFractionDigits: 0, maximumFractionDigits: 0 })})` : 'Faturamento do dia'}
-          sparklineData={spark14Fat}
-        />
-        <KPICard
-          title="Projeção D+1"
-          value={projecaoPct ?? '—'}
-          subValue={`Confiança: ${projecaoConfianca}`}
-          status={projecaoConfianca === "sem_dados" ? 'neutral' : margemToKpiStatus(projecao?.margem_prevista)}
-        />
-        <KPICard
-          title="Rupturas"
-          value={stats?.rupturas ?? 0}
-          subValue={(() => {
-            const rupt = stats?.rupturas ?? 0
-            const skus = stats?.total_skus
-            if (skus == null) return rupt > 0 ? `${rupt} zerado${rupt === 1 ? '' : 's'} · repor` : 'sem dados'
-            const skuLabel = skus === 1 ? 'SKU' : 'SKUs'
-            if (rupt > 0) return `${rupt}/${skus} zerado${rupt === 1 ? '' : 's'} · repor`
-            return `${skus} ${skuLabel} · sem rupturas`
-          })()}
-          status={(stats?.rupturas ?? 0) > 0 ? "alert" : stats?.total_skus == null ? "neutral" : "ok"}
-        />
-        <KPICard
-          title="Quebras (mês)"
-          value={quebraResumo
-            ? formatCurrency(quebraResumo.valor_total)
-            : '—'}
-          subValue={!quebraResumo
-            ? 'Sem dados'
-            : quebraResumo.eventos === 0
-              ? 'Sem quebras registradas no mes'
-              : `${formatPercent(quebraResumo.pct_faturamento, { maximumFractionDigits: 2 })} do faturamento · ${quebraResumo.eventos} evento${quebraResumo.eventos === 1 ? '' : 's'}`}
-          status={!quebraResumo ? 'neutral' : quebraResumo.pct_faturamento > 0.02 ? 'alert' : quebraResumo.pct_faturamento > 0.015 ? 'warn' : 'ok'}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-8">
-          <div className="claude-card p-6 relative overflow-hidden">
-            <div className="flex items-start justify-between mb-4">
+        >
+          {/* halo glow sutil */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -top-24 -right-16 w-72 h-72 rounded-full blur-3xl opacity-20"
+            style={{ background: heroToneVar }}
+          />
+          <div className="relative">
+            <div className="flex items-start justify-between mb-2">
               <div>
-                <p className="section-label mb-1">Últimos 30 dias</p>
-                <h3 className="headline text-2xl">Tendência de Margem</h3>
-                <p className="text-xs text-[color:var(--claude-stone)] mt-1">
-                  Faixa verde = meta 17-19%. Dots coral = margem acima da meta (&gt;19,5%). Ambar = abaixo. Cinza = sem venda.
-                </p>
+                <p className="section-label">Margem Semana · 7 dias</p>
+                <p className="text-xs text-[color:var(--claude-stone)] mt-1">Meta institucional 17 – 19 %</p>
               </div>
-              {diasComVenda > 0 && (
-                <div className="flex gap-2 text-[10px]">
-                  <span className="pill pill-ok"><span className="mono">{diasSaudaveis}</span> saudável</span>
-                  {diasAcima > 0 && <span className="pill pill-alert"><span className="mono">{diasAcima}</span> acima</span>}
-                  {diasAbaixo > 0 && <span className="pill pill-warn"><span className="mono">{diasAbaixo}</span> abaixo</span>}
-                </div>
+              {marginPct != null && tagMargem(stats?.margem_semana) && (
+                <span className={heroPillClass}>{tagMargem(stats?.margem_semana)}</span>
               )}
             </div>
-            <MargemTrendChart serie={serie} />
-          </div>
 
-          <div className="rounded-2xl p-6 text-white shadow-lg overflow-hidden relative"
-               style={{ background: 'linear-gradient(135deg, #1C1B17 0%, #2A2620 60%, #CC785C 180%)' }}>
-            <div className="flex justify-between items-start mb-6">
-              <div>
-                <h3 className="headline text-2xl mb-1 flex items-center gap-2 text-white">
-                  <Sparkles className="text-[color:var(--claude-coral-soft)]" size={20} /> Copiloto IA
-                </h3>
-                <p className="text-white/60 text-sm">Motor pronto para responder qualquer dúvida sobre o dia.</p>
+            <div className="flex items-end justify-between mt-5 gap-4">
+              <MetricValue value={marginPct ?? '—'} size="hero" toneClass={heroToneClass} />
+              <div className="pb-3 flex flex-col items-end gap-2">
+                <BadgeDelta value={heroDeltaSemana} format="pp" />
+                <span className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">vs semana anterior</span>
               </div>
-              <button
-                onClick={() => onNavigate('chat')}
-                className="bg-white/10 hover:bg-white/20 text-white text-xs font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
-              >
-                Abrir Chat <ArrowRight size={14} />
-              </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <button onClick={() => onNavigate('chat')} className="bg-white/8 hover:bg-white/15 transition-colors p-4 rounded-xl border border-white/10 text-left">
-                <p className="section-label text-[color:var(--claude-coral-soft)] mb-2">Comando Sugerido</p>
-                <p className="serif text-lg leading-tight mb-1">Como está meu lucro hoje?</p>
-                <p className="text-[10px] text-white/50 uppercase tracking-widest">Toque para perguntar</p>
-              </button>
-              <button onClick={() => onNavigate('chat')} className="bg-white/8 hover:bg-white/15 transition-colors p-4 rounded-xl border border-white/10 text-left">
-                <p className="section-label text-[color:var(--claude-coral-soft)] mb-2">Comando Sugerido</p>
-                <p className="serif text-lg leading-tight mb-1">Análise de rupturas.</p>
-                <p className="text-[10px] text-white/50 uppercase tracking-widest">Toque para perguntar</p>
-              </button>
+
+            {spark30Margem.length >= 2 && (
+              <div className="mt-5">
+                <Sparkline data={spark30Margem} tone={heroSparkTone} height={48} />
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center gap-4 text-[11px] text-[color:var(--claude-stone)] uppercase tracking-wide">
+              <span className="flex items-center gap-1.5"><Gauge size={12} /> 30 dias</span>
+              {diasComVenda > 0 && (
+                <>
+                  <span className="mono"><b className="text-[color:var(--claude-sage)]">{diasSaudaveis}</b>/{diasComVenda} dias na meta</span>
+                  {diasAcima > 0 && <span className="mono"><b className="text-[color:var(--claude-coral)]">{diasAcima}</b> acima</span>}
+                  {diasAbaixo > 0 && <span className="mono"><b className="text-[color:var(--claude-amber)]">{diasAbaixo}</b> abaixo</span>}
+                </>
+              )}
             </div>
           </div>
         </div>
 
-        <div className="claude-card p-6 flex flex-col">
+        {/* KPI medium — Margem do Dia */}
+        <div className="col-span-12 sm:col-span-6 lg:col-span-3">
+          <KPICard
+            title="Margem do Dia"
+            value={stats?.margem_dia != null ? formatPercent(stats.margem_dia) : formatPercent(ultMargem, { scale: 1 })}
+            status={margemToKpiStatus(stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null))}
+            delta={deltaMargem}
+            deltaFormat="pp"
+            deltaLabel={(() => {
+              const m = stats?.margem_dia ?? (ultMargem != null ? ultMargem / 100 : null)
+              const tag = tagMargem(m)
+              const base = mediaPrev7Margem != null ? `vs média 7d (${formatPercent(mediaPrev7Margem, { scale: 1 })})` : 'Meta 17–19%'
+              return tag ? `${base} · ${tag}` : base
+            })()}
+            sparklineData={spark14Margem}
+          />
+        </div>
+
+        {/* KPI medium — Faturamento Hoje */}
+        <div className="col-span-12 sm:col-span-6 lg:col-span-3">
+          <KPICard
+            title="Faturamento Hoje"
+            value={formatCurrency(faturamentoHoje)}
+            status={faturamentoHoje > 0 ? 'up' : 'neutral'}
+            delta={deltaFatPct}
+            deltaFormat="pct"
+            deltaLabel={mediaPrev7Fat > 0 ? `vs média 7d (${formatCurrency(mediaPrev7Fat, { minimumFractionDigits: 0, maximumFractionDigits: 0 })})` : 'Faturamento do dia'}
+            sparklineData={spark14Fat}
+          />
+        </div>
+      </div>
+
+      {/* ===================================================================
+          BENTO ROW 2 — 3 KPIs satellite (col-span-4 cada)
+          Projeção D+1 / Rupturas / Quebras (mês)
+          =================================================================== */}
+      <div className="grid grid-cols-12 gap-5">
+        <div className="col-span-12 sm:col-span-6 lg:col-span-4">
+          <KPICard
+            title="Projeção D+1"
+            value={projecaoPct ?? '—'}
+            subValue={`Confiança: ${projecaoConfianca}`}
+            status={projecaoConfianca === "sem_dados" ? 'neutral' : margemToKpiStatus(projecao?.margem_prevista)}
+          />
+        </div>
+        <div className="col-span-12 sm:col-span-6 lg:col-span-4">
+          <KPICard
+            title="Rupturas"
+            value={stats?.rupturas ?? 0}
+            subValue={(() => {
+              const rupt = stats?.rupturas ?? 0
+              const skus = stats?.total_skus
+              if (skus == null) return rupt > 0 ? `${rupt} zerado${rupt === 1 ? '' : 's'} · repor` : 'sem dados'
+              const skuLabel = skus === 1 ? 'SKU' : 'SKUs'
+              if (rupt > 0) return `${rupt}/${skus} zerado${rupt === 1 ? '' : 's'} · repor`
+              return `${skus} ${skuLabel} · sem rupturas`
+            })()}
+            status={(stats?.rupturas ?? 0) > 0 ? "alert" : stats?.total_skus == null ? "neutral" : "ok"}
+          />
+        </div>
+        <div className="col-span-12 lg:col-span-4">
+          <KPICard
+            title="Quebras (mês)"
+            value={quebraResumo
+              ? formatCurrency(quebraResumo.valor_total)
+              : '—'}
+            subValue={!quebraResumo
+              ? 'Sem dados'
+              : quebraResumo.eventos === 0
+                ? 'Sem quebras registradas no mês'
+                : `${formatPercent(quebraResumo.pct_faturamento, { maximumFractionDigits: 2 })} do faturamento · ${quebraResumo.eventos} evento${quebraResumo.eventos === 1 ? '' : 's'}`}
+            status={!quebraResumo ? 'neutral' : quebraResumo.pct_faturamento > 0.02 ? 'alert' : quebraResumo.pct_faturamento > 0.015 ? 'warn' : 'ok'}
+          />
+        </div>
+      </div>
+
+      {/* ===================================================================
+          BENTO ROW 3 — Data viz: Tendência expandida (col-8) + Saúde (col-4)
+          =================================================================== */}
+      <div className="grid grid-cols-12 gap-5">
+        <div className="col-span-12 lg:col-span-8 claude-card p-6 relative overflow-hidden">
+          <div className="flex items-start justify-between mb-5">
+            <div>
+              <p className="section-label mb-1">Últimos 30 dias</p>
+              <h3 className="headline text-2xl">Tendência de Margem</h3>
+              <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+                Faixa verde = meta 17 – 19 %. Dots coral = acima (&gt;19,5%). Âmbar = abaixo. Cinza = sem venda.
+              </p>
+            </div>
+            {diasComVenda > 0 && (
+              <div className="flex gap-2 text-[10px]">
+                <span className="pill pill-ok"><span className="mono">{diasSaudaveis}</span> saudável</span>
+                {diasAcima > 0 && <span className="pill pill-alert"><span className="mono">{diasAcima}</span> acima</span>}
+                {diasAbaixo > 0 && <span className="pill pill-warn"><span className="mono">{diasAbaixo}</span> abaixo</span>}
+              </div>
+            )}
+          </div>
+          <MargemTrendChart serie={serie} />
+        </div>
+
+        <div className="col-span-12 lg:col-span-4 claude-card p-6 flex flex-col">
           <p className="section-label mb-1">Janela de 30 dias</p>
           <h3 className="headline text-2xl mb-1">Saúde por Categoria</h3>
           <p className="text-xs text-[color:var(--claude-stone)] mb-5">Margem real praticada vs meta configurada no grupo.</p>
@@ -1399,9 +1456,56 @@ function DashboardPage({ stats, onNavigate }: any) {
               <EmptyState variant="empty" compact title="Nenhum grupo cadastrado." />
             )}
           </div>
-          <div className="mt-6 p-4 bg-[color:var(--claude-cream-deep)]/50 rounded-xl border border-dashed border-[color:var(--border)] flex flex-col items-center text-center">
-             <ShoppingBag className="text-[color:var(--claude-stone)]/40 mb-2" size={20} />
-             <p className="text-[10px] text-[color:var(--claude-stone)] leading-snug">Barra = margem real na escala. Marcas verticais = faixa da meta do grupo.</p>
+        </div>
+      </div>
+
+      {/* ===================================================================
+          BENTO ROW 4 — Copiloto IA full-width com glow accent (sage halo)
+          Pattern Hynex (Muzli 2026): 1 cor vibrante reservada pra AI insights
+          =================================================================== */}
+      <div className="relative">
+        {/* halo glow externo — tom sage discreto */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-2xl blur-2xl opacity-35"
+          style={{ background: 'radial-gradient(circle at 80% 50%, var(--claude-coral) 0%, transparent 60%)' }}
+        />
+        <div
+          className="relative rounded-2xl p-7 text-white shadow-[0_8px_32px_-8px_rgba(28,27,23,0.35)] overflow-hidden"
+          style={{
+            background: 'radial-gradient(circle at 0% 0%, rgba(232,181,162,0.15) 0%, transparent 50%), linear-gradient(135deg, #1C1B17 0%, #2A2620 60%, #3A2E25 100%)',
+            border: '1px solid rgba(232,181,162,0.18)',
+          }}
+        >
+          <div className="flex justify-between items-start mb-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                   style={{ background: 'rgba(232,181,162,0.15)', boxShadow: '0 0 24px -4px rgba(232,181,162,0.4) inset' }}>
+                <Sparkles className="text-[color:var(--claude-coral-soft)]" size={20} />
+              </div>
+              <div>
+                <h3 className="headline text-2xl text-white leading-tight">Copiloto IA</h3>
+                <p className="text-white/60 text-xs mt-0.5">Motor pronto para responder qualquer dúvida sobre o dia.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate('chat')}
+              className="bg-white/10 hover:bg-white/20 text-white text-xs font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+            >
+              Abrir Chat <ArrowRight size={14} />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button onClick={() => onNavigate('chat')} className="group bg-white/[0.04] hover:bg-white/[0.10] transition-all p-4 rounded-xl border border-white/10 hover:border-[color:var(--claude-coral-soft)]/40 text-left">
+              <p className="section-label text-[color:var(--claude-coral-soft)] mb-2">Comando Sugerido</p>
+              <p className="serif text-lg leading-tight mb-1 group-hover:translate-x-0.5 transition-transform">Como está meu lucro hoje?</p>
+              <p className="text-[10px] text-white/50 uppercase tracking-widest">Toque para perguntar</p>
+            </button>
+            <button onClick={() => onNavigate('chat')} className="group bg-white/[0.04] hover:bg-white/[0.10] transition-all p-4 rounded-xl border border-white/10 hover:border-[color:var(--claude-coral-soft)]/40 text-left">
+              <p className="section-label text-[color:var(--claude-coral-soft)] mb-2">Comando Sugerido</p>
+              <p className="serif text-lg leading-tight mb-1 group-hover:translate-x-0.5 transition-transform">Análise de rupturas.</p>
+              <p className="text-[10px] text-white/50 uppercase tracking-widest">Toque para perguntar</p>
+            </button>
           </div>
         </div>
       </div>

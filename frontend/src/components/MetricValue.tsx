@@ -38,7 +38,7 @@ import type { ReactNode } from 'react'
  *   ReactNode      -> passa direto (compat — sem grid)
  */
 
-type Size = '28px' | '2xl' | 'xl' | 'lg' | 'sm'
+type Size = 'hero' | '28px' | '2xl' | 'xl' | 'lg' | 'sm'
 
 type SizeSpec = {
   num: string         // utility para o numero principal
@@ -57,6 +57,7 @@ type SizeSpec = {
 //   Pegamos o MAIOR caso conhecido (un/pp = 16px) para o slot de sufixo
 //   acomodar sem alterar geometria entre instancias do mesmo size.
 const SIZE_MAP: Record<Size, SizeSpec> = {
+  hero:   { num: 'text-[64px]', symbol: 'text-[28px]', prefixCol: '3rem',    suffixCol: '1.75rem', gap: '0.6rem' },
   '28px': { num: 'text-[28px]', symbol: 'text-[16px]', prefixCol: '1.75rem', suffixCol: '1.1rem',  gap: '0.4rem' },
   '2xl':  { num: 'text-2xl',    symbol: 'text-[14px]', prefixCol: '1.5rem',  suffixCol: '1rem',    gap: '0.35rem' },
   xl:     { num: 'text-xl',     symbol: 'text-[12px]', prefixCol: '1.4rem',  suffixCol: '0.9rem',  gap: '0.3rem' },
