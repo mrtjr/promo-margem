@@ -397,7 +397,7 @@ function ComprasPage({ onComplete }: any) {
     <div className="max-w-7xl mx-auto p-8 space-y-8">
       <header className="flex justify-between items-center">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight mb-2 flex items-center gap-3">
+          <h2 className="headline text-4xl tracking-editorial mb-2 flex items-center gap-3">
             <Clipboard className="text-blue-500" /> Entrada de Estoque Inteligente
           </h2>
           <p className="text-slate-500 font-medium">Os produtos que não estiverem no sistema serão <b>criados automaticamente</b>.</p>
@@ -551,7 +551,7 @@ function ProdutosPage() {
   return (
     <div className="max-w-6xl mx-auto p-8">
       <div className="flex items-center justify-between mb-8">
-        <h2 className="text-3xl font-bold tracking-tight">Gestão de SKUs</h2>
+        <h2 className="headline text-4xl tracking-editorial">Gestão de SKUs</h2>
         <p className="text-xs text-slate-500">
           Clique em <span className="font-semibold text-blue-600">Editar</span> para definir o <span className="font-semibold">código ERP</span> usado no matching do CSV.
         </p>
@@ -1061,9 +1061,9 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
             stroke="var(--border)" strokeOpacity={t === 0 ? 0.6 : 0.3}
           />
           <text
-            x={padL - 8} y={yToPx(t) + 3}
+            x={padL - 8} y={yToPx(t) + 4}
             textAnchor="end"
-            fontSize="10"
+            fontSize="12"
             fill="var(--claude-stone)"
             fontFamily="JetBrains Mono, monospace"
           >
@@ -1080,8 +1080,8 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
             stroke="var(--claude-stone)" strokeOpacity="0.55" strokeDasharray="4 4" strokeWidth="1"
           />
           <text
-            x={padL + 4} y={yToPx(media) - 4}
-            textAnchor="start" fontSize="9"
+            x={padL + 4} y={yToPx(media) - 5}
+            textAnchor="start" fontSize="11"
             fill="var(--claude-stone)"
             fontFamily="JetBrains Mono, monospace"
           >
@@ -1133,9 +1133,9 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
         <g>
           <circle cx={lastX} cy={lastY} r="5" fill="var(--claude-coral)" fillOpacity="0.15" />
           <text
-            x={Math.min(lastX + 8, W - padR - 46)}
-            y={lastY - 8}
-            fontSize="11"
+            x={Math.min(lastX + 8, W - padR - 50)}
+            y={lastY - 9}
+            fontSize="13"
             fontFamily="JetBrains Mono, monospace"
             fontWeight="600"
             fill="var(--claude-ink)"
@@ -1153,9 +1153,9 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
         return (
           <text
             key={`tx-${i}`}
-            x={xToPx(i)} y={H - 12}
+            x={xToPx(i)} y={H - 10}
             textAnchor={i === 0 ? 'start' : i === serie.length - 1 ? 'end' : 'middle'}
-            fontSize="10"
+            fontSize="12"
             fill="var(--claude-stone)"
             fontFamily="JetBrains Mono, monospace"
           >
@@ -1718,7 +1718,7 @@ function RelatoriosPage() {
     <div className="max-w-6xl mx-auto p-8 space-y-8">
       <header className="flex justify-between items-center">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight mb-2">Fechamento de Vendas Diárias</h2>
+          <h2 className="headline text-4xl tracking-editorial mb-2">Fechamento de Vendas Diárias</h2>
           <p className="text-slate-500">Lance as quantidades vendidas hoje para baixar o estoque ou importe o relatório CSV.</p>
         </div>
         <div className="flex gap-4">
@@ -2364,7 +2364,7 @@ function ProjecaoPage() {
       <header className="flex justify-between items-start">
         <div>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Projeção para amanhã</p>
-          <h2 className="text-3xl font-bold tracking-tight capitalize">{proj.dia_semana} · {formatDate(proj.data_alvo)}</h2>
+          <h2 className="headline text-4xl tracking-editorial capitalize">{proj.dia_semana} · {formatDate(proj.data_alvo)}</h2>
         </div>
         <button
           onClick={carregar}
@@ -2536,7 +2536,7 @@ function AnaliseFechamentoView({ analise, onCopy, copied, onReset }: any) {
       <header className="flex justify-between items-start">
         <div>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Fechamento do dia</p>
-          <h2 className="text-3xl font-bold tracking-tight">{formatDate(analise.data, { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
+          <h2 className="headline text-4xl tracking-editorial">{formatDate(analise.data, { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
         </div>
         <div className={`${cfg.bg} ${cfg.text} ${cfg.border} border-2 px-6 py-3 rounded-2xl font-black uppercase text-sm tracking-widest shadow-sm`}>
           {cfg.label}
