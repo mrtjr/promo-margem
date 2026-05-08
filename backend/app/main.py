@@ -1457,12 +1457,34 @@ async def fechamento_importar_multi_data(
 ):
     """
     Importa TODAS as datas presentes no CSV de uma vez.
-    Cada dia substitui apenas o seu fechamento. Linhas pendentes (sem_match,
-    conflito, sem_custo) BLOQUEIAM a operação — resolva com o fluxo
-    single-day primeiro ou reimporte com produtos pré-cadastrados.
+    Cada dia substitui apenas o seu fechamento.
+
+    Linhas pendentes (sem_match, conflito, sem_custo, erro) BLOQUEIAM a
+    operação. O backend faz pre-flight ANTES de gravar e devolve erro 422
+    com payload estruturado:
+      { "detail": { "tipo": "pendencias_multi_data",
+                    "mensagem": "...",
+                    "bloqueios": [
+                      {"data": "2026-05-04",
+                       "total_pendentes": 8,
+                       "linhas": [{idx, codigo_csv, nome_csv, status,
+                                   ocorrencias, quantidade, total,
+                                   acao_recomendada}, ...]
+                      }, ...
+                    ] } }
+    O frontend usa isso pra mostrar exatamente o que falta resolver.
     """
     conteudo = await arquivo.read()
     try:
         return fechamento_csv_service.commit_todas_datas(db, conteudo)
+    except fechamento_csv_service.PendenciasMultiData as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "tipo": "pendencias_multi_data",
+                "mensagem": str(e),
+                "bloqueios": e.bloqueios,
+            },
+        )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

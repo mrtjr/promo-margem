@@ -484,6 +484,84 @@ def test_9_estoque_parcial_cria_apenas_diferenca():
 
 
 # ===========================================================================
+# Cenário 10: Multi-data com sem_match → bloqueio estruturado, nada gravado
+# ===========================================================================
+
+def test_10_multi_data_bloqueia_quando_sem_match():
+    """Bug fix: importar todas as datas com produto não cadastrado deve
+    devolver erro estruturado (PendenciasMultiData), não exception genérica.
+    Reproduz o bug original: 'Erro ao processar 2026-05-04: Linha 1
+    (CEBOLA ROXA CX1 (×2 pedidos)) tem status sem_match...'
+    """
+    print("\n=== Cenario 10: multi-data bloqueia em sem_match ===")
+    _, db = setup_db()
+    seed_grupo(db)
+
+    # NAO cadastra produto → todas as linhas viram sem_match
+    payload = csv_bytes([
+        linha_pedido(1, "04/05/2026", "PROD-X", "Produto X", 1.0, 10.0, 10.0),
+        linha_pedido(2, "05/05/2026", "PROD-X", "Produto X", 2.0, 10.0, 20.0),
+    ])
+
+    erro_capturado = None
+    try:
+        fechamento_csv_service.commit_todas_datas(db, payload)
+    except fechamento_csv_service.PendenciasMultiData as e:
+        erro_capturado = e
+
+    assert erro_capturado is not None, "deveria ter levantado PendenciasMultiData"
+
+    # Payload estruturado: 2 dias com bloqueio
+    bloqueios = erro_capturado.bloqueios
+    assert len(bloqueios) == 2, f"esperava 2 dias bloqueados, got {len(bloqueios)}"
+    datas_bloq = sorted(b["data"] for b in bloqueios)
+    assert datas_bloq == ["2026-05-04", "2026-05-05"], f"datas: {datas_bloq}"
+
+    for b in bloqueios:
+        assert b["total_pendentes"] >= 1
+        assert len(b["linhas"]) >= 1
+        l0 = b["linhas"][0]
+        assert l0["status"] == "sem_match"
+        assert l0["acao_recomendada"], "deveria ter acao_recomendada"
+        assert "PROD-X" == l0["codigo_csv"]
+
+    # CRITICO: nada foi gravado (pre-flight rejeita ANTES de qualquer commit)
+    n_vendas = db.query(models.Venda).count()
+    assert n_vendas == 0, f"NADA deveria ter sido gravado, mas tem {n_vendas} vendas"
+    print(f"OK: multi-data bloqueou em 2 dias, 0 vendas gravadas (atomico)")
+
+
+# ===========================================================================
+# Cenário 11: Multi-data clean (todos produtos cadastrados) → grava tudo
+# ===========================================================================
+
+def test_11_multi_data_passa_quando_tudo_ok():
+    """Multi-data importa todas as datas em sequencia quando tudo bate."""
+    print("\n=== Cenario 11: multi-data clean importa em lote ===")
+    _, db = setup_db()
+    seed_produto(db, sku="MD-01", codigo="PROD-X", nome="Produto X",
+                 custo=5.0, preco_venda=10.0,
+                 estoque_qtd=200, estoque_peso=200)
+
+    payload = csv_bytes([
+        linha_pedido(1, "04/05/2026", "PROD-X", "Produto X", 1.0, 10.0, 10.0),
+        linha_pedido(2, "05/05/2026", "PROD-X", "Produto X", 2.0, 10.0, 20.0),
+        linha_pedido(3, "05/05/2026", "PROD-X", "Produto X", 3.0, 10.0, 30.0),
+    ])
+
+    result = fechamento_csv_service.commit_todas_datas(db, payload)
+    assert result["total_dias"] == 2, f"esperava 2 dias, got {result['total_dias']}"
+    # 1 atomo no dia 04, 2 atomos no dia 05 = 3 vendas total
+    assert result["total_vendas_criadas"] == 3, f"esperava 3 vendas, got {result['total_vendas_criadas']}"
+
+    v_dia1 = db.query(models.Venda).filter_by(data_fechamento=date(2026, 5, 4)).count()
+    v_dia2 = db.query(models.Venda).filter_by(data_fechamento=date(2026, 5, 5)).count()
+    assert v_dia1 == 1, f"dia 04: esperava 1 venda, got {v_dia1}"
+    assert v_dia2 == 2, f"dia 05: esperava 2 vendas, got {v_dia2}"
+    print(f"OK: multi-data clean importou {v_dia1+v_dia2} vendas em 2 dias")
+
+
+# ===========================================================================
 # Runner
 # ===========================================================================
 
@@ -499,6 +577,8 @@ if __name__ == "__main__":
         test_7_resolucao_criar_aplica,
         test_8_estoque_suficiente_nao_cria_entrada,
         test_9_estoque_parcial_cria_apenas_diferenca,
+        test_10_multi_data_bloqueia_quando_sem_match,
+        test_11_multi_data_passa_quando_tudo_ok,
     ]
     falhas = 0
     for t in tests:

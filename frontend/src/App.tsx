@@ -1991,6 +1991,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const [preview, setPreview] = useState<any | null>(null)
   const [auditoria, setAuditoria] = useState<any | null>(null)
   const [resultadoMulti, setResultadoMulti] = useState<any | null>(null)
+  const [bloqueiosMulti, setBloqueiosMulti] = useState<any[] | null>(null)
   const [resolucoes, setResolucoes] = useState<Record<number, any>>({})
   const [submitting, setSubmitting] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
@@ -1999,6 +2000,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const enviarAuditoria = async () => {
     if (!arquivo) { setErro('Selecione um arquivo CSV.'); return }
     setErro(null)
+    setBloqueiosMulti(null)
     setSubmitting(true)
     try {
       const form = new FormData()
@@ -2023,6 +2025,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const importarTodasDatas = async () => {
     if (!arquivo) return
     setErro(null)
+    setBloqueiosMulti(null)
     setSubmitting(true)
     try {
       const form = new FormData()
@@ -2033,7 +2036,14 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
       setResultadoMulti(res.data)
       setEstado('sucesso_multi')
     } catch (e: any) {
-      setErro(e?.response?.data?.detail || 'Erro ao importar as datas. Tente o fluxo "Escolher 1 dia".')
+      const detail = e?.response?.data?.detail
+      // Backend retorna detail estruturado quando ha pendencias bloqueantes
+      if (detail && typeof detail === 'object' && detail.tipo === 'pendencias_multi_data') {
+        setBloqueiosMulti(detail.bloqueios)
+        setErro(null) // erro vira painel proprio, nao texto no rodape
+      } else {
+        setErro(typeof detail === 'string' ? detail : 'Erro ao importar as datas. Tente revisar 1 dia por vez.')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -2209,6 +2219,12 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
               auditoria={auditoria}
               dataAlvo={dataAlvo}
               onDataAlvo={setDataAlvo}
+              bloqueiosMulti={bloqueiosMulti}
+              onIrParaPreviewDoDia={(d: string) => {
+                setDataAlvo(d)
+                setBloqueiosMulti(null)
+                irParaPreview()
+              }}
             />
           )}
           {estado === 'preview' && preview && (
@@ -2244,7 +2260,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
             )}
             {estado === 'auditoria' && (
               <button
-                onClick={() => { setEstado('upload'); setAuditoria(null) }}
+                onClick={() => { setEstado('upload'); setAuditoria(null); setBloqueiosMulti(null) }}
                 className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
               >
                 Voltar
@@ -2280,11 +2296,17 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
                 {auditoria.total_datas > 1 && (
                   <button
                     onClick={importarTodasDatas}
-                    disabled={submitting || (auditoria.total_linhas_validas || 0) === 0}
+                    disabled={submitting || (auditoria.total_linhas_validas || 0) === 0 || !!bloqueiosMulti}
                     className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 disabled:opacity-50 transition-all"
-                    title="Grava todas as datas em sequência. Funciona quando todos os produtos já estão cadastrados — se houver algum produto novo, use 'Revisar' em vez disso."
+                    title={bloqueiosMulti
+                      ? 'Há produtos não cadastrados — resolva 1 dia por vez antes de importar tudo.'
+                      : 'Grava todas as datas em sequência. Funciona quando todos os produtos já estão cadastrados.'}
                   >
-                    {submitting ? 'Importando…' : `Importar todas as ${auditoria.total_datas} datas de uma vez`}
+                    {submitting ? 'Importando…' : (
+                      bloqueiosMulti
+                        ? 'Bloqueado — revise os dias abaixo'
+                        : `Importar todas as ${auditoria.total_datas} datas de uma vez`
+                    )}
                   </button>
                 )}
               </>
@@ -2377,14 +2399,75 @@ function UploadFase({ arquivo, onArquivo, dataAlvo, onDataAlvo }: any) {
 // Mostra o que foi lido, descartado e alertado SEM gravar nada.
 // ============================================================================
 
-function AuditoriaFase({ auditoria, dataAlvo, onDataAlvo }: any) {
+function AuditoriaFase({ auditoria, dataAlvo, onDataAlvo, bloqueiosMulti, onIrParaPreviewDoDia }: any) {
   const sevTone: Record<string, string> = {
     info: 'bg-slate-100 text-slate-700 border-slate-200',
     media: 'bg-amber-50 text-amber-800 border-amber-200',
     alta: 'bg-rose-50 text-rose-800 border-rose-200',
   }
+  const statusLabelCurto: Record<string, string> = {
+    sem_match: 'Produto não cadastrado',
+    conflito: 'Conflito código vs nome',
+    sem_custo: 'Produto sem custo',
+    erro: 'Aritmética inconsistente',
+  }
   return (
     <div className="space-y-5">
+      {/* Painel de bloqueio (so quando o backend devolveu 422 com pendencias) */}
+      {bloqueiosMulti && bloqueiosMulti.length > 0 && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-5">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-8 h-8 rounded-full bg-rose-100 flex items-center justify-center shrink-0 mt-0.5">
+              <AlertCircle className="text-rose-600" size={18} />
+            </div>
+            <div>
+              <p className="font-semibold text-rose-900">Não dá pra importar todas as datas ainda</p>
+              <p className="text-xs text-rose-800/80 mt-0.5">
+                Existem produtos no CSV que não têm cadastro no sistema (ou estão sem custo).
+                A importação em lote precisa que tudo esteja resolvido. Use o fluxo
+                <b> Revisar apenas DATA</b> abaixo para cada dia listado e cadastre os produtos no caminho.
+              </p>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {bloqueiosMulti.map((b: any) => (
+              <div key={b.data} className="rounded-lg border border-rose-200 bg-white p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-mono tabular-nums text-[color:var(--claude-ink)]">
+                    {b.data} · <span className="font-semibold text-rose-700">{b.total_pendentes}</span> linha(s) pendente(s)
+                  </p>
+                  <button
+                    onClick={() => onIrParaPreviewDoDia(b.data)}
+                    className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors"
+                  >
+                    Revisar este dia →
+                  </button>
+                </div>
+                <ul className="text-xs space-y-1">
+                  {b.linhas.map((l: any) => (
+                    <li key={l.idx} className="flex items-center justify-between gap-2 py-0.5">
+                      <span className="text-[color:var(--claude-stone)] truncate">
+                        <span className="font-mono tabular-nums text-[color:var(--claude-ink)]">
+                          {l.codigo_csv ? `${l.codigo_csv} ·` : ''}
+                        </span>{' '}
+                        {l.nome_csv}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-widest text-rose-700 shrink-0">
+                        {statusLabelCurto[l.status] || l.status}
+                      </span>
+                    </li>
+                  ))}
+                  {b.total_pendentes > b.linhas.length && (
+                    <li className="text-[11px] italic text-[color:var(--claude-stone)] mt-1">
+                      …e mais {b.total_pendentes - b.linhas.length} linha(s) neste dia
+                    </li>
+                  )}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {/* Resumo "headline" */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="claude-card p-4">

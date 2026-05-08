@@ -500,6 +500,67 @@ def auditar(conteudo_bytes: bytes) -> Dict:
     }
 
 
+class PendenciasMultiData(Exception):
+    """
+    Sinaliza que o commit multi-data NAO pode ser executado direto porque
+    pelo menos um dia tem linhas pendentes (sem_match / conflito / sem_custo
+    / erro) que exigem decisao do usuario antes de virar venda.
+
+    O atributo `bloqueios` tem o payload estruturado pro frontend renderizar
+    uma tela de "o que falta resolver" — por dia + por linha:
+
+        [
+          {
+            "data": "2026-05-04",
+            "total_pendentes": 8,
+            "linhas": [
+              {"idx": 1, "codigo_csv": "54", "nome_csv": "CEBOLA ROXA CX1 (×2 pedidos)",
+               "status": "sem_match", "ocorrencias": 2,
+               "acao_recomendada": "Cadastrar produto ou associar a um SKU existente"},
+              ...
+            ]
+          },
+          ...
+        ]
+    """
+
+    def __init__(self, bloqueios: List[Dict]):
+        self.bloqueios = bloqueios
+        n_dias = len(bloqueios)
+        n_linhas = sum(b["total_pendentes"] for b in bloqueios)
+        super().__init__(
+            f"{n_linhas} produto(s) precisa(m) ser revisado(s) em {n_dias} dia(s) "
+            f"antes da importacao multi-data."
+        )
+
+
+# Sugestao de acao por status (texto curto para UI)
+_ACAO_RECOMENDADA = {
+    "sem_match": "Cadastrar o produto ou associar a um SKU existente",
+    "conflito": "Resolver conflito codigo vs nome (escolher qual SKU)",
+    "sem_custo": "Informar o custo do produto (ENTRADA ou correcao)",
+    "erro": "Verificar aritmetica da linha (qtd × preco vs total)",
+}
+
+
+def _coletar_pendencias(preview_linhas: List[Dict]) -> List[Dict]:
+    """Filtra linhas que nao podem virar venda direta."""
+    return [
+        {
+            "idx": l["idx"],
+            "codigo_csv": l.get("codigo_csv"),
+            "nome_csv": l.get("nome_csv"),
+            "status": l["status"],
+            "ocorrencias": l.get("ocorrencias", 1),
+            "quantidade": l.get("quantidade"),
+            "total": l.get("total"),
+            "acao_recomendada": _ACAO_RECOMENDADA.get(l["status"], "Revisar manualmente"),
+        }
+        for l in preview_linhas
+        if l["status"] in ("sem_match", "conflito", "sem_custo", "erro")
+    ]
+
+
 def commit_todas_datas(
     db: Session,
     conteudo_bytes: bytes,
@@ -508,42 +569,68 @@ def commit_todas_datas(
     """
     Importa TODAS as datas presentes no CSV em sequencia.
 
-    Para cada dia: build_preview(db, csv, dia) → commit_importacao(linhas, ...).
-    Substituicao acontece por dia (cada dia substitui apenas o seu fechamento).
+    Pipeline:
+      1. PRE-FLIGHT: para cada dia, build_preview e coleta pendencias
+         (sem_match / conflito / sem_custo / erro). Se houver QUALQUER
+         pendencia em QUALQUER dia, levanta PendenciasMultiData com
+         payload estruturado — sem nada commitado, sem efeito colateral.
+      2. COMMIT: se passou pre-flight, itera dias e chama commit_importacao
+         em cada um. Cada dia substitui apenas o seu proprio fechamento.
 
-    `resolucoes_por_dia`: dict opcional `{"2026-05-04": [{idx, acao, ...}], ...}`
-    Em uma chamada multi-dia tipica, o frontend processou cada preview
-    individualmente e mandou as resolucoes do user agrupadas por dia.
+    `resolucoes_por_dia`: dict opcional `{"2026-05-04": [{idx, acao, ...}], ...}`.
+    Permite ao caller (futuro) resolver pendentes mantendo o fluxo multi-data.
+    Hoje a UI ainda nao envia resolucoes em multi-data, mas o backend ja
+    aceita pra evitar quebra futura.
 
-    Retorna agregado por dia + totais. Em caso de erro num dia, levanta
-    ValueError (transacao do dia eh atomica; dias anteriores ja
-    commitados permanecem).
+    Retorna agregado por dia + totais.
     """
     resolucoes_por_dia = resolucoes_por_dia or {}
     datas = datas_no_csv(conteudo_bytes)
     if not datas:
-        raise ValueError("CSV nao tem nenhuma data reconhecivel.")
+        raise ValueError("O CSV nao tem nenhuma data reconhecivel.")
 
-    resultados: List[Dict] = []
-    total_vendas = 0
-    total_substituidas = 0
-    total_clientes_afetados: set = set()
-
+    # ===== PRE-FLIGHT: detecta pendencias em todos os dias antes de gravar =====
+    bloqueios: List[Dict] = []
+    previews_cache: Dict[str, Dict] = {}
     for d in datas:
         d_iso = d.isoformat()
         preview_d = build_preview(db, conteudo_bytes, d)
+        previews_cache[d_iso] = preview_d
+        # Considera pendencias APENAS aquelas sem resolucao no dia
+        res_dia = resolucoes_por_dia.get(d_iso, [])
+        idx_resolvidos = {r["idx"] for r in res_dia}
+        pendencias = [
+            p for p in _coletar_pendencias(preview_d["linhas"])
+            if p["idx"] not in idx_resolvidos
+        ]
+        if pendencias:
+            bloqueios.append({
+                "data": d_iso,
+                "total_pendentes": len(pendencias),
+                # Limita a 10 itens pra UI nao virar pagina infinita;
+                # o total_pendentes mantem o numero real
+                "linhas": pendencias[:10],
+            })
+
+    if bloqueios:
+        raise PendenciasMultiData(bloqueios)
+
+    # ===== COMMIT: pre-flight passou =====
+    resultados: List[Dict] = []
+    total_vendas = 0
+    total_substituidas = 0
+
+    for d in datas:
+        d_iso = d.isoformat()
+        preview_d = previews_cache[d_iso]
         res_dia = resolucoes_por_dia.get(d_iso, [])
         try:
-            commit_res = commit_importacao(
-                db, preview_d["linhas"], res_dia, d
-            )
+            commit_res = commit_importacao(db, preview_d["linhas"], res_dia, d)
         except ValueError as e:
-            raise ValueError(f"Erro ao processar {d_iso}: {e}") from e
+            # Erro inesperado durante commit (custo<=0, etc) — propaga com contexto
+            raise ValueError(f"Erro ao gravar {d_iso}: {e}") from e
 
-        resultados.append({
-            "data": d_iso,
-            **commit_res,
-        })
+        resultados.append({"data": d_iso, **commit_res})
         total_vendas += commit_res.get("vendas_criadas", 0)
         total_substituidas += commit_res.get("vendas_removidas_antes", 0)
 
