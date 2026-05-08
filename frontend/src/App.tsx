@@ -7,6 +7,7 @@ import { FeedbackBanner, type FeedbackMessage } from './components/FeedbackBanne
 import { MetricValue } from './components/MetricValue'
 import { WidgetSkeleton } from './components/WidgetSkeleton'
 import { useEscapeKey } from './hooks/useEscapeKey'
+import { useModalA11y } from './hooks/useModalA11y'
 import { formatCurrency, formatDate, formatDateTime, formatNumber, formatPercent } from './lib/format'
 
 // API base URL: Electron injeta axios.defaults.baseURL no preload/main.
@@ -252,14 +253,29 @@ function Confirm({
   danger = false, loading = false,
   onConfirm, onCancel,
 }: ConfirmProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  // Politica de fechamento: ESC fecha SE nao estiver processando uma acao
+  // critica em andamento. Click no backdrop segue mesma regra (linha 269).
+  useEscapeKey(() => onCancel(), { disabled: !open || loading })
+  // A11y: foco entra no modal ao abrir e volta pra origem ao fechar.
+  useModalA11y(open ? containerRef : { current: null })
+
   if (!open) return null
   const accent = danger ? 'var(--claude-coral)' : 'var(--claude-amber)'
+  const titleId = 'confirm-title'
   return (
     <div
       className="fixed inset-0 bg-[color:var(--claude-ink)]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       onClick={() => !loading && onCancel()}
     >
-      <div className="claude-card p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="claude-card p-6 max-w-md w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-3">
             <div
@@ -270,13 +286,14 @@ function Confirm({
             </div>
             <div>
               <p className="section-label">Confirmação</p>
-              <h3 className="headline text-xl">{title}</h3>
+              <h3 id={titleId} className="headline text-xl">{title}</h3>
             </div>
           </div>
           <button
             onClick={() => !loading && onCancel()}
             disabled={loading}
             className="p-1 text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] disabled:opacity-50"
+            aria-label="Fechar"
           >
             <X size={18} />
           </button>
@@ -683,9 +700,13 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
   const [bloqueadoEngine, setBloqueadoEngine] = useState<boolean>(!!produto.bloqueado_engine)
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const titleId = 'produto-edit-title'
 
   // ESC fecha (mesmo padrao dos outros modais), exceto durante o save assincrono
   useEscapeKey(onClose, { disabled: salvando })
+  // Foco entra no modal ao abrir; trap em Tab/Shift+Tab; restaura no unmount.
+  useModalA11y(containerRef)
 
   const salvar = async () => {
     setErro(null)
@@ -714,19 +735,24 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
       onClick={() => !salvando && onClose()}
     >
       <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="bg-white rounded-3xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
           <div>
             <p className="section-label">SKU {produto.sku}</p>
-            <h3 className="headline text-2xl tracking-editorial">Editar produto</h3>
+            <h3 id={titleId} className="headline text-2xl tracking-editorial">Editar produto</h3>
           </div>
           <button
             onClick={onClose}
             disabled={salvando}
             className="text-slate-400 hover:text-slate-700 p-1 disabled:opacity-50"
             title="Fechar (ESC)"
+            aria-label="Fechar"
           >
             <X size={20} />
           </button>
@@ -2054,9 +2080,16 @@ function RelatoriosPage() {
   // Feedback inline: substitui os alert() nativos no fluxo de fechamento manual
   // e na ponte CSV → analise. Tom coerente com o resto do app.
   const [feedback, setFeedback] = useState<FeedbackMessage | null>(null)
+  // Loading explicito do fetch inicial — sem isso, o estado vazio
+  // ("Comece importando o relatório do ERP") aparece no primeiro frame antes
+  // de a API responder, parecendo que nao ha produtos cadastrados.
+  const [loadingProdutos, setLoadingProdutos] = useState(true)
 
   const carregarProdutos = () => {
-    axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
+    axios
+      .get(`${API_URL}/produtos`)
+      .then((res) => setProdutos(res.data))
+      .finally(() => setLoadingProdutos(false))
   }
 
   useEffect(() => {
@@ -2202,7 +2235,11 @@ function RelatoriosPage() {
 
       <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
-      {produtos.length === 0 && (
+      {loadingProdutos && (
+        <EmptyState variant="loading" title="Carregando produtos…" />
+      )}
+
+      {!loadingProdutos && produtos.length === 0 && (
         <div className="claude-card p-8 text-center">
           <div className="inline-flex w-14 h-14 rounded-2xl bg-[color:var(--claude-coral-soft)]/30 items-center justify-center mb-4">
             <FileText className="text-[color:var(--claude-coral)]" size={26} />
@@ -2329,10 +2366,14 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const [submitting, setSubmitting] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
+  const containerRef = useRef<HTMLDivElement>(null)
+  const titleId = 'importcsv-title'
+
   // ESC fecha o modal — mas nunca durante uma operacao em andamento (upload,
   // commit, multi-data) e nunca na tela de sucesso (a saida certa eh "Ver
   // analise" ou "Fechar", nao um atalho que pula a confirmacao visual).
   useEscapeKey(onClose, { disabled: submitting || estado === 'sucesso_multi' })
+  useModalA11y(containerRef)
 
   // FASE 1: Upload → Auditoria (inspecao SEM gravar nada)
   const enviarAuditoria = async () => {
@@ -2537,6 +2578,10 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
       }}
     >
       <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
@@ -2544,10 +2589,16 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
         <div className="p-6 border-b border-[color:var(--border)] flex items-center justify-between">
           <div>
             <p className="section-label mb-1">{passoFase}</p>
-            <h3 className="headline text-2xl tracking-editorial">{tituloFase}</h3>
+            <h3 id={titleId} className="headline text-2xl tracking-editorial">{tituloFase}</h3>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1">{subtituloFase}</p>
           </div>
-          <button onClick={onClose} className="text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] p-1" title="Fechar sem importar">
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] p-1 disabled:opacity-50"
+            title="Fechar sem importar"
+            aria-label="Fechar"
+          >
             <X size={22} />
           </button>
         </div>
@@ -4965,6 +5016,8 @@ function ClienteDetalheModal({ clienteId, onClose }: { clienteId: number; onClos
   const [evolucao, setEvolucao] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const titleId = 'cliente-detalhe-title'
 
   useEffect(() => {
     setLoading(true)
@@ -4986,6 +5039,7 @@ function ClienteDetalheModal({ clienteId, onClose }: { clienteId: number; onClos
 
   // Fecha com ESC — mesmo padrao usado em ProdutoEditModal e ImportCSVModal
   useEscapeKey(onClose)
+  useModalA11y(containerRef)
 
   // Helpers da timeline (escala dinamica + min height pra meses zerados)
   const evolMaxValor = Math.max(1, ...evolucao.map((m) => m.valor))
@@ -4997,6 +5051,10 @@ function ClienteDetalheModal({ clienteId, onClose }: { clienteId: number; onClos
       onClick={onClose}
     >
       <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-3xl my-8 flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
@@ -5009,7 +5067,7 @@ function ClienteDetalheModal({ clienteId, onClose }: { clienteId: number; onClos
             >
               ← Voltar para Clientes
             </button>
-            <h3 className="headline text-3xl tracking-editorial truncate">
+            <h3 id={titleId} className="headline text-3xl tracking-editorial truncate">
               {detalhe?.nome || (loading ? 'Carregando…' : 'Cliente')}
             </h3>
             {detalhe?.is_consumidor_final && (
@@ -5018,7 +5076,7 @@ function ClienteDetalheModal({ clienteId, onClose }: { clienteId: number; onClos
               </p>
             )}
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 shrink-0">
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 shrink-0" aria-label="Fechar">
             <X size={22} />
           </button>
         </div>
@@ -6121,6 +6179,8 @@ function DREPage() {
   const [dre, setDre] = useState<DREMensal | null>(null)
   const [comparativo, setComparativo] = useState<DRECompPonto[]>([])
   const [loading, setLoading] = useState(false)
+  // Feedback inline compartilhado entre as 3 abas — substitui alert() nativo.
+  const [feedback, setFeedback] = useState<FeedbackMessage | null>(null)
 
   useEffect(() => {
     if (tab !== 'cascata') return
@@ -6155,9 +6215,13 @@ function DREPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-[color:var(--claude-ink)]/10 mb-6">
-        <DRETab active={tab === 'cascata'} onClick={() => setTab('cascata')} icon={<PieChart size={16} />} label="Cascata" />
-        <DRETab active={tab === 'despesas'} onClick={() => setTab('despesas')} icon={<Receipt size={16} />} label="Lançamentos" />
-        <DRETab active={tab === 'tributario'} onClick={() => setTab('tributario')} icon={<Percent size={16} />} label="Tributário" />
+        <DRETab active={tab === 'cascata'} onClick={() => { setTab('cascata'); setFeedback(null) }} icon={<PieChart size={16} />} label="Cascata" />
+        <DRETab active={tab === 'despesas'} onClick={() => { setTab('despesas'); setFeedback(null) }} icon={<Receipt size={16} />} label="Lançamentos" />
+        <DRETab active={tab === 'tributario'} onClick={() => { setTab('tributario'); setFeedback(null) }} icon={<Percent size={16} />} label="Tributário" />
+      </div>
+
+      <div className="mb-4">
+        <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
       </div>
 
       {tab === 'cascata' && (
@@ -6170,15 +6234,18 @@ function DREPage() {
           onFechamento={async () => {
             try {
               await axios.post(`${API_URL}/dre/fechar?mes=${mes}`)
-              alert('Mês fechado.')
+              setFeedback({ tone: 'ok', mensagem: `Mês ${mes} fechado.` })
             } catch (e) {
-              alert('Falha ao fechar: ' + (e as any).message)
+              setFeedback({
+                tone: 'alert',
+                mensagem: 'Falha ao fechar mês: ' + ((e as any).message || 'erro desconhecido'),
+              })
             }
           }}
         />
       )}
-      {tab === 'despesas' && <DREDespesasView mes={mes} onMesChange={setMes} />}
-      {tab === 'tributario' && <DRETributarioView />}
+      {tab === 'despesas' && <DREDespesasView mes={mes} onMesChange={setMes} onFeedback={setFeedback} />}
+      {tab === 'tributario' && <DRETributarioView onFeedback={setFeedback} />}
     </div>
   )
 }
@@ -6393,7 +6460,15 @@ function DRELinhaRow({ linha }: { linha: DRELinha }) {
   )
 }
 
-function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: string) => void }) {
+function DREDespesasView({
+  mes,
+  onMesChange,
+  onFeedback,
+}: {
+  mes: string
+  onMesChange: (m: string) => void
+  onFeedback: (f: FeedbackMessage | null) => void
+}) {
   const [lancamentos, setLancamentos] = useState<Lancamento[]>([])
   const [contas, setContas] = useState<ContaContabil[]>([])
   const [loading, setLoading] = useState(false)
@@ -6430,7 +6505,7 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
 
   const handleCriar = async () => {
     if (!form.conta_id || form.valor <= 0) {
-      alert('Preencha conta e valor.')
+      onFeedback({ tone: 'warn', mensagem: 'Preencha conta e valor antes de lançar.' })
       return
     }
     try {
@@ -6445,9 +6520,13 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
       })
       setMostrarForm(false)
       setForm(f => ({ ...f, valor: 0, descricao: '', fornecedor: '' }))
+      onFeedback({ tone: 'ok', mensagem: 'Lançamento registrado.' })
       fetchData()
     } catch (e) {
-      alert('Falha: ' + (e as any).message)
+      onFeedback({
+        tone: 'alert',
+        mensagem: 'Falha ao salvar lançamento: ' + ((e as any).message || 'erro desconhecido'),
+      })
     }
   }
 
@@ -6464,9 +6543,13 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
     try {
       await axios.delete(`${API_URL}/despesas/${confirmExcluirId}`)
       setConfirmExcluirId(null)
+      onFeedback({ tone: 'ok', mensagem: 'Lançamento excluído.' })
       fetchData()
     } catch (e: any) {
-      alert('Falha ao excluir: ' + (e?.response?.data?.detail || e.message))
+      onFeedback({
+        tone: 'alert',
+        mensagem: 'Falha ao excluir: ' + (e?.response?.data?.detail || e.message),
+      })
     } finally {
       setExcluindoLanc(false)
     }
@@ -6633,7 +6716,7 @@ function DREDespesasView({ mes, onMesChange }: { mes: string; onMesChange: (m: s
   )
 }
 
-function DRETributarioView() {
+function DRETributarioView({ onFeedback }: { onFeedback: (f: FeedbackMessage | null) => void }) {
   const [config, setConfig] = useState<ConfigTributaria | null>(null)
   const [editando, setEditando] = useState(false)
   const [form, setForm] = useState<ConfigTributaria | null>(null)
@@ -6666,8 +6749,12 @@ function DRETributarioView() {
       const r = await axios.get(`${API_URL}/tributario`)
       setConfig(r.data)
       setEditando(false)
+      onFeedback({ tone: 'ok', mensagem: 'Configuração tributária atualizada.' })
     } catch (e) {
-      alert('Falha: ' + (e as any).message)
+      onFeedback({
+        tone: 'alert',
+        mensagem: 'Falha ao salvar configuração: ' + ((e as any).message || 'erro desconhecido'),
+      })
     }
   }
 
@@ -7277,6 +7364,13 @@ function BPPage() {
   const [loading, setLoading] = useState(false)
   const [salvando, setSalvando] = useState(false)
   const [dirty, setDirty] = useState(false)
+  // Feedback inline — substitui alert() em salvar/fechar/auditar/reabrir.
+  const [feedback, setFeedback] = useState<FeedbackMessage | null>(null)
+  // Confirms internos (substituem window.confirm em auditar e reabrir).
+  const [confirmAuditar, setConfirmAuditar] = useState(false)
+  const [confirmReabrir, setConfirmReabrir] = useState(false)
+  const [auditando, setAuditando] = useState(false)
+  const [reabrindo, setReabrindo] = useState(false)
 
   const fetchBP = async () => {
     setLoading(true)
@@ -7347,8 +7441,12 @@ function BPPage() {
       const res = await axios.post(`${API_URL}/bp`, payload)
       setBp(res.data)
       setDirty(false)
+      setFeedback({ tone: 'ok', mensagem: 'Rascunho salvo.' })
     } catch (e: any) {
-      alert('Falha ao salvar: ' + (e.response?.data?.detail || e.message))
+      setFeedback({
+        tone: 'alert',
+        mensagem: 'Falha ao salvar: ' + (e.response?.data?.detail || e.message),
+      })
     } finally {
       setSalvando(false)
     }
@@ -7362,14 +7460,20 @@ function BPPage() {
     try {
       const res = await axios.post(`${API_URL}/bp/fechar?mes=${mes}`)
       setBp(res.data)
-      alert('BP fechado com sucesso.')
+      setFeedback({ tone: 'ok', mensagem: 'BP fechado com sucesso.' })
       fetchBP()
     } catch (e: any) {
       const d = e.response?.data?.detail
       if (d && typeof d === 'object' && d.diferenca !== undefined) {
-        alert(`BP não balanceia.\n\nAtivo: ${formatCurrency(d.total_ativo)}\nPassivo + PL: ${formatCurrency(d.total_passivo + d.total_patrimonio_liquido)}\nDiferença: ${formatCurrency(d.diferenca)}`)
+        setFeedback({
+          tone: 'alert',
+          mensagem: `BP não balanceia. Ativo ${formatCurrency(d.total_ativo)} · Passivo + PL ${formatCurrency(d.total_passivo + d.total_patrimonio_liquido)} · Diferença ${formatCurrency(d.diferenca)}.`,
+        })
       } else {
-        alert('Falha ao fechar: ' + (d || e.message))
+        setFeedback({
+          tone: 'alert',
+          mensagem: 'Falha ao fechar: ' + (d || e.message),
+        })
       }
     } finally {
       setFechandoBP(false)
@@ -7391,25 +7495,44 @@ function BPPage() {
     await executarFechamento()
   }
 
-  const auditarBP = async () => {
-    if (!confirm('Auditar BP torna-o imutável. Confirmar?')) return
+  // auditarBP / reabrirBP migrados pra <Confirm> (renderizado mais abaixo).
+  // O confirm() nativo bloqueia thread, ignora style do app e nao da feedback
+  // estruturado de erro.
+  const auditarBP = () => setConfirmAuditar(true)
+  const reabrirBP = () => setConfirmReabrir(true)
+
+  const executarAuditar = async () => {
+    setAuditando(true)
     try {
       const res = await axios.post(`${API_URL}/bp/auditar?mes=${mes}`)
       setBp(res.data)
-      alert('BP auditado.')
+      setConfirmAuditar(false)
+      setFeedback({ tone: 'ok', mensagem: 'BP auditado.' })
     } catch (e: any) {
-      alert('Falha: ' + (e.response?.data?.detail || e.message))
+      setFeedback({
+        tone: 'alert',
+        mensagem: 'Falha ao auditar: ' + (e.response?.data?.detail || e.message),
+      })
+    } finally {
+      setAuditando(false)
     }
   }
 
-  const reabrirBP = async () => {
-    if (!confirm('Reabrir volta o BP para rascunho editável. Confirmar?')) return
+  const executarReabrir = async () => {
+    setReabrindo(true)
     try {
       const res = await axios.post(`${API_URL}/bp/reabrir?mes=${mes}`)
       setBp(res.data)
+      setConfirmReabrir(false)
+      setFeedback({ tone: 'ok', mensagem: 'BP reaberto para rascunho.' })
       fetchBP()
     } catch (e: any) {
-      alert('Falha: ' + (e.response?.data?.detail || e.message))
+      setFeedback({
+        tone: 'alert',
+        mensagem: 'Falha ao reabrir: ' + (e.response?.data?.detail || e.message),
+      })
+    } finally {
+      setReabrindo(false)
     }
   }
 
@@ -7422,6 +7545,10 @@ function BPPage() {
             Posição patrimonial em uma data. Estrutura Lei 6.404/76 + CPC 26. Ativo = Passivo + PL.
           </p>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
       </div>
 
       {/* Topbar: seletor + status + ações */}
@@ -7515,6 +7642,40 @@ function BPPage() {
         loading={fechandoBP}
         onConfirm={confirmarSalvarEFechar}
         onCancel={() => setConfirmFecharSalvar(false)}
+      />
+
+      {/* Auditar BP — torna imutavel; danger=true (rosa) pra deixar serio */}
+      <Confirm
+        open={confirmAuditar}
+        title="Auditar BP?"
+        body={
+          <p>
+            Auditar marca este BP como <strong>imutável</strong>. Depois desta ação
+            ele não pode mais ser editado nem reaberto sem trilha de auditoria.
+            Continuar?
+          </p>
+        }
+        confirmLabel="Auditar"
+        danger
+        loading={auditando}
+        onConfirm={executarAuditar}
+        onCancel={() => setConfirmAuditar(false)}
+      />
+
+      {/* Reabrir BP — destrava pra rascunho editavel */}
+      <Confirm
+        open={confirmReabrir}
+        title="Reabrir BP?"
+        body={
+          <p>
+            Reabrir volta o BP para <strong>rascunho editável</strong>. Os valores
+            ficam disponíveis pra ajuste e o status muda. Continuar?
+          </p>
+        }
+        confirmLabel="Reabrir"
+        loading={reabrindo}
+        onConfirm={executarReabrir}
+        onCancel={() => setConfirmReabrir(false)}
       />
     </div>
   )
