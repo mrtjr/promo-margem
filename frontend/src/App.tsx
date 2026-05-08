@@ -3,7 +3,10 @@ import { LayoutDashboard, Package, Calculator, TrendingUp, AlertTriangle, Sparkl
 import axios from 'axios'
 import type { Produto, Grupo, Stats } from './types'
 import { EmptyState } from './components/EmptyState'
+import { FeedbackBanner, type FeedbackMessage } from './components/FeedbackBanner'
 import { MetricValue } from './components/MetricValue'
+import { WidgetSkeleton } from './components/WidgetSkeleton'
+import { useEscapeKey } from './hooks/useEscapeKey'
 import { formatCurrency, formatDate, formatDateTime, formatNumber, formatPercent } from './lib/format'
 
 // API base URL: Electron injeta axios.defaults.baseURL no preload/main.
@@ -312,6 +315,9 @@ function ComprasPage({ onComplete }: any) {
     { id: Date.now(), matchedId: null, codigo: '', name: '', cidade: '', qtd: '', peso: '', vl_fp: '', grupo_id: null }
   ])
   const [submitting, setSubmitting] = useState(false)
+  // Feedback inline (substitui alert nativos: avisos modais bloqueavam o
+  // fluxo e tinham tom destoante do resto do app).
+  const [feedback, setFeedback] = useState<FeedbackMessage | null>(null)
 
   useEffect(() => {
     axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
@@ -399,22 +405,36 @@ function ComprasPage({ onComplete }: any) {
         grupo_id: r.grupo_id
       }))
 
-    if (validEntradas.length === 0) return alert("Erro: Toda linha deve ter Produto, Cidade, Peso, Valor e Categoria selecionados!")
+    if (validEntradas.length === 0) {
+      setFeedback({
+        tone: 'warn',
+        mensagem: 'Toda linha precisa ter Produto, Cidade, Peso, Valor e Categoria preenchidos.',
+      })
+      return
+    }
 
+    setFeedback(null)
     setSubmitting(true)
     try {
       await axios.post(`${API_URL}/entradas/bulk`, { entradas: validEntradas })
-      alert(`${validEntradas.length} lançamentos realizados!`)
-      onComplete()
+      setFeedback({
+        tone: 'ok',
+        mensagem: `${validEntradas.length} lançamento${validEntradas.length === 1 ? '' : 's'} salvo${validEntradas.length === 1 ? '' : 's'}.`,
+      })
+      // Pequeno delay pro usuario ver a confirmacao antes do redirect.
+      setTimeout(() => onComplete(), 600)
     } catch (err) {
-      alert("Erro ao salvar lançamentos no servidor. Verifique os dados.")
+      setFeedback({
+        tone: 'alert',
+        mensagem: 'Erro ao salvar lançamentos no servidor. Confira os dados e tente de novo.',
+      })
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <div className="max-w-7xl mx-auto p-8 space-y-8">
+    <div className="max-w-7xl mx-auto p-8 space-y-6">
       <header className="flex justify-between items-center">
         <div>
           <h2 className="headline text-4xl tracking-editorial mb-2 flex items-center gap-3">
@@ -423,15 +443,17 @@ function ComprasPage({ onComplete }: any) {
           <p className="text-slate-500 font-medium">Os produtos que não estiverem no sistema serão <b>criados automaticamente</b>.</p>
         </div>
         <div className="flex gap-4">
-          <button 
+          <button
             onClick={handleSubmit}
             disabled={submitting}
             className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 shadow-xl shadow-blue-600/20 transition-all active:scale-95 flex items-center gap-2"
           >
-            <Save size={20} /> {submitting ? 'Salvando...' : 'Finalizar Cadastro'}
+            <Save size={20} /> {submitting ? 'Salvando…' : 'Finalizar Cadastro'}
           </button>
         </div>
       </header>
+
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       <div 
         onPaste={handlePaste}
@@ -662,6 +684,9 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
+  // ESC fecha (mesmo padrao dos outros modais), exceto durante o save assincrono
+  useEscapeKey(onClose, { disabled: salvando })
+
   const salvar = async () => {
     setErro(null)
     setSalvando(true)
@@ -684,14 +709,25 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-6">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-5">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-6"
+      onClick={() => !salvando && onClose()}
+    >
+      <div
+        className="bg-white rounded-3xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-5"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">SKU {produto.sku}</p>
-            <h3 className="text-xl font-bold tracking-tight">Editar produto</h3>
+            <p className="section-label">SKU {produto.sku}</p>
+            <h3 className="headline text-2xl tracking-editorial">Editar produto</h3>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1">
+          <button
+            onClick={onClose}
+            disabled={salvando}
+            className="text-slate-400 hover:text-slate-700 p-1 disabled:opacity-50"
+            title="Fechar (ESC)"
+          >
             <X size={20} />
           </button>
         </div>
@@ -795,7 +831,7 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
             disabled={salvando}
             className="bg-blue-600 text-white px-5 py-2 rounded-xl font-bold text-sm hover:bg-blue-700 disabled:opacity-50 transition-all"
           >
-            {salvando ? 'Salvando...' : 'Salvar'}
+            {salvando ? 'Salvando…' : 'Salvar'}
           </button>
         </div>
       </div>
@@ -1213,6 +1249,12 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
   const [topClientes7d, setTopClientes7d] = useState<ClienteRankingItem[]>([])
   const [topProdutos7d, setTopProdutos7d] = useState<TopProdutoItem[]>([])
   const [rupturas, setRupturas] = useState<RupturaItem[]>([])
+  // Estados de carga dos 3 widgets do bloco "Exploracao rapida". Sem isso a UI
+  // mostrava "Sem dados" no primeiro frame, antes do fetch responder — confunde
+  // (parece estado vazio de verdade) e pisca quando a resposta chega.
+  const [loadingTopClientes, setLoadingTopClientes] = useState(true)
+  const [loadingTopProdutos, setLoadingTopProdutos] = useState(true)
+  const [loadingRupturas, setLoadingRupturas] = useState(true)
 
   useEffect(() => {
     axios.get(`${API_URL}/categorias/saude`).then(res => setSaudeCategorias(res.data)).catch(() => {})
@@ -1225,14 +1267,17 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
       })
       .then((res) => setTopClientes7d(res.data))
       .catch(() => setTopClientes7d([]))
+      .finally(() => setLoadingTopClientes(false))
     axios
       .get(`${API_URL}/produtos/top-vendidos`, { params: { periodo_dias: 7, limit: 5 } })
       .then((res) => setTopProdutos7d(res.data))
       .catch(() => setTopProdutos7d([]))
+      .finally(() => setLoadingTopProdutos(false))
     axios
       .get(`${API_URL}/produtos/rupturas`, { params: { limit: 5 } })
       .then((res) => setRupturas(res.data))
       .catch(() => setRupturas([]))
+      .finally(() => setLoadingRupturas(false))
   }, [])
 
   const classificaMargem = (m: number | null | undefined): 'alerta'|'atencao'|'saudavel'|'acima_meta'|'sem_vendas' => {
@@ -1637,7 +1682,9 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
               Ver todos →
             </button>
           </div>
-          {topClientes7d.length === 0 ? (
+          {loadingTopClientes ? (
+            <WidgetSkeleton rows={5} />
+          ) : topClientes7d.length === 0 ? (
             <EmptyState variant="empty" compact title="Sem clientes identificados em 7 dias." />
           ) : (
             <ul className="divide-y divide-[color:var(--border)]">
@@ -1671,7 +1718,9 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
               Ver SKUs →
             </button>
           </div>
-          {topProdutos7d.length === 0 ? (
+          {loadingTopProdutos ? (
+            <WidgetSkeleton rows={5} />
+          ) : topProdutos7d.length === 0 ? (
             <EmptyState variant="empty" compact title="Sem vendas registradas em 7 dias." />
           ) : (
             <ul className="divide-y divide-[color:var(--border)]">
@@ -1704,7 +1753,9 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
               Histórico →
             </button>
           </div>
-          {rupturas.length === 0 ? (
+          {loadingRupturas ? (
+            <WidgetSkeleton rows={3} />
+          ) : rupturas.length === 0 ? (
             <EmptyState
               variant="empty"
               compact
@@ -2000,6 +2051,9 @@ function RelatoriosPage() {
   const [summary, setSummary] = useState<any>(null)
   const [copied, setCopied] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  // Feedback inline: substitui os alert() nativos no fluxo de fechamento manual
+  // e na ponte CSV → analise. Tom coerente com o resto do app.
+  const [feedback, setFeedback] = useState<FeedbackMessage | null>(null)
 
   const carregarProdutos = () => {
     axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
@@ -2027,7 +2081,10 @@ function RelatoriosPage() {
       const res = await axios.get(`${API_URL}/fechamento/analise?data=${dataAlvo}`)
       setSummary(res.data)
     } catch (e) {
-      alert('Importação concluída, mas não consegui carregar a análise. Verifique na aba Histórico.')
+      setFeedback({
+        tone: 'warn',
+        mensagem: 'Importação concluída, mas não consegui carregar a análise. Confira pela aba Histórico.',
+      })
     }
     setImportOpen(false)
     carregarProdutos()
@@ -2047,15 +2104,25 @@ function RelatoriosPage() {
         }
       })
 
-    if (items.length === 0) return alert("Lance pelo menos uma venda!")
+    if (items.length === 0) {
+      setFeedback({
+        tone: 'warn',
+        mensagem: 'Lance pelo menos uma venda antes de finalizar o dia.',
+      })
+      return
+    }
 
+    setFeedback(null)
     setSubmitting(true)
     try {
       const res = await axios.post(`${API_URL}/fechamento`, { vendas: items })
       setSummary(res.data)
     } catch (err) {
       console.error(err)
-      alert("Erro ao salvar vendas.")
+      setFeedback({
+        tone: 'alert',
+        mensagem: 'Erro ao salvar vendas. Confira a conexão com o servidor e tente de novo.',
+      })
     } finally {
       setSubmitting(false)
     }
@@ -2132,6 +2199,8 @@ function RelatoriosPage() {
           onCommitted={handleImportConcluido}
         />
       )}
+
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       {produtos.length === 0 && (
         <div className="claude-card p-8 text-center">
@@ -2259,6 +2328,11 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const [resolucoes, setResolucoes] = useState<Record<number, any>>({})
   const [submitting, setSubmitting] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+
+  // ESC fecha o modal — mas nunca durante uma operacao em andamento (upload,
+  // commit, multi-data) e nunca na tela de sucesso (a saida certa eh "Ver
+  // analise" ou "Fechar", nao um atalho que pula a confirmacao visual).
+  useEscapeKey(onClose, { disabled: submitting || estado === 'sucesso_multi' })
 
   // FASE 1: Upload → Auditoria (inspecao SEM gravar nada)
   const enviarAuditoria = async () => {
@@ -2454,8 +2528,18 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   })()
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-6">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-6"
+      onClick={() => {
+        // Click no backdrop fecha — exceto durante operacao critica e na tela de
+        // sucesso (onde a saida certa eh "Ver analise" ou "Fechar").
+        if (!submitting && estado !== 'sucesso_multi') onClose()
+      }}
+    >
+      <div
+        className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header — segue padrao Fraunces editorial usado em todos os modulos */}
         <div className="p-6 border-b border-[color:var(--border)] flex items-center justify-between">
           <div>
@@ -2582,7 +2666,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
                 className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 disabled:opacity-50 transition-all"
                 title={motivoBloqueio || ''}
               >
-                {submitting ? 'Importando...' : (preview?.ja_existe_fechamento ? 'Substituir e importar' : 'Confirmar importação')}
+                {submitting ? 'Importando…' : (preview?.ja_existe_fechamento ? 'Substituir e importar' : 'Confirmar importação')}
               </button>
             )}
             {estado === 'sucesso_multi' && (
@@ -4900,20 +4984,22 @@ function ClienteDetalheModal({ clienteId, onClose }: { clienteId: number; onClos
       .finally(() => setLoading(false))
   }, [clienteId])
 
-  // Fecha com ESC
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  // Fecha com ESC — mesmo padrao usado em ProdutoEditModal e ImportCSVModal
+  useEscapeKey(onClose)
 
   // Helpers da timeline (escala dinamica + min height pra meses zerados)
   const evolMaxValor = Math.max(1, ...evolucao.map((m) => m.valor))
   const evolHasData = evolucao.some((m) => m.valor > 0)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 backdrop-blur-sm p-6 overflow-y-auto">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-3xl my-8 flex flex-col overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 backdrop-blur-sm p-6 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-3xl my-8 flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="p-6 border-b border-[color:var(--border)] flex items-start justify-between gap-4">
           <div className="min-w-0">
