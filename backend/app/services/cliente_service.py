@@ -292,6 +292,139 @@ def top_compradores_produto(
 # Detalhe de um cliente (perfil)
 # ---------------------------------------------------------------------------
 
+def resumo_periodo(
+    db: Session,
+    periodo_dias: int = 30,
+    incluir_consumidor_final: bool = False,
+    hoje: Optional[date] = None,
+) -> Dict:
+    """
+    KPIs agregados da janela:
+      - total_clientes:       clientes com pelo menos 1 venda no período
+      - faturamento_total:    soma de preco × qtd no período
+      - ticket_medio:         faturamento_total / total_transacoes
+      - clientes_novos:       clientes cuja primeira_compra cai dentro da
+                              janela (i.e. estrearam no período)
+    """
+    hoje_d = hoje or hoje_brt()
+    inicio = hoje_d - timedelta(days=periodo_dias)
+
+    base = db.query(models.Venda).join(
+        models.Cliente, models.Cliente.id == models.Venda.cliente_id
+    ).filter(
+        models.Venda.data_fechamento >= inicio,
+        models.Venda.data_fechamento <= hoje_d,
+    )
+    if not incluir_consumidor_final:
+        base = base.filter(models.Cliente.is_consumidor_final == False)  # noqa: E712
+
+    agg = base.with_entities(
+        func.count(func.distinct(models.Venda.cliente_id)).label("clientes"),
+        func.coalesce(
+            func.sum(models.Venda.preco_venda * models.Venda.quantidade), 0.0
+        ).label("faturamento"),
+        func.count(models.Venda.id).label("transacoes"),
+    ).first()
+
+    n_clientes = int(agg[0] or 0)
+    faturamento = float(agg[1] or 0)
+    transacoes = int(agg[2] or 0)
+    ticket = (faturamento / transacoes) if transacoes > 0 else 0.0
+
+    # Clientes novos: primeira_compra dentro da janela
+    novos_q = db.query(func.count(models.Cliente.id)).filter(
+        models.Cliente.primeira_compra >= inicio,
+        models.Cliente.primeira_compra <= hoje_d,
+    )
+    if not incluir_consumidor_final:
+        novos_q = novos_q.filter(models.Cliente.is_consumidor_final == False)  # noqa: E712
+    n_novos = int(novos_q.scalar() or 0)
+
+    return {
+        "periodo_dias": periodo_dias,
+        "total_clientes": n_clientes,
+        "faturamento_total": round(faturamento, 2),
+        "ticket_medio": round(ticket, 2),
+        "transacoes": transacoes,
+        "clientes_novos": n_novos,
+    }
+
+
+def evolucao_mensal_cliente(
+    db: Session,
+    cliente_id: int,
+    meses: int = 6,
+    hoje: Optional[date] = None,
+) -> List[Dict]:
+    """
+    Série mensal das últimas N meses-completos para um cliente.
+    Retorna lista de {mes (YYYY-MM-01), valor, transacoes, qtd}.
+    Meses sem venda aparecem zerados — sem buracos na timeline.
+    """
+    hoje_d = hoje or hoje_brt()
+    # Início = 1º dia do mês `meses-1` antes do mês atual (inclusive corrente)
+    ano = hoje_d.year
+    mes = hoje_d.month
+    # Primeira competência da janela
+    total_meses_back = meses - 1
+    primeiro_mes = mes - total_meses_back
+    primeiro_ano = ano
+    while primeiro_mes <= 0:
+        primeiro_mes += 12
+        primeiro_ano -= 1
+    inicio = date(primeiro_ano, primeiro_mes, 1)
+
+    # Pega vendas crus e agrega em Python — portatil entre SQLite e Postgres
+    # (evita date_trunc/strftime que diferem entre dialetos)
+    vendas_raw = db.query(
+        models.Venda.data_fechamento,
+        models.Venda.preco_venda,
+        models.Venda.quantidade,
+    ).filter(
+        models.Venda.cliente_id == cliente_id,
+        models.Venda.data_fechamento >= inicio,
+        models.Venda.data_fechamento <= hoje_d,
+    ).all()
+
+    por_mes: Dict[str, Dict] = {}
+    for v in vendas_raw:
+        d = v.data_fechamento
+        if d is None:
+            continue
+        mes_iso = f"{d.year:04d}-{d.month:02d}"
+        bucket = por_mes.setdefault(mes_iso, {
+            "mes": f"{mes_iso}-01",
+            "valor": 0.0,
+            "transacoes": 0,
+            "qtd": 0.0,
+        })
+        bucket["valor"] += float(v.preco_venda or 0) * float(v.quantidade or 0)
+        bucket["transacoes"] += 1
+        bucket["qtd"] += float(v.quantidade or 0)
+    # Arredonda no final pra evitar erro de float acumulado
+    for b in por_mes.values():
+        b["valor"] = round(b["valor"], 2)
+        b["qtd"] = round(b["qtd"], 2)
+
+    # Preenche meses sem venda com zeros para não ter buraco no gráfico
+    out: List[Dict] = []
+    cur_ano, cur_mes = primeiro_ano, primeiro_mes
+    for _ in range(meses):
+        chave = f"{cur_ano:04d}-{cur_mes:02d}"
+        out.append(por_mes.get(chave, {
+            "mes": f"{chave}-01",
+            "valor": 0.0,
+            "transacoes": 0,
+            "qtd": 0.0,
+        }))
+        cur_mes += 1
+        if cur_mes > 12:
+            cur_mes = 1
+            cur_ano += 1
+
+    return out
+
+
 def detalhe_cliente(
     db: Session,
     cliente_id: int,

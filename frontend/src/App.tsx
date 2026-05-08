@@ -16,6 +16,13 @@ function App() {
   const [currentPage, setCurrentPage] = useState('dashboard')
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [clienteDrillTarget, setClienteDrillTarget] = useState<number | null>(null)
+
+  // Abre Clientes com drill direto ao chamar do widget Dashboard.
+  const abrirClienteDrill = (id: number) => {
+    setClienteDrillTarget(id)
+    setCurrentPage('clientes')
+  }
 
   // Stats refetch ao montar E sempre que o usuário volta ao Dashboard.
   // Sem isso, mutations em outras páginas (fechamento do dia, importar CSV,
@@ -174,10 +181,15 @@ function App() {
           <EmptyState variant="loading" className="h-full" title="Carregando…" />
         ) : (
           <div className="flex-1 overflow-y-auto">
-            {currentPage === 'dashboard' && <DashboardPage stats={stats} onNavigate={setCurrentPage} />}
+            {currentPage === 'dashboard' && <DashboardPage stats={stats} onNavigate={setCurrentPage} onAbrirCliente={abrirClienteDrill} />}
             {currentPage === 'chat' && <ChatPage />}
             {currentPage === 'produtos' && <ProdutosPage />}
-            {currentPage === 'clientes' && <ClientesPage />}
+            {currentPage === 'clientes' && (
+              <ClientesPage
+                key={clienteDrillTarget ?? 'standalone'}
+                initialClienteId={clienteDrillTarget}
+              />
+            )}
             {currentPage === 'compras' && <ComprasPage onComplete={() => setCurrentPage('produtos')} />}
             {currentPage === 'relatorios' && <RelatoriosPage />}
             {currentPage === 'briefing' && <BriefingPage />}
@@ -1175,17 +1187,24 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
   )
 }
 
-function DashboardPage({ stats, onNavigate }: any) {
+function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
   const [saudeCategorias, setSaudeCategorias] = useState<any[]>([])
   const [projecao, setProjecao] = useState<any>(null)
   const [serie, setSerie] = useState<PontoSerie[]>([])
   const [quebraResumo, setQuebraResumo] = useState<any>(null)
+  const [topClientes7d, setTopClientes7d] = useState<ClienteRankingItem[]>([])
 
   useEffect(() => {
     axios.get(`${API_URL}/categorias/saude`).then(res => setSaudeCategorias(res.data)).catch(() => {})
     axios.get(`${API_URL}/projecao/amanha?top_n=0`).then(res => setProjecao(res.data)).catch(() => {})
     axios.get(`${API_URL}/margem/serie?dias=30`).then(res => setSerie(res.data)).catch(() => {})
     axios.get(`${API_URL}/quebras/resumo`).then(res => setQuebraResumo(res.data)).catch(() => {})
+    axios
+      .get(`${API_URL}/clientes/ranking`, {
+        params: { periodo_dias: 7, limit: 5, incluir_consumidor_final: false },
+      })
+      .then((res) => setTopClientes7d(res.data))
+      .catch(() => setTopClientes7d([]))
   }, [])
 
   const classificaMargem = (m: number | null | undefined): 'alerta'|'atencao'|'saudavel'|'acima_meta'|'sem_vendas' => {
@@ -1464,6 +1483,60 @@ function DashboardPage({ stats, onNavigate }: any) {
             )}
           </div>
         </div>
+      </div>
+
+      {/* ===================================================================
+          BENTO ROW 3.5 — Widget Top 5 clientes (semana) — compacto, full-width
+          Clique abre drill-down do cliente sem mudar de pagina.
+          =================================================================== */}
+      <div className="claude-card p-5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="section-label">Últimos 7 dias</p>
+            <h3 className="headline text-xl">Top 5 clientes da semana</h3>
+          </div>
+          <button
+            onClick={() => onNavigate('clientes')}
+            className="text-xs font-bold text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] uppercase tracking-widest transition-colors"
+          >
+            Ver todos →
+          </button>
+        </div>
+        {topClientes7d.length === 0 ? (
+          <p className="text-xs text-[color:var(--claude-stone)] italic py-4 text-center">
+            Sem clientes identificados nos últimos 7 dias.
+          </p>
+        ) : (
+          <ul className="divide-y divide-[color:var(--border)]">
+            {topClientes7d.map((c, idx) => (
+              <li key={c.cliente_id}>
+                <button
+                  onClick={() => onAbrirCliente && onAbrirCliente(c.cliente_id)}
+                  className="w-full text-left flex items-center justify-between gap-3 py-2.5 px-1 hover:bg-[color:var(--claude-cream-deep)]/30 rounded transition-colors"
+                  title="Ver detalhes do cliente"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="w-6 text-[color:var(--claude-stone)] font-mono tabular-nums text-sm">
+                      {idx + 1}.
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-medium text-[color:var(--claude-ink)] truncate">{c.nome}</p>
+                      <p className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+                        {c.segmento_label}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 shrink-0">
+                    <span className="text-xs text-[color:var(--claude-stone)] font-mono tabular-nums">
+                      {c.total_compras_periodo} compra{c.total_compras_periodo === 1 ? '' : 's'}
+                    </span>
+                    <MetricValue value={formatCurrency(c.valor_periodo)} size="sm" />
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* ===================================================================
@@ -4315,12 +4388,14 @@ const SEGMENTO_TONE: Record<string, string> = {
   regular: 'pill-muted',
 }
 
-function ClientesPage() {
+function ClientesPage({ initialClienteId }: { initialClienteId?: number | null } = {}) {
   const [aba, setAba] = useState<'ranking' | 'por_produto'>('ranking')
   const [periodo, setPeriodo] = useState(30)
   const [incluirCF, setIncluirCF] = useState(false)
   const [ranking, setRanking] = useState<ClienteRankingItem[]>([])
   const [loadingRanking, setLoadingRanking] = useState(true)
+  const [resumo, setResumo] = useState<any | null>(null)
+  const [clienteDetalheId, setClienteDetalheId] = useState<number | null>(initialClienteId ?? null)
 
   const [produtos, setProdutos] = useState<Produto[]>([])
   const [produtoSel, setProdutoSel] = useState<number | null>(null)
@@ -4340,6 +4415,13 @@ function ClientesPage() {
       .then((res) => setRanking(res.data))
       .catch((err) => console.error('Erro ao carregar ranking:', err))
       .finally(() => setLoadingRanking(false))
+    // Resumo do período carrega em paralelo
+    axios
+      .get(`${API_URL}/clientes/resumo`, {
+        params: { periodo_dias: periodo, incluir_consumidor_final: incluirCF },
+      })
+      .then((res) => setResumo(res.data))
+      .catch((err) => console.error('Erro ao carregar resumo:', err))
   }, [periodo, incluirCF])
 
   useEffect(() => {
@@ -4388,6 +4470,30 @@ function ClientesPage() {
           </select>
         </div>
       </header>
+
+      {/* Cards-resumo do periodo */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="claude-card p-4">
+          <p className="section-label">Clientes ativos</p>
+          <p className="mt-2"><MetricValue value={resumo ? String(resumo.total_clientes) : '—'} size="2xl" /></p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">com pelo menos 1 compra no período</p>
+        </div>
+        <div className="claude-card p-4">
+          <p className="section-label">Faturamento</p>
+          <p className="mt-2"><MetricValue value={resumo ? formatCurrency(resumo.faturamento_total) : '—'} size="2xl" /></p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">{resumo?.transacoes ?? '—'} transações</p>
+        </div>
+        <div className="claude-card p-4">
+          <p className="section-label">Ticket médio</p>
+          <p className="mt-2"><MetricValue value={resumo ? formatCurrency(resumo.ticket_medio) : '—'} size="2xl" /></p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">por transação</p>
+        </div>
+        <div className="claude-card p-4">
+          <p className="section-label">Clientes novos</p>
+          <p className="mt-2"><MetricValue value={resumo ? String(resumo.clientes_novos) : '—'} size="2xl" toneClass="text-[color:var(--claude-sage)]" /></p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">primeira compra no período</p>
+        </div>
+      </div>
 
       <div className="flex gap-2 border-b border-[color:var(--border)]">
         {(['ranking', 'por_produto'] as const).map((a) => (
@@ -4444,7 +4550,11 @@ function ClientesPage() {
                 </thead>
                 <tbody className="divide-y divide-[color:var(--border)]">
                   {ranking.map((c) => (
-                    <tr key={c.cliente_id} className="hover:bg-[color:var(--claude-cream-deep)]/20">
+                    <tr
+                      key={c.cliente_id}
+                      onClick={() => setClienteDetalheId(c.cliente_id)}
+                      className="hover:bg-[color:var(--claude-cream-deep)]/30 cursor-pointer transition-colors"
+                      title="Ver detalhes do cliente">
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-[color:var(--claude-ink)]">{c.nome}</div>
                         {c.is_consumidor_final && (
@@ -4556,6 +4666,213 @@ function ClientesPage() {
           </div>
         </div>
       )}
+
+      {clienteDetalheId !== null && (
+        <ClienteDetalheModal
+          clienteId={clienteDetalheId}
+          onClose={() => setClienteDetalheId(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// ClienteDetalheModal — drill-down do cliente (overlay, sem expandir nivel
+// de navegacao; pode ser aberto da ClientesPage e do widget Dashboard).
+// ============================================================================
+
+function ClienteDetalheModal({ clienteId, onClose }: { clienteId: number; onClose: () => void }) {
+  const [detalhe, setDetalhe] = useState<any | null>(null)
+  const [evolucao, setEvolucao] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [erro, setErro] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setErro(null)
+    Promise.all([
+      axios.get(`${API_URL}/clientes/${clienteId}`, { params: { periodo_dias: 90, top_skus_n: 10 } }),
+      axios.get(`${API_URL}/clientes/${clienteId}/evolucao`, { params: { meses: 6 } }),
+    ])
+      .then(([d, e]) => {
+        setDetalhe(d.data)
+        setEvolucao(e.data?.meses || [])
+      })
+      .catch((err) => {
+        console.error(err)
+        setErro(err?.response?.data?.detail || 'Erro ao carregar detalhes do cliente.')
+      })
+      .finally(() => setLoading(false))
+  }, [clienteId])
+
+  // Fecha com ESC
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  // Helpers da timeline (escala dinamica + min height pra meses zerados)
+  const evolMaxValor = Math.max(1, ...evolucao.map((m) => m.valor))
+  const evolHasData = evolucao.some((m) => m.valor > 0)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 backdrop-blur-sm p-6 overflow-y-auto">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-3xl my-8 flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="p-6 border-b border-[color:var(--border)] flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <button
+              onClick={onClose}
+              className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] mb-1 flex items-center gap-1"
+            >
+              ← Voltar para Clientes
+            </button>
+            <h3 className="headline text-3xl tracking-editorial truncate">
+              {detalhe?.nome || (loading ? 'Carregando…' : 'Cliente')}
+            </h3>
+            {detalhe?.is_consumidor_final && (
+              <p className="text-xs text-[color:var(--claude-stone)] uppercase tracking-widest mt-1">
+                balcão · cliente coletivo de vendas anônimas
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 shrink-0">
+            <X size={22} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {loading && <EmptyState variant="loading" title="Carregando detalhes…" />}
+          {erro && (
+            <EmptyState
+              variant="error"
+              icon={<AlertCircle size={32} />}
+              title="Não consegui carregar este cliente."
+              description={erro}
+            />
+          )}
+
+          {!loading && !erro && detalhe && (
+            <>
+              {/* Cards-resumo do cliente */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="claude-card p-3">
+                  <p className="section-label">Total comprado</p>
+                  <p className="mt-1.5"><MetricValue value={formatCurrency(detalhe.total_compras_valor || 0)} size="lg" /></p>
+                  <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 uppercase tracking-widest">desde o cadastro</p>
+                </div>
+                <div className="claude-card p-3">
+                  <p className="section-label">Compras totais</p>
+                  <p className="mt-1.5"><MetricValue value={String(detalhe.total_compras_count || 0)} size="lg" /></p>
+                  <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 uppercase tracking-widest">transações</p>
+                </div>
+                <div className="claude-card p-3">
+                  <p className="section-label">Ticket médio</p>
+                  <p className="mt-1.5">
+                    <MetricValue
+                      value={formatCurrency(
+                        (detalhe.total_compras_count || 0) > 0
+                          ? (detalhe.total_compras_valor || 0) / detalhe.total_compras_count
+                          : 0
+                      )}
+                      size="lg"
+                    />
+                  </p>
+                  <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 uppercase tracking-widest">por compra</p>
+                </div>
+                <div className="claude-card p-3">
+                  <p className="section-label">Última compra</p>
+                  <p className="kpi-value text-lg leading-none mt-1.5 text-[color:var(--claude-ink)]">
+                    {detalhe.ultima_compra || '—'}
+                  </p>
+                  <p className="text-[10px] text-[color:var(--claude-stone)] mt-0.5 uppercase tracking-widest">
+                    primeira: {detalhe.primeira_compra || '—'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Evolução mensal — barras simples sem libs */}
+              <div className="claude-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="section-label">Evolução mensal · 6 meses</p>
+                  <p className="text-[10px] text-[color:var(--claude-stone)]">valor por mês</p>
+                </div>
+                {evolHasData ? (
+                  <div className="flex items-end gap-1.5 h-24">
+                    {evolucao.map((m) => {
+                      const altura = m.valor > 0 ? Math.max(6, (m.valor / evolMaxValor) * 88) : 2
+                      const mesLabel = m.mes.slice(5, 7) + '/' + m.mes.slice(2, 4)
+                      const tone = m.valor > 0 ? 'var(--claude-coral)' : 'var(--claude-stone)'
+                      return (
+                        <div key={m.mes} className="flex-1 flex flex-col items-center justify-end gap-1" title={`${mesLabel}: ${formatCurrency(m.valor)} · ${m.transacoes} compra(s)`}>
+                          <div
+                            className="w-full rounded-t-sm transition-all"
+                            style={{ height: `${altura}px`, background: tone, opacity: m.valor > 0 ? 0.85 : 0.2 }}
+                          />
+                          <span className="text-[9px] text-[color:var(--claude-stone)] font-mono tabular-nums">{mesLabel}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-xs text-[color:var(--claude-stone)] italic py-4 text-center">
+                    Sem compras nos últimos 6 meses.
+                  </p>
+                )}
+              </div>
+
+              {/* Top SKUs */}
+              <div className="claude-card overflow-hidden">
+                <div className="px-4 py-3 border-b border-[color:var(--border)]">
+                  <p className="section-label">Top SKUs comprados (90 dias)</p>
+                </div>
+                {(detalhe.top_skus || []).length === 0 ? (
+                  <EmptyState variant="empty" compact title="Nenhuma compra na janela." />
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-[color:var(--claude-cream-deep)]/40 text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+                        <th className="px-4 py-2 text-left">Produto</th>
+                        <th className="px-4 py-2 text-right">Qtd</th>
+                        <th className="px-4 py-2 text-right">Valor</th>
+                        <th className="px-4 py-2 text-right">Compras</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[color:var(--border)]">
+                      {detalhe.top_skus.map((s: any) => (
+                        <tr key={s.produto_id}>
+                          <td className="px-4 py-2">
+                            <div className="font-medium text-[color:var(--claude-ink)] truncate max-w-md">{s.nome}</div>
+                            <div className="text-[10px] text-[color:var(--claude-stone)]">SKU {s.sku}</div>
+                          </td>
+                          <td className="px-4 py-2 text-right font-mono tabular-nums">
+                            {formatNumber(s.quantidade, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-4 py-2 text-right">
+                            <MetricValue value={formatCurrency(s.valor)} size="sm" />
+                          </td>
+                          <td className="px-4 py-2 text-right font-mono tabular-nums">{s.transacoes}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-[color:var(--border)] bg-[color:var(--claude-cream-deep)]/30 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-5 py-2 text-sm font-semibold text-[color:var(--claude-ink)] hover:bg-white rounded-lg transition-colors"
+          >
+            Fechar
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

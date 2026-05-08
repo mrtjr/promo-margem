@@ -1342,6 +1342,23 @@ async def webhook_pdv_vendas(
 # Clientes — ranking RFM + top compradores por produto
 # ============================================================================
 
+@app.get("/clientes/resumo")
+def clientes_resumo(
+    periodo_dias: int = 30,
+    incluir_consumidor_final: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    KPIs agregados do período (cards do topo da página Clientes):
+    total_clientes, faturamento_total, ticket_medio, transacoes, clientes_novos.
+    """
+    return cliente_service.resumo_periodo(
+        db,
+        periodo_dias=periodo_dias,
+        incluir_consumidor_final=incluir_consumidor_final,
+    )
+
+
 @app.get("/clientes/ranking")
 def clientes_ranking(
     periodo_dias: int = 30,
@@ -1376,6 +1393,23 @@ def cliente_detalhe(
     if not detalhe:
         raise HTTPException(status_code=404, detail="Cliente não encontrado.")
     return detalhe
+
+
+@app.get("/clientes/{cliente_id}/evolucao")
+def cliente_evolucao(
+    cliente_id: int,
+    meses: int = 6,
+    db: Session = Depends(get_db),
+):
+    """Série mensal das últimas N meses (sem buracos)."""
+    cliente = db.query(models.Cliente).filter(models.Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado.")
+    return {
+        "cliente_id": cliente_id,
+        "nome": cliente.nome,
+        "meses": cliente_service.evolucao_mensal_cliente(db, cliente_id, meses=meses),
+    }
 
 
 @app.get("/produtos/{produto_id}/top-compradores")
