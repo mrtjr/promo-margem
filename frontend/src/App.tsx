@@ -1905,13 +1905,13 @@ function RelatoriosPage() {
                 <p className="text-[11px] uppercase tracking-widest text-[color:var(--claude-stone)] font-semibold">Confirmar</p>
               </div>
               <p className="text-xs text-[color:var(--claude-stone)] leading-snug">
-                Você decide importar 1 dia ou todos. As vendas viram histórico, ranking e gráficos.
+                Importa 1 dia ou todos. Cada dia substitui apenas o seu próprio fechamento.
               </p>
             </div>
           </div>
 
           <div className="text-[11px] text-[color:var(--claude-stone)] mt-5">
-            Após importar você vê: faturamento por dia · margem do dia · ranking de clientes · top compradores por produto.
+            O que você passa a ver depois de importar: faturamento e margem por dia, ranking de clientes e top compradores por produto.
           </div>
 
           <div className="flex gap-3 justify-center mt-6">
@@ -2165,9 +2165,9 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const subtituloFase = (() => {
     switch (estado) {
       case 'upload': return 'Nada será gravado nesta etapa.'
-      case 'auditoria': return 'Você ainda não importou — apenas inspecionamos o arquivo.'
+      case 'auditoria': return 'Você ainda não importou — apenas conferimos o arquivo.'
       case 'preview': return 'Veja linha por linha antes de gravar as vendas.'
-      case 'sucesso_multi': return 'As vendas já estão no banco.'
+      case 'sucesso_multi': return 'As vendas já foram gravadas.'
     }
   })()
   const passoFase = (() => {
@@ -2264,7 +2264,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
                 disabled={submitting || !arquivo}
                 className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 disabled:opacity-50 transition-all"
               >
-                {submitting ? 'Inspecionando…' : 'Inspecionar arquivo'}
+                {submitting ? 'Conferindo…' : 'Conferir arquivo'}
               </button>
             )}
             {estado === 'auditoria' && auditoria && (
@@ -2337,7 +2337,7 @@ function UploadFase({ arquivo, onArquivo, dataAlvo, onDataAlvo }: any) {
         <p className="font-semibold mb-2">O que vai acontecer:</p>
         <ol className="space-y-1.5 text-[13px] text-[color:var(--claude-stone)] list-decimal list-inside">
           <li>Você anexa o arquivo (.csv exportado do seu ERP).</li>
-          <li>Inspecionamos o conteúdo <b>sem gravar nada</b> — você vê quantas datas e quantas vendas existem.</li>
+          <li>Conferimos o conteúdo <b>sem gravar nada</b> — você vê quantas datas e quantas vendas existem.</li>
           <li>Se quiser, importa todas as datas de uma vez ou escolhe um dia específico.</li>
           <li>Se já houver fechamento da mesma data, ele será substituído pelo novo.</li>
         </ol>
