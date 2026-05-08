@@ -1187,12 +1187,32 @@ function MargemTrendChart({ serie }: { serie: PontoSerie[] }) {
   )
 }
 
+interface TopProdutoItem {
+  produto_id: number
+  sku: string
+  nome: string
+  valor: number
+  quantidade: number
+  transacoes: number
+}
+
+interface RupturaItem {
+  produto_id: number
+  sku: string
+  codigo: string | null
+  nome: string
+  ultima_venda: string | null
+  valor_acumulado: number
+}
+
 function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
   const [saudeCategorias, setSaudeCategorias] = useState<any[]>([])
   const [projecao, setProjecao] = useState<any>(null)
   const [serie, setSerie] = useState<PontoSerie[]>([])
   const [quebraResumo, setQuebraResumo] = useState<any>(null)
   const [topClientes7d, setTopClientes7d] = useState<ClienteRankingItem[]>([])
+  const [topProdutos7d, setTopProdutos7d] = useState<TopProdutoItem[]>([])
+  const [rupturas, setRupturas] = useState<RupturaItem[]>([])
 
   useEffect(() => {
     axios.get(`${API_URL}/categorias/saude`).then(res => setSaudeCategorias(res.data)).catch(() => {})
@@ -1205,6 +1225,14 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
       })
       .then((res) => setTopClientes7d(res.data))
       .catch(() => setTopClientes7d([]))
+    axios
+      .get(`${API_URL}/produtos/top-vendidos`, { params: { periodo_dias: 7, limit: 5 } })
+      .then((res) => setTopProdutos7d(res.data))
+      .catch(() => setTopProdutos7d([]))
+    axios
+      .get(`${API_URL}/produtos/rupturas`, { params: { limit: 5 } })
+      .then((res) => setRupturas(res.data))
+      .catch(() => setRupturas([]))
   }, [])
 
   const classificaMargem = (m: number | null | undefined): 'alerta'|'atencao'|'saudavel'|'acima_meta'|'sem_vendas' => {
@@ -1294,6 +1322,74 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
     : 'coral'
   const heroDeltaSemana = ultMargem != null && mediaPrev7Margem != null ? ultMargem - mediaPrev7Margem : 0
 
+  // ===== Prioridades do dia (computadas a partir do estado já carregado) =====
+  type Prioridade = {
+    key: string
+    severidade: 'alta' | 'media' | 'oportunidade'
+    titulo: string
+    descricao: string
+    ctaLabel: string
+    onCta: () => void
+  }
+  const prioridades: Prioridade[] = []
+  // 1. Margem fora da meta (semana)
+  if (stats?.margem_semana != null && classificaMargem(stats.margem_semana) === 'alerta') {
+    prioridades.push({
+      key: 'margem_alerta',
+      severidade: 'alta',
+      titulo: `Margem da semana abaixo do crítico (${formatPercent(stats.margem_semana)})`,
+      descricao: 'Meta institucional 17–19%. Revise produtos com margem baixa e considere ajuste de preço.',
+      ctaLabel: 'Abrir briefing',
+      onCta: () => onNavigate('briefing'),
+    })
+  } else if (stats?.margem_semana != null && classificaMargem(stats.margem_semana) === 'atencao') {
+    prioridades.push({
+      key: 'margem_atencao',
+      severidade: 'media',
+      titulo: `Margem da semana perto do piso (${formatPercent(stats.margem_semana)})`,
+      descricao: 'Atenção: margem entre 17 e 17,5%. Acompanhe a tendência e revise os SKUs com pior performance.',
+      ctaLabel: 'Ver tendência',
+      onCta: () => onNavigate('briefing'),
+    })
+  }
+  // 2. Rupturas
+  if ((stats?.rupturas ?? 0) > 0) {
+    prioridades.push({
+      key: 'rupturas',
+      severidade: 'alta',
+      titulo: `${stats.rupturas} SKU${stats.rupturas === 1 ? '' : 's'} zerado${stats.rupturas === 1 ? '' : 's'}`,
+      descricao: 'Produtos sem estoque que vinham vendendo. Reponha antes que afetem o faturamento de amanhã.',
+      ctaLabel: 'Ver lista de rupturas',
+      onCta: () => onNavigate('historico'),
+    })
+  }
+  // 3. Cliente top da semana (oportunidade — só se tiver tração)
+  const topClienteSem = topClientes7d[0]
+  if (topClienteSem && topClienteSem.valor_periodo > 0 && prioridades.length < 3) {
+    prioridades.push({
+      key: 'cliente_top',
+      severidade: 'oportunidade',
+      titulo: `${topClienteSem.nome} comprou ${formatCurrency(topClienteSem.valor_periodo)} esta semana`,
+      descricao: `Segmento ${topClienteSem.segmento_label}. Use a relação pra negociar pacote ou repor estoque dele.`,
+      ctaLabel: 'Abrir cliente',
+      onCta: () => onAbrirCliente && onAbrirCliente(topClienteSem.cliente_id),
+    })
+  }
+  prioridades.splice(3) // máximo 3
+
+  const sevTone: Record<string, { bg: string; border: string; icon: string; text: string }> = {
+    alta: { bg: 'bg-rose-50', border: 'border-rose-200', icon: 'text-rose-600', text: 'text-rose-900' },
+    media: { bg: 'bg-amber-50', border: 'border-amber-200', icon: 'text-amber-700', text: 'text-amber-900' },
+    oportunidade: { bg: 'bg-emerald-50', border: 'border-emerald-200', icon: 'text-emerald-700', text: 'text-emerald-900' },
+  }
+
+  const SectionLabel = ({ label, hint }: { label: string; hint?: string }) => (
+    <div className="flex items-baseline justify-between mt-2 mb-1">
+      <p className="section-label">{label}</p>
+      {hint && <span className="text-[10px] text-[color:var(--claude-stone)] uppercase tracking-widest">{hint}</span>}
+    </div>
+  )
+
   return (
     <div className="max-w-7xl mx-auto p-8 space-y-5">
       {/* Header compacto — sem KPI lateral (movido pra hero) */}
@@ -1304,7 +1400,46 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
       </header>
 
       {/* ===================================================================
-          BENTO ROW 1 — Hero (col-span-7) + 2 KPIs medium (col-span-5)
+          BLOCO 1 — Prioridades do dia (até 3 cards de ação, condicional)
+          =================================================================== */}
+      {prioridades.length > 0 && (
+        <div>
+          <SectionLabel label="Prioridades do dia" hint={`${prioridades.length} item${prioridades.length === 1 ? '' : 's'}`} />
+          <div className={`grid grid-cols-1 ${prioridades.length === 1 ? 'md:grid-cols-1' : prioridades.length === 2 ? 'md:grid-cols-2' : 'md:grid-cols-3'} gap-3 mt-3`}>
+            {prioridades.map((p) => {
+              const t = sevTone[p.severidade]
+              return (
+                <div key={p.key} className={`rounded-xl border ${t.border} ${t.bg} p-4 flex flex-col gap-3`}>
+                  <div className="flex items-start gap-2">
+                    {p.severidade === 'oportunidade' ? (
+                      <Sparkles className={`${t.icon} shrink-0 mt-0.5`} size={16} />
+                    ) : (
+                      <AlertCircle className={`${t.icon} shrink-0 mt-0.5`} size={16} />
+                    )}
+                    <div className="min-w-0">
+                      <p className={`font-semibold text-sm ${t.text} leading-tight`}>{p.titulo}</p>
+                      <p className="text-xs text-[color:var(--claude-stone)] mt-1 leading-snug">{p.descricao}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={p.onCta}
+                    className={`text-xs font-bold uppercase tracking-widest ${t.text} hover:underline self-start mt-auto`}
+                  >
+                    {p.ctaLabel} →
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================
+          BLOCO 2 — Indicadores principais
+          =================================================================== */}
+      <SectionLabel label="Indicadores principais" hint="janela 30 dias / dia atual" />
+
+      {/* BENTO ROW 1 — Hero (col-span-7) + 2 KPIs medium (col-span-5)
           Inspirado em Muzli/Orbix 2026: hero metric com 2.6x peso visual
           dos satellites; 12-col grid com 20px gutters.
           =================================================================== */}
@@ -1486,57 +1621,115 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
       </div>
 
       {/* ===================================================================
-          BENTO ROW 3.5 — Widget Top 5 clientes (semana) — compacto, full-width
-          Clique abre drill-down do cliente sem mudar de pagina.
+          BLOCO 3 — Exploração rápida: 3 widgets compactos lado-a-lado
+          Top Clientes (7d) | Top Produtos (7d) | Rupturas
           =================================================================== */}
-      <div className="claude-card p-5">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <p className="section-label">Últimos 7 dias</p>
-            <h3 className="headline text-xl">Top 5 clientes da semana</h3>
+      <SectionLabel label="Exploração rápida" hint="últimos 7 dias" />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Top 5 Clientes da semana */}
+        <div className="claude-card p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="headline text-lg">Top 5 clientes</h3>
+            <button
+              onClick={() => onNavigate('clientes')}
+              className="text-[10px] font-bold text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] uppercase tracking-widest"
+            >
+              Ver todos →
+            </button>
           </div>
-          <button
-            onClick={() => onNavigate('clientes')}
-            className="text-xs font-bold text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] uppercase tracking-widest transition-colors"
-          >
-            Ver todos →
-          </button>
-        </div>
-        {topClientes7d.length === 0 ? (
-          <p className="text-xs text-[color:var(--claude-stone)] italic py-4 text-center">
-            Sem clientes identificados nos últimos 7 dias.
-          </p>
-        ) : (
-          <ul className="divide-y divide-[color:var(--border)]">
-            {topClientes7d.map((c, idx) => (
-              <li key={c.cliente_id}>
-                <button
-                  onClick={() => onAbrirCliente && onAbrirCliente(c.cliente_id)}
-                  className="w-full text-left flex items-center justify-between gap-3 py-2.5 px-1 hover:bg-[color:var(--claude-cream-deep)]/30 rounded transition-colors"
-                  title="Ver detalhes do cliente"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="w-6 text-[color:var(--claude-stone)] font-mono tabular-nums text-sm">
-                      {idx + 1}.
-                    </span>
-                    <div className="min-w-0">
-                      <p className="font-medium text-[color:var(--claude-ink)] truncate">{c.nome}</p>
-                      <p className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
-                        {c.segmento_label}
-                      </p>
+          {topClientes7d.length === 0 ? (
+            <p className="text-xs text-[color:var(--claude-stone)] italic py-4 text-center">
+              Sem clientes identificados em 7 dias.
+            </p>
+          ) : (
+            <ul className="divide-y divide-[color:var(--border)]">
+              {topClientes7d.map((c, idx) => (
+                <li key={c.cliente_id}>
+                  <button
+                    onClick={() => onAbrirCliente && onAbrirCliente(c.cliente_id)}
+                    className="w-full text-left flex items-center gap-2 py-2 hover:bg-[color:var(--claude-cream-deep)]/30 rounded transition-colors"
+                  >
+                    <span className="w-5 text-[color:var(--claude-stone)] font-mono tabular-nums text-xs">{idx + 1}.</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-[color:var(--claude-ink)] truncate text-sm">{c.nome}</p>
+                      <p className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">{c.segmento_label}</p>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-4 shrink-0">
-                    <span className="text-xs text-[color:var(--claude-stone)] font-mono tabular-nums">
-                      {c.total_compras_periodo} compra{c.total_compras_periodo === 1 ? '' : 's'}
-                    </span>
                     <MetricValue value={formatCurrency(c.valor_periodo)} size="sm" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Top 5 Produtos da semana */}
+        <div className="claude-card p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="headline text-lg">Top 5 produtos</h3>
+            <button
+              onClick={() => onNavigate('produtos')}
+              className="text-[10px] font-bold text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] uppercase tracking-widest"
+            >
+              Ver SKUs →
+            </button>
+          </div>
+          {topProdutos7d.length === 0 ? (
+            <p className="text-xs text-[color:var(--claude-stone)] italic py-4 text-center">
+              Sem vendas registradas em 7 dias.
+            </p>
+          ) : (
+            <ul className="divide-y divide-[color:var(--border)]">
+              {topProdutos7d.map((p, idx) => (
+                <li key={p.produto_id} className="flex items-center gap-2 py-2">
+                  <span className="w-5 text-[color:var(--claude-stone)] font-mono tabular-nums text-xs">{idx + 1}.</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-[color:var(--claude-ink)] truncate text-sm">{p.nome}</p>
+                    <p className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+                      {p.transacoes} compra{p.transacoes === 1 ? '' : 's'}
+                    </p>
                   </div>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+                  <MetricValue value={formatCurrency(p.valor)} size="sm" />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Alerta de rupturas (lista) */}
+        <div className="claude-card p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className={`headline text-lg ${rupturas.length > 0 ? 'text-[color:var(--claude-coral)]' : ''}`}>
+              Rupturas
+            </h3>
+            <button
+              onClick={() => onNavigate('historico')}
+              className="text-[10px] font-bold text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] uppercase tracking-widest"
+            >
+              Histórico →
+            </button>
+          </div>
+          {rupturas.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-6 text-center">
+              <Check className="text-[color:var(--claude-sage)] mb-2" size={20} />
+              <p className="text-xs text-[color:var(--claude-stone)]">Nenhuma ruptura ativa.</p>
+            </div>
+          ) : (
+            <ul className="divide-y divide-[color:var(--border)]">
+              {rupturas.map((r) => (
+                <li key={r.produto_id} className="flex items-center gap-2 py-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--claude-coral)] shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-[color:var(--claude-ink)] truncate text-sm">{r.nome}</p>
+                    <p className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+                      {r.codigo ? `cód ${r.codigo} · ` : ''}
+                      {r.ultima_venda ? `última: ${r.ultima_venda}` : 'sem venda'}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
 
       {/* ===================================================================

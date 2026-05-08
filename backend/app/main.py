@@ -1412,6 +1412,89 @@ def cliente_evolucao(
     }
 
 
+@app.get("/produtos/top-vendidos")
+def produtos_top_vendidos(
+    periodo_dias: int = 7,
+    limit: int = 5,
+    db: Session = Depends(get_db),
+):
+    """
+    Top N produtos por receita na janela (default 7 dias). Usado pelo
+    Dashboard pra widget "Top produtos da semana".
+    """
+    from datetime import date as _date, timedelta as _td
+    from .utils.tz import hoje_brt as _hoje
+    hoje_d = _hoje()
+    inicio = hoje_d - _td(days=periodo_dias)
+
+    rows = db.query(
+        models.Produto.id,
+        models.Produto.sku,
+        models.Produto.nome,
+        func.coalesce(func.sum(models.Venda.preco_venda * models.Venda.quantidade), 0.0).label("valor"),
+        func.coalesce(func.sum(models.Venda.quantidade), 0.0).label("qtd"),
+        func.count(models.Venda.id).label("transacoes"),
+    ).join(
+        models.Venda, models.Venda.produto_id == models.Produto.id
+    ).filter(
+        models.Venda.data_fechamento >= inicio,
+        models.Venda.data_fechamento <= hoje_d,
+    ).group_by(
+        models.Produto.id, models.Produto.sku, models.Produto.nome,
+    ).order_by(text("valor DESC")).limit(limit).all()
+
+    return [
+        {
+            "produto_id": r.id,
+            "sku": r.sku,
+            "nome": r.nome,
+            "valor": round(float(r.valor or 0), 2),
+            "quantidade": round(float(r.qtd or 0), 2),
+            "transacoes": int(r.transacoes or 0),
+        }
+        for r in rows
+    ]
+
+
+@app.get("/produtos/rupturas")
+def produtos_rupturas(limit: int = 10, db: Session = Depends(get_db)):
+    """
+    Lista produtos ATIVOS sem estoque (estoque_qtd <= 0). Ordenado por
+    data da última saída — produtos que estavam vendendo bem e zeraram
+    aparecem primeiro. Usado pelo widget "Alerta de ruptura".
+    """
+    rows = db.query(
+        models.Produto.id,
+        models.Produto.sku,
+        models.Produto.nome,
+        models.Produto.codigo,
+        func.max(models.Venda.data_fechamento).label("ultima_venda"),
+        func.coalesce(func.sum(models.Venda.preco_venda * models.Venda.quantidade), 0.0).label("valor_30d"),
+    ).outerjoin(
+        models.Venda, models.Venda.produto_id == models.Produto.id
+    ).filter(
+        models.Produto.ativo == True,  # noqa: E712
+        (models.Produto.estoque_qtd <= 0) | (models.Produto.estoque_qtd.is_(None)),
+    ).group_by(
+        models.Produto.id, models.Produto.sku, models.Produto.nome, models.Produto.codigo,
+    ).order_by(
+        text("CASE WHEN ultima_venda IS NULL THEN 1 ELSE 0 END"),
+        text("ultima_venda DESC"),
+    ).limit(limit).all()
+
+    return [
+        {
+            "produto_id": r.id,
+            "sku": r.sku,
+            "codigo": r.codigo,
+            "nome": r.nome,
+            "ultima_venda": r.ultima_venda.isoformat() if r.ultima_venda else None,
+            "valor_acumulado": round(float(r.valor_30d or 0), 2),
+        }
+        for r in rows
+    ]
+
+
 @app.get("/produtos/{produto_id}/top-compradores")
 def produto_top_compradores(
     produto_id: int,
