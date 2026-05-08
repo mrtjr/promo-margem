@@ -61,6 +61,34 @@ class LinhaCSV:
     total: float
     data: Optional[date]
     cliente: Optional[str] = None  # nome do cliente (formato dinamico); None no legado
+    unidade: Optional[str] = None  # SC/KG/UN/CX/etc — preservado pra auditoria
+
+
+# ---------------------------------------------------------------------------
+# Tipos da auditoria pré-commit
+# ---------------------------------------------------------------------------
+
+# Motivos pelos quais uma linha bruta do CSV NAO virou venda. Catalogo fixo
+# pra contadores de descarte serem comparaveis entre auditorias.
+MOTIVOS_DESCARTE = {
+    "header_titulo": "linha de titulo do relatorio",
+    "header_emissao": "linha de emissao/data do relatorio",
+    "header_pagina": "marcacao de pagina (Pagina X/Y)",
+    "header_colunas": "linha de cabecalho de colunas",
+    "linha_curta": "menos colunas do que o minimo esperado",
+    "documento_invalido": "primeiro campo nao parece numero de pedido/NF",
+    "data_invalida": "data ausente ou fora do formato DD/MM/AAAA",
+    "produto_vazio": "coluna Produto vazia",
+    "qtd_zero_ou_negativa": "quantidade <= 0",
+    "total_zero_ou_negativo": "total liquido <= 0",
+}
+
+
+# Conjunto de unidades reconhecidas no CSV. Linhas com unidade fora dessa
+# lista entram com warning mas nao sao descartadas (pode ser unidade nova).
+UNIDADES_RECONHECIDAS = {
+    "KG", "UN", "SC", "CX", "PC", "FD", "DZ", "LT", "ML", "G", "M", "MT", "PCT",
+}
 
 
 def _parse_num_br(s: str) -> float:
@@ -145,9 +173,12 @@ def _parse_csv_analitico(texto: str) -> List[LinhaCSV]:
     return linhas
 
 
-def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
+_DOC_PADRAO_RE = re.compile(r"^\s*\d+\s*(/\s*(PV|NF|NFE|NFCE|CF)\s*)", re.IGNORECASE)
+
+
+def _parse_csv_dinamico_with_audit(texto: str) -> Tuple[List[LinhaCSV], Dict[str, int]]:
     """
-    Parser para o formato xRelatorioDinamico (novo, 11 colunas):
+    Parser DEFENSIVO do xRelatorioDinamico (11 colunas):
       0: Documento  → 'NNNN / PV / Emp: N'
       1: Data       → DD/MM/YYYY
       2: Cliente
@@ -160,30 +191,86 @@ def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
       9: (vazio)
       10: Lista Total → preço de tabela (ignorado)
 
+    Filtros explicitos por categoria (descartes contabilizados):
+      - cabeçalhos de relatório (titulo, emissão, página, colunas)
+      - linhas curtas demais
+      - documento que não bate com padrão (numero / PV|NF|...)
+      - data ausente / fora de formato
+      - produto vazio
+      - quantidade ou total <= 0
+
+    Retorna: (linhas válidas, contador de motivos de descarte).
+    Contador inclui apenas motivos catalogados em MOTIVOS_DESCARTE.
+
     Preço unitário não vem explícito no CSV — calculado como
     `total_liquido / qtd`. Tolerância aritmética (±0,1%) em _validar_linha
     absorve diferenças de arredondamento do ERP.
     """
     linhas: List[LinhaCSV] = []
+    descartes: Dict[str, int] = {k: 0 for k in MOTIVOS_DESCARTE}
     idx = 0
+
     for raw in StringIO(texto):
         parts = raw.rstrip("\r\n").split(";")
+
+        # 1. Linha curta demais
         if len(parts) < 9:
-            continue
-        col0 = parts[0].strip()
-        # Filtros: ignora header / linhas de relatorio / branco
-        if not col0 or col0 == "Documento":
-            continue
-        if "Emiss" in col0 or "Vendas" in parts[0] or "Página" in raw:
-            continue
-        if "/ PV /" not in col0 and "/ NF /" not in col0:
+            descartes["linha_curta"] += 1
             continue
 
+        col0 = parts[0].strip()
+
+        # 2. Linha vazia
+        if not col0:
+            descartes["linha_curta"] += 1
+            continue
+
+        # 3. Cabeçalhos identificados pela primeira coluna ou conteudo bruto
+        #    "Vendas Analítico" no inicio (titulo do relatorio)
+        if "Vendas " in parts[0] and "PV" not in parts[0]:
+            descartes["header_titulo"] += 1
+            continue
+        #    "Emissão:" indica linha de emissao/cabecalho
+        if "Emiss" in col0:
+            descartes["header_emissao"] += 1
+            continue
+        #    "Página" indica marcacao de paginacao
+        if "Página" in raw or "Pagina" in raw:
+            descartes["header_pagina"] += 1
+            continue
+        #    Header de colunas
+        if col0 == "Documento":
+            descartes["header_colunas"] += 1
+            continue
+
+        # 4. Documento valido = padrao "NNNN / TIPO" (PV / NF / NFCE / CF)
+        if not _DOC_PADRAO_RE.match(col0):
+            descartes["documento_invalido"] += 1
+            continue
+
+        # 5. Data parseavel
+        data_parse = _parse_data_br(parts[1])
+        if data_parse is None:
+            descartes["data_invalida"] += 1
+            continue
+
+        # 6. Produto preenchido
         produto_str = parts[4].strip()
         if not produto_str:
+            descartes["produto_vazio"] += 1
             continue
 
-        # Extrai <codigo>-<nome>; se nao bater, mantem nome puro sem codigo
+        # 7. Qtd e total parseaveis e positivos
+        qtd = _parse_num_br(parts[6])
+        total = _parse_num_br(parts[8])
+        if qtd <= 0:
+            descartes["qtd_zero_ou_negativa"] += 1
+            continue
+        if total <= 0:
+            descartes["total_zero_ou_negativo"] += 1
+            continue
+
+        # ===== Linha valida — extrai campos =====
         m = _PRODUTO_DINAMICO_RE.match(produto_str)
         if m:
             codigo = m.group(1).strip()
@@ -192,14 +279,10 @@ def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
             codigo = None
             nome = produto_str
 
-        qtd = _parse_num_br(parts[6])
-        total = _parse_num_br(parts[8])  # Liquido Total
         preco_unit = (total / qtd) if qtd > 0 else 0.0
-
-        # numero do pedido = parte antes do primeiro '/'
         pedido_num = col0.split("/", 1)[0].strip() or None
-
         cliente_str = parts[2].strip() if len(parts) > 2 else None
+        unidade_str = (parts[5].strip().upper() if len(parts) > 5 else None) or None
 
         idx += 1
         linhas.append(LinhaCSV(
@@ -210,9 +293,17 @@ def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
             quantidade=qtd,
             preco_unitario=round(preco_unit, 4),
             total=total,
-            data=_parse_data_br(parts[1]),
+            data=data_parse,
             cliente=cliente_str or None,
+            unidade=unidade_str,
         ))
+
+    return linhas, descartes
+
+
+def _parse_csv_dinamico(texto: str) -> List[LinhaCSV]:
+    """Wrapper de retro-compat: descarta os contadores."""
+    linhas, _ = _parse_csv_dinamico_with_audit(texto)
     return linhas
 
 
@@ -247,6 +338,166 @@ def datas_no_csv(conteudo_bytes: bytes) -> List[date]:
     """
     linhas = parse_csv(conteudo_bytes)
     return sorted({l.data for l in linhas if l.data is not None})
+
+
+def auditar(conteudo_bytes: bytes) -> Dict:
+    """
+    Auditoria pre-commit do CSV.
+
+    Le o arquivo SEM gravar nada. Retorna:
+      - formato detectado
+      - datas presentes (ordenadas)
+      - total de linhas brutas processadas (validas + descartadas)
+      - total de linhas validas
+      - total de descartes + breakdown por motivo (com label legivel)
+      - distribuicao de unidades (KG, UN, SC, ...)
+      - alertas nao-bloqueantes (clientes vazios, produtos sem codigo,
+        unidades nao reconhecidas, possiveis duplicatas de codigo/nome)
+      - resumo por dia (qtd vendas + valor liquido)
+
+    Esta funcao alimenta a tela de inspecao pre-importacao na UI.
+    """
+    # Decode + escolhe parser (com auditoria so faz sentido pro dinamico;
+    # legado analitico nao tem contadores estruturados)
+    for enc in ("latin-1", "utf-8", "cp1252"):
+        try:
+            texto = conteudo_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError("Nao foi possivel decodificar o CSV (latin-1/utf-8/cp1252).")
+
+    formato = _detectar_formato(texto)
+
+    if formato == "dinamico":
+        linhas, descartes = _parse_csv_dinamico_with_audit(texto)
+    else:
+        # Formato legado: parseia e devolve descartes vazios (compat)
+        linhas = _parse_csv_analitico(texto)
+        descartes = {k: 0 for k in MOTIVOS_DESCARTE}
+
+    total_validas = len(linhas)
+    total_descartadas = sum(descartes.values())
+
+    # Datas presentes
+    datas_set = {l.data for l in linhas if l.data is not None}
+    datas_ord = sorted(datas_set)
+
+    # Distribuicao de unidades
+    unidades_count: Dict[str, int] = {}
+    for l in linhas:
+        u = (l.unidade or "?").strip().upper() or "?"
+        unidades_count[u] = unidades_count.get(u, 0) + 1
+
+    # Alertas nao-bloqueantes
+    alertas: List[Dict] = []
+
+    sem_cliente = sum(1 for l in linhas if not l.cliente)
+    if sem_cliente > 0:
+        alertas.append({
+            "tipo": "cliente_vazio",
+            "label": "Linhas sem cliente identificado",
+            "count": sem_cliente,
+            "severidade": "info",
+        })
+
+    sem_codigo = sum(1 for l in linhas if not l.codigo)
+    if sem_codigo > 0:
+        alertas.append({
+            "tipo": "produto_sem_codigo",
+            "label": "Produtos sem codigo (so nome)",
+            "count": sem_codigo,
+            "severidade": "media",
+        })
+
+    unidades_estranhas = [
+        u for u in unidades_count
+        if u != "?" and u not in UNIDADES_RECONHECIDAS
+    ]
+    if unidades_estranhas:
+        alertas.append({
+            "tipo": "unidade_nao_reconhecida",
+            "label": f"Unidades fora da lista padrao: {', '.join(sorted(unidades_estranhas))}",
+            "count": sum(unidades_count[u] for u in unidades_estranhas),
+            "severidade": "info",
+        })
+
+    # Conflitos potenciais: codigo aparece com 2+ nomes distintos
+    codigo_para_nomes: Dict[str, set] = {}
+    for l in linhas:
+        if not l.codigo:
+            continue
+        codigo_para_nomes.setdefault(l.codigo, set()).add(l.nome)
+    conflitos = [
+        {"codigo": cod, "nomes": sorted(nomes)}
+        for cod, nomes in codigo_para_nomes.items()
+        if len(nomes) > 1
+    ]
+    if conflitos:
+        alertas.append({
+            "tipo": "conflito_codigo_nomes",
+            "label": "Codigos com nomes diferentes no mesmo CSV (possivel renomeacao no ERP)",
+            "count": len(conflitos),
+            "severidade": "alta",
+            "exemplos": conflitos[:5],
+        })
+
+    # Resumo por dia
+    por_dia: Dict[str, Dict] = {}
+    for l in linhas:
+        if l.data is None:
+            continue
+        d_iso = l.data.isoformat()
+        bucket = por_dia.setdefault(d_iso, {
+            "data": d_iso,
+            "linhas": 0,
+            "valor_total": 0.0,
+            "qtd_total": 0.0,
+            "skus_distintos": set(),
+            "clientes_distintos": set(),
+        })
+        bucket["linhas"] += 1
+        bucket["valor_total"] += l.total
+        bucket["qtd_total"] += l.quantidade
+        if l.codigo:
+            bucket["skus_distintos"].add(l.codigo)
+        if l.cliente:
+            bucket["clientes_distintos"].add(l.cliente)
+
+    resumo_por_dia = []
+    for d_iso in sorted(por_dia.keys()):
+        b = por_dia[d_iso]
+        resumo_por_dia.append({
+            "data": d_iso,
+            "linhas": b["linhas"],
+            "valor_total": round(b["valor_total"], 2),
+            "qtd_total": round(b["qtd_total"], 2),
+            "skus_distintos": len(b["skus_distintos"]),
+            "clientes_distintos": len(b["clientes_distintos"]),
+        })
+
+    # Breakdown de descartes (so motivos com count > 0)
+    motivos_descarte = [
+        {"motivo": k, "label": MOTIVOS_DESCARTE[k], "count": v}
+        for k, v in descartes.items() if v > 0
+    ]
+
+    return {
+        "formato": formato,
+        "datas_detectadas": [d.isoformat() for d in datas_ord],
+        "total_datas": len(datas_ord),
+        "total_linhas_lidas": total_validas + total_descartadas,
+        "total_linhas_validas": total_validas,
+        "total_linhas_descartadas": total_descartadas,
+        "motivos_descarte": motivos_descarte,
+        "unidades_detectadas": [
+            {"unidade": u, "count": c}
+            for u, c in sorted(unidades_count.items(), key=lambda x: -x[1])
+        ],
+        "alertas": alertas,
+        "resumo_por_dia": resumo_por_dia,
+    }
 
 
 def commit_todas_datas(

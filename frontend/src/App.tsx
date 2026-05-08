@@ -1869,6 +1869,42 @@ function RelatoriosPage() {
         />
       )}
 
+      {produtos.length === 0 && (
+        <div className="claude-card p-8 text-center">
+          <div className="inline-flex w-14 h-14 rounded-2xl bg-[color:var(--claude-coral-soft)]/30 items-center justify-center mb-4">
+            <FileText className="text-[color:var(--claude-coral)]" size={26} />
+          </div>
+          <h3 className="headline text-2xl tracking-editorial mb-2">Comece importando o relatório do ERP</h3>
+          <p className="text-sm text-[color:var(--claude-stone)] max-w-2xl mx-auto leading-relaxed">
+            Selecione o arquivo <span className="font-mono">xRelatorioDinamico.csv</span> exportado do seu sistema.
+            Vamos inspecionar antes de gravar — você vê quantas datas foram detectadas, quantas vendas válidas existem
+            e quais linhas serão descartadas (cabeçalhos, rodapés, paginação). Só depois de confirmar é que algo
+            entra no banco.
+          </p>
+          <ul className="text-xs text-[color:var(--claude-stone)] max-w-md mx-auto mt-4 space-y-1 text-left">
+            <li>• Cada SKU vira uma linha agregada (qty somada, preço médio)</li>
+            <li>• Cada cliente do CSV vira um registro reaproveitável no ranking</li>
+            <li>• Cada data substitui apenas o seu próprio fechamento</li>
+          </ul>
+          <div className="flex gap-3 justify-center mt-6">
+            <button
+              onClick={() => setImportOpen(true)}
+              className="bg-[color:var(--claude-ink)] text-white px-6 py-3 rounded-xl font-bold hover:opacity-90 transition-all flex items-center gap-2"
+            >
+              <Clipboard size={18} /> Importar CSV agora
+            </button>
+            <a
+              href="#"
+              onClick={(e) => { e.preventDefault(); }}
+              className="px-6 py-3 rounded-xl font-medium text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] transition-colors text-sm self-center"
+            >
+              Cadastrar produtos manualmente em <b>Produtos</b>
+            </a>
+          </div>
+        </div>
+      )}
+
+      {produtos.length > 0 && (
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -1909,6 +1945,7 @@ function RelatoriosPage() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   )
 }
@@ -1920,15 +1957,62 @@ function RelatoriosPage() {
 // ============================================================================
 function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: any) {
   const hoje = new Date().toISOString().slice(0, 10)
-  const [estado, setEstado] = useState<'upload' | 'preview'>('upload')
+  const [estado, setEstado] = useState<'upload' | 'auditoria' | 'preview' | 'sucesso_multi'>('upload')
   const [arquivo, setArquivo] = useState<File | null>(null)
   const [dataAlvo, setDataAlvo] = useState<string>(hoje)
   const [preview, setPreview] = useState<any | null>(null)
+  const [auditoria, setAuditoria] = useState<any | null>(null)
+  const [resultadoMulti, setResultadoMulti] = useState<any | null>(null)
   const [resolucoes, setResolucoes] = useState<Record<number, any>>({})
   const [submitting, setSubmitting] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
-  const enviarUpload = async () => {
+  // FASE 1: Upload → Auditoria (inspecao SEM gravar nada)
+  const enviarAuditoria = async () => {
+    if (!arquivo) { setErro('Selecione um arquivo CSV.'); return }
+    setErro(null)
+    setSubmitting(true)
+    try {
+      const form = new FormData()
+      form.append('arquivo', arquivo)
+      const res = await axios.post(`${API_URL}/fechamento/auditoria-csv`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setAuditoria(res.data)
+      // Default da data alvo: a data mais recente do CSV (se houver 1+ datas)
+      if (res.data.datas_detectadas?.length) {
+        setDataAlvo(res.data.datas_detectadas[res.data.datas_detectadas.length - 1])
+      }
+      setEstado('auditoria')
+    } catch (e: any) {
+      setErro(e?.response?.data?.detail || 'Erro ao auditar o arquivo.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // FASE 2A: Auditoria → Importar TODAS as datas (multi-data direto, sem revisao linha-a-linha)
+  const importarTodasDatas = async () => {
+    if (!arquivo) return
+    setErro(null)
+    setSubmitting(true)
+    try {
+      const form = new FormData()
+      form.append('arquivo', arquivo)
+      const res = await axios.post(`${API_URL}/fechamento/importar-multi-data`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setResultadoMulti(res.data)
+      setEstado('sucesso_multi')
+    } catch (e: any) {
+      setErro(e?.response?.data?.detail || 'Erro ao importar as datas. Tente o fluxo "Escolher 1 dia".')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // FASE 2B: Auditoria → Preview de UMA data especifica (fluxo single-day classico)
+  const irParaPreview = async () => {
     if (!arquivo) { setErro('Selecione um arquivo CSV.'); return }
     if (!dataAlvo) { setErro('Selecione a data do fechamento.'); return }
     setErro(null)
@@ -1941,7 +2025,6 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setPreview(res.data)
-      // Pre-inicializa resoluções: erro → ignorar, conflito/sem_match → 'associar' em branco
       const iniciais: Record<number, any> = {}
       for (const l of res.data.linhas) {
         if (l.status === 'erro') {
@@ -2043,16 +2126,31 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
     }
   }
 
+  const tituloFase = (() => {
+    switch (estado) {
+      case 'upload': return 'Importar relatório de vendas'
+      case 'auditoria': return 'Inspeção do arquivo'
+      case 'preview': return 'Revisar e confirmar'
+      case 'sucesso_multi': return 'Importação concluída'
+    }
+  })()
+  const passoFase = (() => {
+    switch (estado) {
+      case 'upload': return '1 de 3'
+      case 'auditoria': return '2 de 3'
+      case 'preview': return '3 de 3'
+      case 'sucesso_multi': return 'concluído'
+    }
+  })()
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-6">
       <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="p-6 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Fechamento via CSV · {estado === 'upload' ? '1 de 2' : '2 de 2'}</p>
-            <h3 className="text-2xl font-bold tracking-tight">
-              {estado === 'upload' ? 'Importar relatório de vendas' : 'Revisar e confirmar'}
-            </h3>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Fechamento via CSV · {passoFase}</p>
+            <h3 className="text-2xl font-bold tracking-tight">{tituloFase}</h3>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1">
             <X size={22} />
@@ -2069,6 +2167,13 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
               onDataAlvo={setDataAlvo}
             />
           )}
+          {estado === 'auditoria' && auditoria && (
+            <AuditoriaFase
+              auditoria={auditoria}
+              dataAlvo={dataAlvo}
+              onDataAlvo={setDataAlvo}
+            />
+          )}
           {estado === 'preview' && preview && (
             <PreviewFase
               preview={preview}
@@ -2077,6 +2182,9 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
               produtosExistentes={produtosExistentes}
               grupos={grupos}
             />
+          )}
+          {estado === 'sucesso_multi' && resultadoMulti && (
+            <SucessoMultiFase resultado={resultadoMulti} />
           )}
         </div>
 
@@ -2091,26 +2199,58 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
           <div className="flex gap-2">
             {estado === 'preview' && (
               <button
-                onClick={() => { setEstado('upload'); setPreview(null); setResolucoes({}) }}
+                onClick={() => { setEstado('auditoria'); setPreview(null); setResolucoes({}) }}
                 className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
               >
                 Voltar
               </button>
             )}
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
-            >
-              Cancelar
-            </button>
+            {estado === 'auditoria' && (
+              <button
+                onClick={() => { setEstado('upload'); setAuditoria(null) }}
+                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+              >
+                Voltar
+              </button>
+            )}
+            {estado !== 'sucesso_multi' && (
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+              >
+                Cancelar
+              </button>
+            )}
             {estado === 'upload' && (
               <button
-                onClick={enviarUpload}
+                onClick={enviarAuditoria}
                 disabled={submitting || !arquivo}
                 className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 disabled:opacity-50 transition-all"
               >
-                {submitting ? 'Processando...' : 'Processar CSV'}
+                {submitting ? 'Inspecionando…' : 'Inspecionar arquivo'}
               </button>
+            )}
+            {estado === 'auditoria' && auditoria && (
+              <>
+                <button
+                  onClick={irParaPreview}
+                  disabled={submitting}
+                  className="bg-white text-blue-600 border border-blue-200 px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-50 disabled:opacity-50 transition-all"
+                  title={`Importa apenas ${dataAlvo} no fluxo classico (revisao linha-a-linha)`}
+                >
+                  {submitting ? 'Carregando…' : `Importar 1 dia (${dataAlvo})`}
+                </button>
+                {auditoria.total_datas > 1 && (
+                  <button
+                    onClick={importarTodasDatas}
+                    disabled={submitting || (auditoria.total_linhas_validas || 0) === 0}
+                    className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 disabled:opacity-50 transition-all"
+                    title="Importa todas as datas detectadas. Linhas pendentes (sem_match, sem_custo) bloqueiam — pre-cadastre os produtos primeiro."
+                  >
+                    {submitting ? 'Importando…' : `Importar todas as ${auditoria.total_datas} datas`}
+                  </button>
+                )}
+              </>
             )}
             {estado === 'preview' && (
               <button
@@ -2120,6 +2260,22 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
                 title={motivoBloqueio || ''}
               >
                 {submitting ? 'Importando...' : (preview?.ja_existe_fechamento ? 'Substituir e importar' : 'Confirmar importação')}
+              </button>
+            )}
+            {estado === 'sucesso_multi' && (
+              <button
+                onClick={() => {
+                  // Notifica RelatoriosPage do dia mais recente importado pra mostrar a analise
+                  const datas = resultadoMulti?.datas_processadas || []
+                  if (datas.length > 0) {
+                    onCommitted(datas[datas.length - 1])
+                  } else {
+                    onClose()
+                  }
+                }}
+                className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 transition-all"
+              >
+                Ver análise do último dia
               </button>
             )}
           </div>
@@ -2165,6 +2321,234 @@ function UploadFase({ arquivo, onArquivo, dataAlvo, onDataAlvo }: any) {
           className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 bg-white text-sm"
         />
         <p className="text-[11px] text-slate-500 mt-1">As vendas serão registradas neste dia. Dados em linhas com data diferente serão sinalizados no preview.</p>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// AuditoriaFase — inspeção pré-commit (etapa 2 de 3)
+// Mostra o que foi lido, descartado e alertado SEM gravar nada.
+// ============================================================================
+
+function AuditoriaFase({ auditoria, dataAlvo, onDataAlvo }: any) {
+  const sevTone: Record<string, string> = {
+    info: 'bg-slate-100 text-slate-700 border-slate-200',
+    media: 'bg-amber-50 text-amber-800 border-amber-200',
+    alta: 'bg-rose-50 text-rose-800 border-rose-200',
+  }
+  return (
+    <div className="space-y-5">
+      {/* Resumo "headline" */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="claude-card p-4">
+          <p className="section-label">Datas detectadas</p>
+          <p className="kpi-value text-2xl text-[color:var(--claude-ink)] mt-1">{auditoria.total_datas}</p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">
+            {(auditoria.datas_detectadas || []).join(' · ')}
+          </p>
+        </div>
+        <div className="claude-card p-4">
+          <p className="section-label">Vendas válidas</p>
+          <p className="kpi-value text-2xl text-[color:var(--claude-sage)] mt-1">
+            {auditoria.total_linhas_validas}
+          </p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">
+            de {auditoria.total_linhas_lidas} linhas lidas
+          </p>
+        </div>
+        <div className="claude-card p-4">
+          <p className="section-label">Linhas descartadas</p>
+          <p className={`kpi-value text-2xl mt-1 ${
+            auditoria.total_linhas_descartadas > 0
+              ? 'text-[color:var(--claude-amber)]'
+              : 'text-[color:var(--claude-stone)]'
+          }`}>
+            {auditoria.total_linhas_descartadas}
+          </p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">
+            cabeçalhos, rodapés, linhas inválidas
+          </p>
+        </div>
+        <div className="claude-card p-4">
+          <p className="section-label">Alertas</p>
+          <p className={`kpi-value text-2xl mt-1 ${
+            (auditoria.alertas?.length || 0) === 0
+              ? 'text-[color:var(--claude-sage)]'
+              : 'text-[color:var(--claude-amber)]'
+          }`}>
+            {auditoria.alertas?.length || 0}
+          </p>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-1">não-bloqueantes</p>
+        </div>
+      </div>
+
+      {/* Resumo por dia */}
+      {auditoria.resumo_por_dia && auditoria.resumo_por_dia.length > 0 && (
+        <div className="claude-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-[color:var(--border)]">
+            <p className="section-label">Resumo por dia</p>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-[color:var(--claude-cream-deep)]/40">
+              <tr className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+                <th className="px-4 py-2 text-left">Data</th>
+                <th className="px-4 py-2 text-right">Linhas</th>
+                <th className="px-4 py-2 text-right">Quantidade</th>
+                <th className="px-4 py-2 text-right">Valor líquido</th>
+                <th className="px-4 py-2 text-right">SKUs</th>
+                <th className="px-4 py-2 text-right">Clientes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[color:var(--border)]">
+              {auditoria.resumo_por_dia.map((d: any) => (
+                <tr key={d.data} className="hover:bg-[color:var(--claude-cream-deep)]/20">
+                  <td className="px-4 py-2 font-mono tabular-nums">{d.data}</td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">{d.linhas}</td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">
+                    {formatNumber(d.qtd_total, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">{formatCurrency(d.valor_total)}</td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">{d.skus_distintos}</td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">{d.clientes_distintos}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Motivos de descarte (se houver) */}
+      {auditoria.motivos_descarte && auditoria.motivos_descarte.length > 0 && (
+        <div className="claude-card p-4">
+          <p className="section-label mb-3">O que foi descartado e por quê</p>
+          <ul className="space-y-1.5 text-sm">
+            {auditoria.motivos_descarte.map((m: any) => (
+              <li key={m.motivo} className="flex items-center justify-between text-[color:var(--claude-stone)]">
+                <span>{m.label}</span>
+                <span className="font-mono tabular-nums text-[color:var(--claude-ink)]">×{m.count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Alertas */}
+      {auditoria.alertas && auditoria.alertas.length > 0 && (
+        <div className="space-y-2">
+          {auditoria.alertas.map((a: any, i: number) => (
+            <div key={i} className={`p-3 rounded-xl border text-sm ${sevTone[a.severidade] || sevTone.info}`}>
+              <div className="flex items-center justify-between">
+                <span className="font-medium">{a.label}</span>
+                <span className="font-mono tabular-nums text-xs">×{a.count}</span>
+              </div>
+              {a.exemplos && a.exemplos.length > 0 && (
+                <ul className="mt-2 text-xs space-y-0.5 opacity-80">
+                  {a.exemplos.slice(0, 3).map((e: any, j: number) => (
+                    <li key={j} className="font-mono tabular-nums">
+                      cód {e.codigo} → {(e.nomes || []).join(' / ')}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Unidades detectadas */}
+      {auditoria.unidades_detectadas && auditoria.unidades_detectadas.length > 0 && (
+        <div className="text-xs text-[color:var(--claude-stone)]">
+          <span className="uppercase tracking-widest mr-2">Unidades:</span>
+          {auditoria.unidades_detectadas.map((u: any, i: number) => (
+            <span key={u.unidade} className="font-mono tabular-nums">
+              {i > 0 && ' · '}
+              {u.unidade} <span className="text-[color:var(--claude-stone)]/70">({u.count})</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Seleção de data quando >1 data */}
+      {auditoria.total_datas > 1 && (
+        <div className="claude-card p-4 bg-[color:var(--claude-cream-deep)]/40">
+          <p className="section-label mb-2">Importar 1 dia específico</p>
+          <p className="text-xs text-[color:var(--claude-stone)] mb-2">
+            Quer revisar apenas uma data com o fluxo linha-a-linha? Escolha o dia:
+          </p>
+          <select
+            value={dataAlvo}
+            onChange={(e) => onDataAlvo(e.target.value)}
+            className="w-full p-2 rounded-lg border border-[color:var(--border)] bg-white text-sm font-mono tabular-nums"
+          >
+            {auditoria.datas_detectadas.map((d: string) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+          <p className="text-[11px] text-[color:var(--claude-stone)] mt-2">
+            Ou clique em <b>Importar todas as {auditoria.total_datas} datas</b> abaixo —
+            cada dia substitui apenas o seu próprio fechamento. Linhas com produto
+            sem cadastro bloqueiam essa opção (pré-cadastre primeiro).
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// SucessoMultiFase — resultado da importação multi-dia
+// ============================================================================
+
+function SucessoMultiFase({ resultado }: any) {
+  return (
+    <div className="space-y-5">
+      <div className="text-center py-4">
+        <div className="inline-flex w-16 h-16 rounded-full bg-emerald-100 items-center justify-center mb-3">
+          <Check className="text-emerald-600" size={32} />
+        </div>
+        <h3 className="headline text-3xl tracking-editorial">Importação concluída</h3>
+        <p className="text-[color:var(--claude-stone)] mt-1">
+          {resultado.total_dias} dia{resultado.total_dias === 1 ? '' : 's'} processado{resultado.total_dias === 1 ? '' : 's'} ·
+          {' '}{resultado.total_vendas_criadas} vendas criadas
+          {resultado.total_vendas_removidas_antes > 0 && (
+            <span> · {resultado.total_vendas_removidas_antes} substituída{resultado.total_vendas_removidas_antes === 1 ? '' : 's'}</span>
+          )}
+        </p>
+      </div>
+
+      <div className="claude-card overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-[color:var(--claude-cream-deep)]/40">
+            <tr className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">
+              <th className="px-4 py-3 text-left">Data</th>
+              <th className="px-4 py-3 text-right">Vendas criadas</th>
+              <th className="px-4 py-3 text-right">Substituídas</th>
+              <th className="px-4 py-3 text-right">Clientes afetados</th>
+              <th className="px-4 py-3 text-right">Produtos criados</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[color:var(--border)]">
+            {(resultado.por_dia || []).map((d: any) => (
+              <tr key={d.data} className="hover:bg-[color:var(--claude-cream-deep)]/20">
+                <td className="px-4 py-2 font-mono tabular-nums">{d.data}</td>
+                <td className="px-4 py-2 text-right font-mono tabular-nums text-[color:var(--claude-sage)]">
+                  +{d.vendas_criadas}
+                </td>
+                <td className="px-4 py-2 text-right font-mono tabular-nums text-[color:var(--claude-stone)]">
+                  {d.vendas_removidas_antes || 0}
+                </td>
+                <td className="px-4 py-2 text-right font-mono tabular-nums">{d.clientes_afetados ?? '—'}</td>
+                <td className="px-4 py-2 text-right font-mono tabular-nums">{d.produtos_criados || 0}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="text-xs text-[color:var(--claude-stone)] text-center">
+        Os dados já refletem no Dashboard, no histórico e na página de Clientes.
+        Use o botão abaixo para abrir a análise consolidada do último dia importado.
       </div>
     </div>
   )

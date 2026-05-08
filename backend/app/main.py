@@ -1427,6 +1427,29 @@ async def fechamento_datas_no_csv(arquivo: UploadFile = File(...)):
     }
 
 
+@app.post("/fechamento/auditoria-csv")
+async def fechamento_auditoria_csv(arquivo: UploadFile = File(...)):
+    """
+    Auditoria completa do CSV pré-commit. Não grava nada.
+
+    Retorna:
+      - formato detectado
+      - datas presentes
+      - total linhas lidas / válidas / descartadas
+      - breakdown de motivos de descarte
+      - unidades detectadas
+      - alertas (clientes vazios, sem codigo, conflitos, etc)
+      - resumo por dia (linhas, valor, qty, SKUs, clientes)
+
+    Usado pelo frontend antes de oferecer "Importar todas as datas".
+    """
+    conteudo = await arquivo.read()
+    try:
+        return fechamento_csv_service.auditar(conteudo)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @app.post("/fechamento/importar-multi-data")
 async def fechamento_importar_multi_data(
     arquivo: UploadFile = File(...),
