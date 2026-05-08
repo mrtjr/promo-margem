@@ -1638,9 +1638,7 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
             </button>
           </div>
           {topClientes7d.length === 0 ? (
-            <p className="text-xs text-[color:var(--claude-stone)] italic py-4 text-center">
-              Sem clientes identificados em 7 dias.
-            </p>
+            <EmptyState variant="empty" compact title="Sem clientes identificados em 7 dias." />
           ) : (
             <ul className="divide-y divide-[color:var(--border)]">
               {topClientes7d.map((c, idx) => (
@@ -1674,9 +1672,7 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
             </button>
           </div>
           {topProdutos7d.length === 0 ? (
-            <p className="text-xs text-[color:var(--claude-stone)] italic py-4 text-center">
-              Sem vendas registradas em 7 dias.
-            </p>
+            <EmptyState variant="empty" compact title="Sem vendas registradas em 7 dias." />
           ) : (
             <ul className="divide-y divide-[color:var(--border)]">
               {topProdutos7d.map((p, idx) => (
@@ -1709,10 +1705,12 @@ function DashboardPage({ stats, onNavigate, onAbrirCliente }: any) {
             </button>
           </div>
           {rupturas.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-6 text-center">
-              <Check className="text-[color:var(--claude-sage)] mb-2" size={20} />
-              <p className="text-xs text-[color:var(--claude-stone)]">Nenhuma ruptura ativa.</p>
-            </div>
+            <EmptyState
+              variant="empty"
+              compact
+              icon={<Check size={20} className="text-[color:var(--claude-sage)]" />}
+              title="Nenhuma ruptura ativa."
+            />
           ) : (
             <ul className="divide-y divide-[color:var(--border)]">
               {rupturas.map((r) => (
@@ -2458,14 +2456,14 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-6">
       <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="p-6 border-b border-slate-200 flex items-center justify-between">
+        {/* Header — segue padrao Fraunces editorial usado em todos os modulos */}
+        <div className="p-6 border-b border-[color:var(--border)] flex items-center justify-between">
           <div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{passoFase}</p>
-            <h3 className="text-2xl font-bold tracking-tight">{tituloFase}</h3>
-            <p className="text-xs text-slate-500 mt-1">{subtituloFase}</p>
+            <p className="section-label mb-1">{passoFase}</p>
+            <h3 className="headline text-2xl tracking-editorial">{tituloFase}</h3>
+            <p className="text-xs text-[color:var(--claude-stone)] mt-1">{subtituloFase}</p>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1" title="Fechar sem importar">
+          <button onClick={onClose} className="text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] p-1" title="Fechar sem importar">
             <X size={22} />
           </button>
         </div>
@@ -2967,15 +2965,18 @@ function SucessoMultiFase({ resultado }: any) {
 }
 
 function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, grupos }: any) {
+  // Usa as pills semanticas do design system (tokens Claude) em vez de
+  // classes de cor literais — consistencia com o resto do produto.
   const statusBadge = (status: string) => {
     const map: Record<string, string> = {
-      ok: 'bg-emerald-100 text-emerald-700',
-      conflito: 'bg-amber-100 text-amber-700',
-      sem_match: 'bg-amber-100 text-amber-700',
-      sem_custo: 'bg-amber-100 text-amber-700',
-      erro: 'bg-rose-100 text-rose-700',
+      ok: 'pill pill-ok',
+      conflito: 'pill pill-warn',
+      sem_match: 'pill pill-warn',
+      sem_custo: 'pill pill-warn',
+      erro: 'pill pill-alert',
+      fora_periodo: 'pill pill-muted',
     }
-    return map[status] || 'bg-slate-100 text-slate-700'
+    return map[status] || 'pill pill-muted'
   }
   const statusLabel = (status: string) => {
     const map: Record<string, string> = {
@@ -3046,7 +3047,7 @@ function PreviewFase({ preview, resolucoes, onResolucao, produtosExistentes, gru
                 <td className="px-3 py-2 text-right font-mono">{formatCurrency(l.preco_unitario)}</td>
                 <td className="px-3 py-2 text-right font-mono font-bold">{formatCurrency(l.total)}</td>
                 <td className="px-3 py-2 text-center">
-                  <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-black ${statusBadge(l.status)}`}>
+                  <span className={statusBadge(l.status)}>
                     {statusLabel(l.status)}
                   </span>
                 </td>
