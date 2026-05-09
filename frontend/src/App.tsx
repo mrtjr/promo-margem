@@ -2389,6 +2389,23 @@ function normalizarChave(s: string): string {
 }
 
 /**
+ * Remove o sufixo "(× N pedidos)" que o backend acrescenta ao nome_csv para
+ * sinalizar consolidacao de pedidos. Sem essa limpeza, "Cadastrar novo"
+ * pre-popularia o nome do produto com o sufixo (ja observado em uso real:
+ * 33/65 = 51% dos faltantes do CSV de homologacao tinham o sufixo, e
+ * 1 produto ja estava cadastrado no banco como "CEBOLA BRANCA CX2 (× 6 pedidos)").
+ *
+ * O caractere usado pelo backend eh em-dash (U+2014), nao ×. O regex aceita
+ * qualquer nao-letra entre parenteses + N pedidos[s] no final, para cobrir
+ * variantes de geracao do servidor sem ficar acoplado a um codepoint
+ * especifico.
+ */
+function limparSufixoConsolidacao(nome: string): string {
+  if (!nome) return nome
+  return nome.replace(/\s*\([^)]*pedidos?\s*\)\s*$/i, '').trim()
+}
+
+/**
  * Sugere o produto cadastrado mais provavel para um grupo faltante.
  * NAO auto-confirma: retorna apenas o id da sugestao para pre-selecionar
  * no select de "Associar". O usuario sempre tem que confirmar/trocar.
@@ -2406,7 +2423,10 @@ function sugerirProdutoExistente(
   produtos: any[],
 ): number | null {
   if (!produtos || produtos.length === 0) return null
-  const nomeAlvo = normalizarChave(grupo.nome)
+  // Limpa o sufixo "(× N pedidos)" antes de normalizar, senao a busca por
+  // nome exato/substring jamais bateria com produtos cadastrados sem o
+  // sufixo (que eh o caso correto).
+  const nomeAlvo = normalizarChave(limparSufixoConsolidacao(grupo.nome))
   const codAlvo = grupo.codigo ? normalizarChave(grupo.codigo) : null
 
   // 1) codigo ERP exato (canonical)
@@ -3562,11 +3582,15 @@ function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, reso
   const [expandido, setExpandido] = useState(false)
   const acaoAtual = resolucao?.acao || (grupo.tipo === 'sem_custo' ? 'corrigir_custo' : null)
 
+  // Nome limpo do sufixo "(× N pedidos)" que o backend acrescenta ao nome_csv
+  // para display de consolidacao. Sem isso, o cadastro novo herdaria o sufixo.
+  const nomeLimpo = limparSufixoConsolidacao(grupo.nome)
+
   // Acao padrao para sem_custo: 'corrigir_custo' ja vem pre-selecionada para
   // reduzir cliques (produto ja existe, so falta o custo do lote).
   const iniciaCriar = () => onAplicar({
     acao: 'criar',
-    novo_nome: resolucao?.novo_nome ?? grupo.nome,
+    novo_nome: resolucao?.novo_nome ?? nomeLimpo,
     novo_codigo: resolucao?.novo_codigo ?? grupo.codigo ?? '',
     novo_preco_venda: resolucao?.novo_preco_venda ?? grupo.preco_medio_ponderado,
   })
@@ -3593,7 +3617,7 @@ function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, reso
             )}
           </div>
           <h4 className="text-base font-semibold text-[color:var(--claude-ink)] truncate">
-            {grupo.nome}
+            {nomeLimpo}
           </h4>
           <p className="text-xs text-[color:var(--claude-stone)] mt-1">
             {grupo.ocorrencias === 1
