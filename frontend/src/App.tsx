@@ -2353,9 +2353,117 @@ function RelatoriosPage() {
 // ImportCSVModal — upload + preview + resolução + commit
 // Fluxo: estado 'upload' → 'preview' → 'feito'
 // ============================================================================
+// ============================================================================
+// Tipos auxiliares e agrupamento de produtos faltantes (camada de conveniencia
+// para o passo de cadastro/validacao). NAO altera o motor de importacao —
+// resolucoes continuam sendo um Record<idx, resolucao> consumido pelo backend
+// linha a linha. Aqui apenas projetamos uma vista agregada por chave estavel
+// (codigo CSV ou nome normalizado) para reduzir retrabalho.
+// ============================================================================
+type GrupoProdutoFaltante = {
+  chave: string                          // estavel, ex.: 'codigo:1234' ou 'nome:CORANT'
+  tipo: 'sem_match_conflito' | 'sem_custo'
+  // Identidade do produto neste lote
+  nome: string                           // nome do CSV (ou cadastrado, se sem_custo)
+  codigo: string | null                  // codigo do CSV (ou cadastrado)
+  produto_id: number | null              // preenchido quando ja existe (sem_custo / conflito)
+  // Resumo operacional do lote (apoio visual; nao altera persistencia)
+  ocorrencias: number
+  quantidade_total: number
+  preco_medio_ponderado: number          // ponderado por quantidade
+  // idxs das linhas do preview que pertencem a este grupo
+  idxs: number[]
+  linhas: any[]                          // ref direta pras linhas, para "Revisar ocorrencias"
+}
+
+function normalizarChave(s: string): string {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
+
+function agruparProdutosFaltantes(linhas: any[]): GrupoProdutoFaltante[] {
+  const mapa = new Map<string, GrupoProdutoFaltante>()
+  for (const l of linhas) {
+    let chave: string
+    let tipo: GrupoProdutoFaltante['tipo']
+    if (l.status === 'sem_custo') {
+      // Produto ja cadastrado — agrupa por produto_id
+      chave = `pid:${l.produto_id}`
+      tipo = 'sem_custo'
+    } else if (l.status === 'sem_match' || l.status === 'conflito') {
+      // Produto sem cadastro — agrupa por codigo CSV (preferencia) ou nome
+      const k = l.codigo_csv ? `codigo:${normalizarChave(l.codigo_csv)}` : `nome:${normalizarChave(l.nome_csv)}`
+      chave = k
+      tipo = 'sem_match_conflito'
+    } else {
+      continue // ok, fora_periodo, erro nao entram neste passo
+    }
+    const existente = mapa.get(chave)
+    if (existente) {
+      existente.ocorrencias += 1
+      existente.quantidade_total += Number(l.quantidade || 0)
+      existente.idxs.push(l.idx)
+      existente.linhas.push(l)
+      // Acumula receita pra recalcular preco medio ponderado depois
+      ;(existente as any)._receita_acum =
+        ((existente as any)._receita_acum || 0) + Number(l.total || 0)
+    } else {
+      mapa.set(chave, {
+        chave,
+        tipo,
+        nome: l.produto_nome || l.nome_csv,
+        codigo: l.codigo_csv || (l.produto_codigo ?? null),
+        produto_id: l.produto_id ?? null,
+        ocorrencias: 1,
+        quantidade_total: Number(l.quantidade || 0),
+        preco_medio_ponderado: 0,
+        idxs: [l.idx],
+        linhas: [l],
+        // accumulator interno
+        ...({ _receita_acum: Number(l.total || 0) } as any),
+      })
+    }
+  }
+  // Calcula preco medio ponderado (receita / quantidade)
+  const out: GrupoProdutoFaltante[] = []
+  for (const g of mapa.values()) {
+    const receita = (g as any)._receita_acum || 0
+    g.preco_medio_ponderado = g.quantidade_total > 0 ? receita / g.quantidade_total : 0
+    delete (g as any)._receita_acum
+    out.push(g)
+  }
+  // Ordena: sem_match primeiro (precisam de mais decisao), depois sem_custo
+  out.sort((a, b) => {
+    if (a.tipo !== b.tipo) return a.tipo === 'sem_match_conflito' ? -1 : 1
+    return b.ocorrencias - a.ocorrencias
+  })
+  return out
+}
+
+function grupoEstaResolvido(grupo: GrupoProdutoFaltante, resolucoes: Record<number, any>): boolean {
+  // Olha so o primeiro idx — propagamos sempre, entao se 1 esta ok, todos estao
+  const r = resolucoes[grupo.idxs[0]]
+  if (!r) return false
+  if (r.acao === 'ignorar') return true
+  if (r.acao === 'criar') {
+    return !!(r.novo_nome && r.novo_grupo_id && r.novo_preco_venda && r.novo_custo && Number(r.novo_custo) > 0)
+  }
+  if (r.acao === 'associar') {
+    return !!r.produto_id
+  }
+  if (r.acao === 'corrigir_custo') {
+    return !!r.novo_custo && Number(r.novo_custo) > 0
+  }
+  return false
+}
+
 function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: any) {
   const hoje = new Date().toISOString().slice(0, 10)
-  const [estado, setEstado] = useState<'upload' | 'auditoria' | 'preview' | 'sucesso_multi'>('upload')
+  const [estado, setEstado] = useState<'upload' | 'auditoria' | 'produtos_faltantes' | 'preview' | 'sucesso_multi'>('upload')
   const [arquivo, setArquivo] = useState<File | null>(null)
   const [dataAlvo, setDataAlvo] = useState<string>(hoje)
   const [preview, setPreview] = useState<any | null>(null)
@@ -2428,7 +2536,9 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
     }
   }
 
-  // FASE 2B: Auditoria → Preview de UMA data especifica (fluxo single-day classico)
+  // FASE 2B: Auditoria → (produtos_faltantes |) Preview
+  // Baixa o preview e roteia para o passo de produtos faltantes se houver
+  // pendencias agrupaveis. Sem pendencias, vai direto para o preview classico.
   const irParaPreview = async () => {
     if (!arquivo) { setErro('Selecione um arquivo CSV.'); return }
     if (!dataAlvo) { setErro('Selecione a data do fechamento.'); return }
@@ -2451,7 +2561,11 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
         }
       }
       setResolucoes(iniciais)
-      setEstado('preview')
+      // Se ha pendencias agrupaveis (sem_match / conflito / sem_custo), ofere
+      // ce o passo de cadastro/validacao agrupada. Senao, segue direto pro
+      // preview tradicional (linha-a-linha).
+      const grupos = agruparProdutosFaltantes(res.data.linhas)
+      setEstado(grupos.length > 0 ? 'produtos_faltantes' : 'preview')
     } catch (e: any) {
       setErro(e?.response?.data?.detail || 'Erro ao processar o arquivo.')
     } finally {
@@ -2461,6 +2575,19 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
 
   const atualizarResolucao = (idx: number, patch: any) => {
     setResolucoes((prev) => ({ ...prev, [idx]: { ...(prev[idx] || { idx }), ...patch } }))
+  }
+
+  // Aplica uma mesma resolucao a TODOS os idx de um grupo de produto faltante.
+  // Esta eh a chave da reducao de retrabalho: usuario decide 1 vez por produto
+  // e o sistema replica para todas as ocorrencias daquele produto no lote.
+  const aplicarResolucaoNoGrupo = (idxs: number[], patch: any) => {
+    setResolucoes((prev) => {
+      const novo = { ...prev }
+      for (const idx of idxs) {
+        novo[idx] = { ...(novo[idx] || { idx }), ...patch, idx }
+      }
+      return novo
+    })
   }
 
   // Linhas "criar" sem custo > 0: bloqueia no front antes de bater no server,
@@ -2543,11 +2670,26 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
     }
   }
 
+  // Total de passos da jornada: 4 quando ha produtos faltantes pra resolver,
+  // 3 quando o lote ja vem todo reconhecido (passo intermediario nao aparece).
+  // A contagem so muda DEPOIS que o preview eh baixado — ate la, assume 3.
+  const totalPassos = preview && agruparProdutosFaltantes(preview.linhas).length > 0 ? 4 : 3
+
+  // Prontidao da fase produtos_faltantes: todos os grupos precisam estar
+  // resolvidos (associar/criar/corrigir_custo com campos completos OU ignorar
+  // explicito) antes de avancar para a revisao linha-a-linha.
+  const gruposFaltantesAtuais = preview ? agruparProdutosFaltantes(preview.linhas) : []
+  const gruposPendentes = gruposFaltantesAtuais.filter(
+    (g: GrupoProdutoFaltante) => !grupoEstaResolvido(g, resolucoes)
+  )
+  const podeAvancarPF = gruposPendentes.length === 0
+
   const tituloFase = (() => {
     switch (estado) {
       case 'upload': return 'Selecionar o arquivo'
       case 'auditoria': return 'Conferir o que foi lido'
-      case 'preview': return 'Revisar e confirmar'
+      case 'produtos_faltantes': return 'Cadastrar e confirmar produtos'
+      case 'preview': return 'Revisar e importar vendas'
       case 'sucesso_multi': return 'Importação concluída'
     }
   })()
@@ -2555,15 +2697,17 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
     switch (estado) {
       case 'upload': return 'Nada será gravado nesta etapa.'
       case 'auditoria': return 'Você ainda não importou — apenas conferimos o arquivo.'
-      case 'preview': return 'Veja linha por linha antes de gravar as vendas.'
+      case 'produtos_faltantes': return 'Resolva 1 vez por produto. Depois disso aplicamos a todas as ocorrências no lote.'
+      case 'preview': return 'Confira as linhas e finalize. As resoluções já foram aplicadas.'
       case 'sucesso_multi': return 'As vendas já foram gravadas.'
     }
   })()
   const passoFase = (() => {
     switch (estado) {
-      case 'upload': return 'PASSO 1 DE 3'
-      case 'auditoria': return 'PASSO 2 DE 3'
-      case 'preview': return 'PASSO 3 DE 3'
+      case 'upload': return `PASSO 1 DE ${totalPassos}`
+      case 'auditoria': return `PASSO 2 DE ${totalPassos}`
+      case 'produtos_faltantes': return `PASSO 3 DE ${totalPassos}`
+      case 'preview': return totalPassos === 4 ? 'PASSO 4 DE 4' : 'PASSO 3 DE 3'
       case 'sucesso_multi': return 'CONCLUÍDO'
     }
   })()
@@ -2626,6 +2770,15 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
               }}
             />
           )}
+          {estado === 'produtos_faltantes' && preview && (
+            <ProdutosFaltantesFase
+              preview={preview}
+              resolucoes={resolucoes}
+              onAplicarGrupo={aplicarResolucaoNoGrupo}
+              produtosExistentes={produtosExistentes}
+              grupos={grupos}
+            />
+          )}
           {estado === 'preview' && preview && (
             <PreviewFase
               preview={preview}
@@ -2647,9 +2800,34 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
             {!erro && estado === 'preview' && motivoBloqueio && (
               <span className="text-amber-700 font-semibold text-xs">⚠ {motivoBloqueio}</span>
             )}
+            {!erro && estado === 'produtos_faltantes' && !podeAvancarPF && (
+              <span className="text-amber-700 font-semibold text-xs">
+                ⚠ {gruposPendentes.length} produto(s) ainda pendente(s)
+              </span>
+            )}
+            {!erro && estado === 'produtos_faltantes' && podeAvancarPF && (
+              <span className="text-[color:var(--claude-sage)] font-semibold text-xs">
+                ✓ Todos os produtos resolvidos — pronto para revisar
+              </span>
+            )}
           </div>
           <div className="flex gap-2">
             {estado === 'preview' && (
+              <button
+                onClick={() => {
+                  // Se ha grupos faltantes, volta pra eles; senao, volta pra auditoria.
+                  if (gruposFaltantesAtuais.length > 0) {
+                    setEstado('produtos_faltantes')
+                  } else {
+                    setEstado('auditoria'); setPreview(null); setResolucoes({})
+                  }
+                }}
+                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+              >
+                Voltar
+              </button>
+            )}
+            {estado === 'produtos_faltantes' && (
               <button
                 onClick={() => { setEstado('auditoria'); setPreview(null); setResolucoes({}) }}
                 className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
@@ -2709,6 +2887,18 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
                   </button>
                 )}
               </>
+            )}
+            {estado === 'produtos_faltantes' && (
+              <button
+                onClick={() => setEstado('preview')}
+                disabled={!podeAvancarPF}
+                className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 disabled:opacity-50 transition-all"
+                title={podeAvancarPF
+                  ? 'Avançar para a revisão linha-a-linha das vendas'
+                  : `Resolva ${gruposPendentes.length} produto(s) pendente(s) para avançar`}
+              >
+                Avançar para revisão
+              </button>
             )}
             {estado === 'preview' && (
               <button
@@ -3094,6 +3284,297 @@ function SucessoMultiFase({ resultado }: any) {
           <li>Cada cliente do CSV virou registro consultável em <b>Clientes</b></li>
           <li>Histórico de movimentações registra cada venda + saída de estoque</li>
         </ul>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// ProdutosFaltantesFase — passo intermediario de cadastro/validacao agrupada.
+// NAO altera o motor de importacao: as resolucoes geradas aqui sao escritas
+// no mesmo Record<idx, resolucao> consumido pela fase 'preview'/commit. A
+// diferenca eh que, ao decidir, aplicamos a TODAS as ocorrencias do produto
+// no lote (mesmo grupo) — reduzindo retrabalho sem mudar persistencia.
+// ============================================================================
+function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosExistentes, grupos }: any) {
+  const gruposFaltantes = agruparProdutosFaltantes(preview.linhas)
+  const totalGrupos = gruposFaltantes.length
+  const resolvidos = gruposFaltantes.filter((g: GrupoProdutoFaltante) => grupoEstaResolvido(g, resolucoes)).length
+  const pendentes = totalGrupos - resolvidos
+  const totalOcorrencias = gruposFaltantes.reduce((s: number, g: GrupoProdutoFaltante) => s + g.ocorrencias, 0)
+  const ocorrenciasResolvidas = gruposFaltantes
+    .filter((g: GrupoProdutoFaltante) => grupoEstaResolvido(g, resolucoes))
+    .reduce((s: number, g: GrupoProdutoFaltante) => s + g.ocorrencias, 0)
+
+  return (
+    <div className="space-y-5">
+      {/* Banner de contexto — tom informativo, nao de erro */}
+      <div className="p-4 bg-[color:var(--claude-cream-deep)]/40 border border-[color:var(--border)] rounded-xl">
+        <p className="text-sm text-[color:var(--claude-ink)]">
+          Encontramos produtos que ainda precisam de cadastro ou confirmação antes de importar as vendas.
+        </p>
+        <p className="text-xs text-[color:var(--claude-stone)] mt-1.5 leading-relaxed">
+          Resolva <strong>1 vez por produto neste lote</strong> — aplicamos a todas as ocorrências automaticamente.
+          Quantidade e preço médio são apenas referência do arquivo. <strong>O custo deve ser informado manualmente</strong> em toda importação CSV.
+        </p>
+      </div>
+
+      {/* Resumo do progresso */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <MiniStat label="Produtos pendentes" valor={pendentes} cor={pendentes > 0 ? 'amber' : 'emerald'} />
+        <MiniStat label="Já resolvidos" valor={`${resolvidos} de ${totalGrupos}`} cor="emerald" />
+        <MiniStat label="Ocorrências cobertas" valor={`${ocorrenciasResolvidas} de ${totalOcorrencias}`} cor="blue" />
+        <MiniStat label="Linhas totais" valor={preview.total_linhas} cor="slate" />
+      </div>
+
+      {/* Cards de cada grupo */}
+      <div className="space-y-3">
+        {gruposFaltantes.map((g: GrupoProdutoFaltante) => (
+          <GrupoFaltanteCard
+            key={g.chave}
+            grupo={g}
+            resolucao={resolucoes[g.idxs[0]]}
+            onAplicar={(patch: any) => onAplicarGrupo(g.idxs, patch)}
+            produtos={produtosExistentes}
+            grupos={grupos}
+            resolvido={grupoEstaResolvido(g, resolucoes)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, resolvido }: any) {
+  const [expandido, setExpandido] = useState(false)
+  const acaoAtual = resolucao?.acao || (grupo.tipo === 'sem_custo' ? 'corrigir_custo' : null)
+
+  // Acao padrao para sem_custo: 'corrigir_custo' ja vem pre-selecionada para
+  // reduzir cliques (produto ja existe, so falta o custo do lote).
+  const iniciaCriar = () => onAplicar({
+    acao: 'criar',
+    novo_nome: resolucao?.novo_nome ?? grupo.nome,
+    novo_codigo: resolucao?.novo_codigo ?? grupo.codigo ?? '',
+    novo_preco_venda: resolucao?.novo_preco_venda ?? grupo.preco_medio_ponderado,
+  })
+
+  const tipoLabel = grupo.tipo === 'sem_custo' ? 'Custo pendente' : 'Sem cadastro'
+
+  return (
+    <div className={`bg-white rounded-2xl border-2 overflow-hidden transition-all ${
+      resolvido
+        ? 'border-[color:var(--claude-sage)]/40 bg-[color:var(--claude-sage)]/5'
+        : 'border-[color:var(--border)]'
+    }`}>
+      {/* Header do grupo */}
+      <div className="p-4 flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`pill ${resolvido ? 'pill-ok' : 'pill-warn'}`}>
+              {resolvido ? '✓ resolvido' : tipoLabel}
+            </span>
+            {grupo.codigo && (
+              <span className="text-[10px] font-mono text-[color:var(--claude-stone)]">
+                cód {grupo.codigo}
+              </span>
+            )}
+          </div>
+          <h4 className="text-base font-semibold text-[color:var(--claude-ink)] truncate">
+            {grupo.nome}
+          </h4>
+          <p className="text-xs text-[color:var(--claude-stone)] mt-1">
+            {grupo.ocorrencias === 1
+              ? '1 ocorrência neste lote'
+              : `${grupo.ocorrencias} ocorrências neste lote`}
+            {' · '}
+            qtd total {formatNumber(grupo.quantidade_total, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+            {' · '}
+            preço médio {formatCurrency(grupo.preco_medio_ponderado)}
+          </p>
+        </div>
+        <button
+          onClick={() => setExpandido(v => !v)}
+          className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] shrink-0"
+          aria-expanded={expandido}
+        >
+          {expandido ? 'Ocultar' : 'Ver'} ocorrências
+        </button>
+      </div>
+
+      {/* Ocorrências detalhadas (lista de linhas do CSV) */}
+      {expandido && (
+        <div className="px-4 pb-3 -mt-2">
+          <div className="bg-slate-50 rounded-lg p-3 text-[11px] space-y-1 border border-slate-200">
+            {grupo.linhas.map((l: any) => (
+              <div key={l.idx} className="font-mono flex justify-between gap-3 text-slate-600">
+                <span>linha {l.idx}</span>
+                <span className="flex-1 truncate text-slate-700">{l.nome_csv}</span>
+                <span>{formatNumber(l.quantidade, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · {formatCurrency(l.preco_unitario)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Ações + formulário inline */}
+      <div className="px-4 pb-4 pt-1 border-t border-[color:var(--border)]/60 bg-slate-50/30">
+        {grupo.tipo === 'sem_custo' ? (
+          <div className="space-y-2 pt-3">
+            <div className="flex gap-1.5">
+              <BotaoAcao
+                ativo={acaoAtual === 'corrigir_custo'}
+                onClick={() => onAplicar({ acao: 'corrigir_custo', produto_id: grupo.produto_id })}
+                label="Informar custo"
+              />
+              <BotaoAcao
+                ativo={acaoAtual === 'ignorar'}
+                onClick={() => onAplicar({ acao: 'ignorar' })}
+                label="Ignorar grupo"
+              />
+            </div>
+            {acaoAtual === 'corrigir_custo' && (
+              <div className="p-3 bg-white rounded-lg border border-[color:var(--border)] space-y-2">
+                <p className="text-[11px] text-[color:var(--claude-stone)]">
+                  Produto já existe no cadastro. Informe o custo unitário <strong>desta importação</strong> — o valor será aplicado às {grupo.ocorrencias} ocorrência(s).
+                </p>
+                <input
+                  type="number" step="0.01" min="0.01"
+                  value={resolucao?.novo_custo ?? ''}
+                  onChange={(e) => onAplicar({ acao: 'corrigir_custo', produto_id: grupo.produto_id, novo_custo: parseFloat(e.target.value) || 0 })}
+                  placeholder="Custo unitário *"
+                  className={`w-full p-2 rounded border text-sm bg-white ${
+                    (!resolucao?.novo_custo || Number(resolucao.novo_custo) <= 0)
+                      ? 'border-rose-300 bg-rose-50/50'
+                      : 'border-slate-300'
+                  }`}
+                />
+                <p className="text-[10px] text-[color:var(--claude-stone)]">
+                  <strong className="text-rose-600">Custo &gt; 0</strong> obrigatório. Não usamos o preço médio do CSV — você precisa confirmar manualmente.
+                </p>
+              </div>
+            )}
+            {acaoAtual === 'ignorar' && (
+              <p className="text-[11px] text-[color:var(--claude-stone)] italic mt-1">
+                As {grupo.ocorrencias} ocorrência(s) deste produto não virarão venda nesta importação.
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2 pt-3">
+            <div className="flex gap-1.5 flex-wrap">
+              <BotaoAcao
+                ativo={acaoAtual === 'associar'}
+                onClick={() => onAplicar({ acao: 'associar' })}
+                label="Associar a produto existente"
+              />
+              <BotaoAcao
+                ativo={acaoAtual === 'criar'}
+                onClick={iniciaCriar}
+                label="Cadastrar novo"
+              />
+              <BotaoAcao
+                ativo={acaoAtual === 'ignorar'}
+                onClick={() => onAplicar({ acao: 'ignorar' })}
+                label="Ignorar grupo"
+              />
+            </div>
+
+            {acaoAtual === 'associar' && (
+              <div className="p-3 bg-white rounded-lg border border-[color:var(--border)] space-y-2">
+                <p className="text-[11px] text-[color:var(--claude-stone)]">
+                  Selecione um produto já cadastrado. A associação será aplicada às {grupo.ocorrencias} ocorrência(s).
+                </p>
+                <select
+                  value={resolucao?.produto_id || ''}
+                  onChange={(e) => onAplicar({ acao: 'associar', produto_id: e.target.value ? parseInt(e.target.value) : null })}
+                  className={`w-full p-2 rounded border text-sm bg-white ${
+                    !resolucao?.produto_id ? 'border-rose-300 bg-rose-50/50' : 'border-slate-300'
+                  }`}
+                >
+                  <option value="">— selecione um produto —</option>
+                  {produtos.map((p: any) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nome} {p.codigo ? `[${p.codigo}]` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {acaoAtual === 'criar' && (
+              <div className="p-3 bg-white rounded-lg border border-[color:var(--border)] space-y-2">
+                <p className="text-[11px] text-[color:var(--claude-stone)]">
+                  Cadastro assistido — nome e código pré-preenchidos do CSV. <strong>Custo é manual e obrigatório.</strong>
+                </p>
+                <input
+                  type="text"
+                  value={resolucao?.novo_nome ?? grupo.nome}
+                  onChange={(e) => onAplicar({ acao: 'criar', novo_nome: e.target.value })}
+                  placeholder="Nome *"
+                  className="w-full p-2 rounded border border-slate-300 text-sm bg-white"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    value={resolucao?.novo_codigo ?? grupo.codigo ?? ''}
+                    onChange={(e) => onAplicar({ acao: 'criar', novo_codigo: e.target.value })}
+                    placeholder="Código ERP"
+                    className="p-2 rounded border border-slate-300 text-sm bg-white font-mono"
+                  />
+                  <select
+                    value={resolucao?.novo_grupo_id ?? ''}
+                    onChange={(e) => onAplicar({ acao: 'criar', novo_grupo_id: e.target.value ? parseInt(e.target.value) : null })}
+                    className={`p-2 rounded border text-sm bg-white ${
+                      !resolucao?.novo_grupo_id ? 'border-rose-300 bg-rose-50/50' : 'border-slate-300'
+                    }`}
+                  >
+                    <option value="">— grupo *—</option>
+                    {grupos.map((g: any) => (
+                      <option key={g.id} value={g.id}>{g.nome}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="number" step="0.01"
+                    value={resolucao?.novo_preco_venda ?? grupo.preco_medio_ponderado}
+                    onChange={(e) => onAplicar({ acao: 'criar', novo_preco_venda: parseFloat(e.target.value) || 0 })}
+                    placeholder="Preço venda *"
+                    className={`p-2 rounded border text-sm bg-white ${
+                      !resolucao?.novo_preco_venda ? 'border-rose-300 bg-rose-50/50' : 'border-slate-300'
+                    }`}
+                  />
+                  <input
+                    type="number" step="0.01" min="0.01"
+                    value={resolucao?.novo_custo ?? ''}
+                    onChange={(e) => onAplicar({ acao: 'criar', novo_custo: parseFloat(e.target.value) || 0 })}
+                    placeholder="Custo *"
+                    className={`p-2 rounded border text-sm bg-white ${
+                      (!resolucao?.novo_custo || Number(resolucao.novo_custo) <= 0)
+                        ? 'border-rose-300 bg-rose-50/50'
+                        : 'border-slate-300'
+                    }`}
+                  />
+                </div>
+                <p className="text-[10px] text-[color:var(--claude-stone)]">
+                  <strong className="text-rose-600">Custo &gt; 0</strong> obrigatório — não inferimos do preço médio. Será aplicado às {grupo.ocorrencias} ocorrência(s).
+                </p>
+              </div>
+            )}
+
+            {acaoAtual === 'ignorar' && (
+              <p className="text-[11px] text-[color:var(--claude-stone)] italic mt-1">
+                As {grupo.ocorrencias} ocorrência(s) deste produto não virarão venda nesta importação.
+              </p>
+            )}
+
+            {!acaoAtual && (
+              <p className="text-[11px] text-[color:var(--claude-stone)] italic mt-1">
+                Escolha uma ação acima para resolver este grupo.
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
