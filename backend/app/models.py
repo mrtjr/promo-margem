@@ -541,3 +541,111 @@ class CestaItem(Base):
     __table_args__ = (
         UniqueConstraint('cesta_id', 'produto_id', name='uq_cesta_produto'),
     )
+
+
+# ============================================================================
+# Sprint S0 — Fundacoes Agentic
+#
+# 3 tabelas append-only / observavel:
+#   - events: trilha de auditoria de TODA mutacao critica
+#   - agent_runs: trace de cada execucao agentica (custo, latencia, status)
+#   - catalog_embeddings: vetores TF-IDF char-ngram do catalogo (substitui
+#     a heuristica PALAVRAS_CHAVE_GRUPO do frontend)
+#
+# Decisao deliberada: tudo eh tabela operacional (nao tabela auxiliar).
+# Pode ser inspecionado via SQL direto, e pode crescer sem impactar o
+# fluxo principal — sao append-only por design.
+# ============================================================================
+
+
+class Event(Base):
+    """
+    Event Log — append-only. Toda mutacao critica e acao agentica relevante
+    publica um Event. Imutavel: NUNCA UPDATE/DELETE em registros antigos.
+
+    Campos:
+      - actor: quem disparou ('user', 'agent:reconciliator', 'system', 'tool:...')
+      - entity: tipo de coisa afetada ('produto', 'venda', 'csv_import', 'agent_run')
+      - entity_id: id especifico (None pra acoes que nao tem 1 alvo, ex. import multi)
+      - action: verbo curto ('updated', 'created', 'deleted', 'commit', 'preview')
+      - correlation_id: agrupa eventos da mesma operacao logica (importacao
+        gera N eventos com mesmo correlation_id)
+      - before/after: snapshots JSON dos campos relevantes pre/pos acao
+      - payload: contexto adicional livre (parametros, metadados)
+      - meta: campo livre pra info do agente (modelo, custo, latency_ms)
+
+    NAO indexa todos os campos pra manter writes baratos. Index em ts (replay
+    cronologico), entity+entity_id (historico de 1 alvo), correlation_id.
+    """
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ts = Column(DateTime, server_default=func.now(), index=True, nullable=False)
+    actor = Column(String, nullable=False, index=True)
+    entity = Column(String, nullable=False, index=True)
+    entity_id = Column(Integer, nullable=True, index=True)
+    action = Column(String, nullable=False)
+    correlation_id = Column(String, nullable=True, index=True)
+    before = Column(JSON, nullable=True)
+    after = Column(JSON, nullable=True)
+    payload = Column(JSON, nullable=True)
+    meta = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("ix_events_entity_compound", "entity", "entity_id", "ts"),
+    )
+
+
+class AgentRun(Base):
+    """
+    Observabilidade de cada execucao agentica. Cada chamada de agente
+    (Reconciliator, futuros Cataloger, MarginSentinel etc.) cria 1 registro.
+
+    Status flow: 'running' -> 'success' | 'error' | 'timeout' | 'rejected'
+
+    Resumos sao inteligentemente resumidos (truncados, hashed, ou
+    representacao concisa) — input/output completos vivem nos events
+    publicados durante o run.
+    """
+    __tablename__ = "agent_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_name = Column(String, nullable=False, index=True)
+    started_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
+    status = Column(String, nullable=False, default="running", index=True)
+    input_summary = Column(JSON, nullable=True)
+    output_summary = Column(JSON, nullable=True)
+    tools_used = Column(JSON, nullable=True)  # [{tool: 'name', count: N}, ...]
+    cost_estimate = Column(Float, nullable=True)  # USD ou tokens — definido por agente
+    latency_ms = Column(Integer, nullable=True)
+    correlation_id = Column(String, nullable=True, index=True)
+    error = Column(String, nullable=True)
+    autonomy_level = Column(String, nullable=True)  # 'observe' | 'suggest' | 'execute_with_approval'
+
+
+class CatalogEmbedding(Base):
+    """
+    Vetor de cada produto pra matching semantico. Substitui heuristica
+    PALAVRAS_CHAVE_GRUPO + sugerirProdutoExistente do frontend, agora
+    server-side e baseado em TF-IDF char n-gram (3-5).
+
+    1 produto -> 1 row. Recriado quando produto muda nome/codigo
+    (via reindex incremental disparado por Event listener).
+
+    Vector salvo como JSON list[float]; sem dependencia de pgvector ou
+    sqlite-vss. Para top-K, lemos todos e calculamos cosine in-memory
+    (catalogo desktop tipico: <10k produtos, performance OK).
+    """
+    __tablename__ = "catalog_embeddings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    produto_id = Column(Integer, ForeignKey("produtos.id", ondelete="CASCADE"),
+                        unique=True, nullable=False, index=True)
+    vector = Column(JSON, nullable=False)  # list[float]
+    model_name = Column(String, nullable=False, default="tfidf-charngram-v1")
+    indexed_at = Column(DateTime, server_default=func.now(), nullable=False)
+    nome_indexed = Column(String, nullable=False)  # snapshot pra detectar staleness
+    codigo_indexed = Column(String, nullable=True)
+
+    produto = relationship("Produto")

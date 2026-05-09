@@ -11,6 +11,10 @@ from datetime import date as date_type, timedelta
 from . import models, schemas, database, migrations
 from .utils.tz import hoje_brt
 from .database import engine, get_db
+# Sprint S0 — Fundacoes Agentic
+from . import eventbus, embedding_index
+from . import tools as tools_pkg  # registra tools no import (side-effect)
+from .agents import ReconciliatorAgent
 from .services import (
     margin_engine,
     sugestao_service,
@@ -101,6 +105,37 @@ async def lifespan(app: "FastAPI"):
                 print(f"[startup] Engine: {n_expiradas} proposta(s) expiradas (TTL 24h)")
         except Exception as e:
             print(f"[startup] Engine de Promoção falhou (ignorando): {e}")
+
+        # 4. Sprint S0 — Catalog Embedding Index: rebuild se vazio/desatualizado.
+        # Reindex incremental acontece em PATCH /produtos. Full rebuild so
+        # quando catalogo cresce mais do que o cache de embeddings.
+        try:
+            existing_embs = db.query(models.CatalogEmbedding).count()
+            total_produtos = db.query(models.Produto).filter(models.Produto.ativo == True).count()
+            if total_produtos > 0 and existing_embs < total_produtos:
+                stats = embedding_index.rebuild_index(db)
+                db.commit()
+                print(
+                    f"[startup] CatalogEmbedding: rebuild — "
+                    f"indexed={stats['indexed']}, pruned={stats['pruned']}"
+                )
+            elif total_produtos == 0:
+                print("[startup] CatalogEmbedding: catalogo vazio, skip rebuild")
+            else:
+                print(f"[startup] CatalogEmbedding: {existing_embs} embeddings ja indexados, skip")
+        except Exception as e:
+            print(f"[startup] CatalogEmbedding falhou (ignorando): {e}")
+
+        # 5. Sprint S0 — log de tools registradas (discovery na inicializacao).
+        try:
+            from .tools import list_tools as _list_tools
+            tools = _list_tools()
+            print(
+                f"[startup] Tool Registry: {len(tools)} tools — "
+                f"{', '.join(t.name for t in tools)}"
+            )
+        except Exception as e:
+            print(f"[startup] Tool Registry falhou (ignorando): {e}")
     finally:
         db.close()
 
@@ -448,10 +483,15 @@ async def atualizar_produto(
     Validações:
       - `codigo` deve ser único (se preenchido). Vazio/whitespace vira NULL.
       - Não altera `sku` (imutável), nem `estoque_qtd/peso` (movidos via entrada/venda).
+
+    Sprint S0: publica Event no log e reindexa embedding se nome/codigo mudou.
     """
     prod = db.query(models.Produto).filter(models.Produto.id == produto_id).first()
     if not prod:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
+
+    before_snapshot = eventbus.snapshot_produto(prod)
+    fields_changed: list[str] = []
 
     # Normaliza código: strings vazias/whitespace viram None para não quebrar o UNIQUE
     if payload.codigo is not None:
@@ -466,20 +506,51 @@ async def atualizar_produto(
                     status_code=409,
                     detail=f"Código '{cod_norm}' já usado pelo SKU {conflito.sku} ({conflito.nome})",
                 )
-        prod.codigo = cod_norm
+        if prod.codigo != cod_norm:
+            prod.codigo = cod_norm
+            fields_changed.append("codigo")
 
     if payload.nome is not None:
-        prod.nome = payload.nome.strip()
-    if payload.grupo_id is not None:
+        nome_norm = payload.nome.strip()
+        if prod.nome != nome_norm:
+            prod.nome = nome_norm
+            fields_changed.append("nome")
+    if payload.grupo_id is not None and prod.grupo_id != payload.grupo_id:
         prod.grupo_id = payload.grupo_id
-    if payload.custo is not None:
+        fields_changed.append("grupo_id")
+    if payload.custo is not None and prod.custo != payload.custo:
         prod.custo = payload.custo
-    if payload.preco_venda is not None:
+        fields_changed.append("custo")
+    if payload.preco_venda is not None and prod.preco_venda != payload.preco_venda:
         prod.preco_venda = payload.preco_venda
-    if payload.ativo is not None:
+        fields_changed.append("preco_venda")
+    if payload.ativo is not None and prod.ativo != payload.ativo:
         prod.ativo = payload.ativo
-    if payload.bloqueado_engine is not None:
+        fields_changed.append("ativo")
+    if payload.bloqueado_engine is not None and prod.bloqueado_engine != payload.bloqueado_engine:
         prod.bloqueado_engine = payload.bloqueado_engine
+        fields_changed.append("bloqueado_engine")
+
+    # Publica event so se houve mudanca real (evita ruido de no-op patches)
+    if fields_changed:
+        after_snapshot = eventbus.snapshot_produto(prod)
+        eventbus.publish_event(
+            db,
+            actor=eventbus.ACTOR_USER,
+            entity="produto",
+            entity_id=prod.id,
+            action="updated",
+            before=before_snapshot,
+            after=after_snapshot,
+            payload={"fields_changed": fields_changed, "endpoint": "PATCH /produtos/{id}"},
+        )
+        # Reindex embedding se afetou matching (nome ou codigo). Best-effort:
+        # falha de reindex nao quebra o PATCH.
+        if "nome" in fields_changed or "codigo" in fields_changed:
+            try:
+                embedding_index.upsert_produto_embedding(db, prod.id)
+            except Exception as e:
+                print(f"[embedding] reindex de produto {prod.id} falhou (ignorando): {e}")
 
     db.commit()
     db.refresh(prod)
@@ -582,30 +653,77 @@ async def importar_csv_preview(
 async def importar_csv_commit(
     req: schemas.CSVImportCommitRequest,
     db: Session = Depends(get_db),
+    x_correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-Id"),
 ):
     """
     2ª fase: efetiva a importação. Recebe o preview completo + resoluções do
     user (associar / criar / ignorar para linhas pendentes). Substitui o
     fechamento do dia se já existir.
+
+    Sprint S0: publica eventos canonicos no event log (commit_started / committed
+    / commit_failed) para trilha de auditoria. Aceita X-Correlation-Id pra
+    ligar com agent_run quando vier do Reconciliator.
     """
     try:
         data_alvo = date_type.fromisoformat(req.data_alvo)
     except ValueError:
         raise HTTPException(status_code=400, detail="data_alvo deve estar no formato YYYY-MM-DD")
 
-    # Transforma schemas Pydantic em dicts simples pro service
+    correlation_id = x_correlation_id or eventbus.new_correlation_id()
     linhas_dicts = [l.model_dump() for l in req.linhas]
     resolucoes_dicts = [r.model_dump() for r in req.resolucoes]
 
+    eventbus.publish_event(
+        db,
+        actor=eventbus.ACTOR_USER,
+        entity="csv_import",
+        action="commit_started",
+        correlation_id=correlation_id,
+        payload={
+            "data_alvo": req.data_alvo,
+            "linhas_count": len(linhas_dicts),
+            "resolucoes_count": len(resolucoes_dicts),
+            "endpoint": "POST /fechamento/importar-csv/commit",
+        },
+    )
+
     try:
-        return fechamento_csv_service.commit_importacao(
+        result = fechamento_csv_service.commit_importacao(
             db,
             linhas=linhas_dicts,
             resolucoes=resolucoes_dicts,
             data_alvo=data_alvo,
         )
     except ValueError as e:
+        eventbus.publish_event(
+            db,
+            actor=eventbus.ACTOR_USER,
+            entity="csv_import",
+            action="commit_failed",
+            correlation_id=correlation_id,
+            payload={"error": str(e), "data_alvo": req.data_alvo},
+        )
+        # Importante: faz commit dos eventos antes de levantar a exception
+        # pra trilha ficar persistida mesmo em caso de erro.
+        db.commit()
         raise HTTPException(status_code=400, detail=str(e))
+
+    result_dict = (
+        result.model_dump() if hasattr(result, "model_dump")
+        else dict(result.__dict__) if hasattr(result, "__dict__")
+        else dict(result)
+    )
+    eventbus.publish_event(
+        db,
+        actor=eventbus.ACTOR_USER,
+        entity="csv_import",
+        action="committed",
+        correlation_id=correlation_id,
+        after=result_dict,
+        payload={"data_alvo": req.data_alvo},
+    )
+    db.commit()
+    return result
 
 
 @app.get("/projecao/amanha", response_model=schemas.ProjecaoConsolidadaResponse)
@@ -1605,3 +1723,133 @@ async def fechamento_importar_multi_data(
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+# ============================================================================
+# Sprint S0 — Endpoints Agentic
+#
+# Tres novos endpoints para suportar a fase agentic:
+#   GET  /events                          - paginacao do event log
+#   GET  /agent-runs                      - paginacao de execucoes agenticas
+#   GET  /tools                           - registry de tools (discovery)
+#   POST /agentes/reconciliator/preview   - chama Reconciliator V0
+#
+# Todos adicionados em paralelo ao fluxo classico — nada do existente foi
+# removido. Wizard ImportCSVModal continua funcional como fallback.
+# ============================================================================
+
+@app.get('/events', response_model=schemas.EventsListResponse)
+async def listar_events(
+    db: Session = Depends(get_db),
+    cursor: Optional[int] = None,
+    limit: int = 50,
+    actor: Optional[str] = None,
+    entity: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+):
+    """
+    Lista eventos do log, ordenados desc por id (mais recente primeiro).
+    Cursor-based pagination: passe cursor=last_id da pagina anterior.
+    Filtros opcionais: actor, entity, correlation_id.
+    """
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail='limit deve estar entre 1 e 500')
+
+    q = db.query(models.Event)
+    if cursor is not None:
+        q = q.filter(models.Event.id < cursor)
+    if actor:
+        q = q.filter(models.Event.actor == actor)
+    if entity:
+        q = q.filter(models.Event.entity == entity)
+    if correlation_id:
+        q = q.filter(models.Event.correlation_id == correlation_id)
+
+    items = q.order_by(models.Event.id.desc()).limit(limit + 1).all()
+    has_more = len(items) > limit
+    items = items[:limit]
+    next_cursor = items[-1].id if has_more and items else None
+    return schemas.EventsListResponse(
+        items=items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
+
+
+@app.get('/agent-runs', response_model=schemas.AgentRunsListResponse)
+async def listar_agent_runs(
+    db: Session = Depends(get_db),
+    cursor: Optional[int] = None,
+    limit: int = 50,
+    agent_name: Optional[str] = None,
+    status: Optional[str] = None,
+):
+    """
+    Lista execucoes agenticas. Mesmo padrao cursor-based de /events.
+    Filtros: agent_name, status (running/success/error/rejected).
+    """
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail='limit deve estar entre 1 e 500')
+
+    q = db.query(models.AgentRun)
+    if cursor is not None:
+        q = q.filter(models.AgentRun.id < cursor)
+    if agent_name:
+        q = q.filter(models.AgentRun.agent_name == agent_name)
+    if status:
+        q = q.filter(models.AgentRun.status == status)
+
+    items = q.order_by(models.AgentRun.id.desc()).limit(limit + 1).all()
+    has_more = len(items) > limit
+    items = items[:limit]
+    next_cursor = items[-1].id if has_more and items else None
+    return schemas.AgentRunsListResponse(
+        items=items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
+
+
+@app.get('/tools', response_model=List[schemas.ToolMetadataOut])
+async def listar_tools():
+    """
+    Lista todas tools registradas. Discovery surface para agentes futuros
+    e debugging humano. Stateless (nao consulta DB).
+    """
+    from .tools import list_tools as _list_tools
+    return [t.metadata() for t in _list_tools()]
+
+
+@app.post('/agentes/reconciliator/preview', response_model=schemas.ReconciliatorProposalResponse)
+async def reconciliator_preview(
+    arquivo: UploadFile = File(...),
+    data: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Reconciliator V0: recebe CSV, roda matching semantico contra catalogo,
+    retorna proposta de resolucoes pre-preenchidas + flags de needs_review.
+
+    NAO commita nada. Ainda exige aprovacao humana via POST commit endpoint.
+    Wizard ImportCSVModal classico continua funcional como fallback caso
+    este agente falhe ou usuario prefira controle manual.
+    """
+    try:
+        data_alvo = date_type.fromisoformat(data)
+    except ValueError:
+        raise HTTPException(status_code=400, detail='data deve estar no formato YYYY-MM-DD')
+
+    conteudo = await arquivo.read()
+
+    agent = ReconciliatorAgent()
+    try:
+        result = agent.reconcile(db, conteudo_bytes=conteudo, data_alvo=data_alvo)
+        db.commit()  # commita agent_run + events de proposicao
+    except ValueError as e:
+        db.commit()  # commita agent_run com status=error mesmo em falha
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        db.commit()
+        raise HTTPException(status_code=500, detail=f'Erro no Reconciliator: {e}')
+
+    return result
+

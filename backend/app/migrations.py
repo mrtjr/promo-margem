@@ -547,6 +547,168 @@ def m_011_clientes_e_vendas_cliente_id(conn: Connection) -> str:
     return ("ok: " + ", ".join(msgs)) if msgs else "skip: tabela e coluna ja existem"
 
 
+# ============================================================================
+# Sprint S0 — Fundacoes Agentic (m_012 a m_014)
+#
+# Tres tabelas append-only / observavel:
+#   - events            : trilha de auditoria de toda mutacao critica
+#   - agent_runs        : trace de cada execucao agentica
+#   - catalog_embeddings: vetores TF-IDF char-ngram do catalogo
+#
+# Idempotente: rodam multiplas vezes sem efeito colateral.
+# ============================================================================
+
+
+def m_012_event_log(conn: Connection) -> str:
+    """
+    Cria tabela append-only `events` para trilha de auditoria.
+
+    Campos chave:
+      - actor: 'user' | 'agent:<name>' | 'system' | 'tool:<name>'
+      - entity + entity_id: o que foi afetado
+      - action: verbo curto ('updated', 'committed', 'preview', etc)
+      - correlation_id: agrupa eventos da mesma operacao logica
+      - before/after: snapshots JSON
+      - payload/meta: contexto livre
+
+    Indices: ts (replay cronologico), entity+entity_id+ts (historico de 1 alvo),
+    correlation_id, actor.
+    """
+    if _has_table(conn, "events"):
+        return "skip: events ja existe"
+
+    if _is_sqlite(conn):
+        conn.execute(text("""
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                actor VARCHAR NOT NULL,
+                entity VARCHAR NOT NULL,
+                entity_id INTEGER,
+                action VARCHAR NOT NULL,
+                correlation_id VARCHAR,
+                before JSON,
+                after JSON,
+                payload JSON,
+                meta JSON
+            )
+        """))
+    else:
+        conn.execute(text("""
+            CREATE TABLE events (
+                id SERIAL PRIMARY KEY,
+                ts TIMESTAMP DEFAULT NOW() NOT NULL,
+                actor VARCHAR NOT NULL,
+                entity VARCHAR NOT NULL,
+                entity_id INTEGER,
+                action VARCHAR NOT NULL,
+                correlation_id VARCHAR,
+                before JSONB,
+                after JSONB,
+                payload JSONB,
+                meta JSONB
+            )
+        """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_ts ON events(ts)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_actor ON events(actor)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_entity ON events(entity)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_entity_id ON events(entity_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_correlation_id ON events(correlation_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_entity_compound ON events(entity, entity_id, ts)"))
+    return "ok: events criada (append-only)"
+
+
+def m_013_agent_runs(conn: Connection) -> str:
+    """
+    Cria tabela `agent_runs` para observabilidade de execucao agentica.
+    Cada chamada de agente gera 1 row com trace de input/output, custo,
+    latency, status, tools usadas.
+    """
+    if _has_table(conn, "agent_runs"):
+        return "skip: agent_runs ja existe"
+
+    if _is_sqlite(conn):
+        conn.execute(text("""
+            CREATE TABLE agent_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_name VARCHAR NOT NULL,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                finished_at DATETIME,
+                status VARCHAR NOT NULL DEFAULT 'running',
+                input_summary JSON,
+                output_summary JSON,
+                tools_used JSON,
+                cost_estimate REAL,
+                latency_ms INTEGER,
+                correlation_id VARCHAR,
+                error VARCHAR,
+                autonomy_level VARCHAR
+            )
+        """))
+    else:
+        conn.execute(text("""
+            CREATE TABLE agent_runs (
+                id SERIAL PRIMARY KEY,
+                agent_name VARCHAR NOT NULL,
+                started_at TIMESTAMP DEFAULT NOW() NOT NULL,
+                finished_at TIMESTAMP,
+                status VARCHAR NOT NULL DEFAULT 'running',
+                input_summary JSONB,
+                output_summary JSONB,
+                tools_used JSONB,
+                cost_estimate REAL,
+                latency_ms INTEGER,
+                correlation_id VARCHAR,
+                error VARCHAR,
+                autonomy_level VARCHAR
+            )
+        """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_runs_agent_name ON agent_runs(agent_name)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_runs_started_at ON agent_runs(started_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_runs_status ON agent_runs(status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_runs_correlation_id ON agent_runs(correlation_id)"))
+    return "ok: agent_runs criada"
+
+
+def m_014_catalog_embeddings(conn: Connection) -> str:
+    """
+    Cria tabela `catalog_embeddings` para vetores TF-IDF char-ngram dos
+    produtos. Substitui heuristicas hardcoded de matching.
+
+    1 produto -> 1 embedding row. Recriado quando produto muda
+    nome/codigo (reindex incremental).
+    """
+    if _has_table(conn, "catalog_embeddings"):
+        return "skip: catalog_embeddings ja existe"
+
+    if _is_sqlite(conn):
+        conn.execute(text("""
+            CREATE TABLE catalog_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                produto_id INTEGER UNIQUE NOT NULL REFERENCES produtos(id) ON DELETE CASCADE,
+                vector JSON NOT NULL,
+                model_name VARCHAR NOT NULL DEFAULT 'tfidf-charngram-v1',
+                indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                nome_indexed VARCHAR NOT NULL,
+                codigo_indexed VARCHAR
+            )
+        """))
+    else:
+        conn.execute(text("""
+            CREATE TABLE catalog_embeddings (
+                id SERIAL PRIMARY KEY,
+                produto_id INTEGER UNIQUE NOT NULL REFERENCES produtos(id) ON DELETE CASCADE,
+                vector JSONB NOT NULL,
+                model_name VARCHAR NOT NULL DEFAULT 'tfidf-charngram-v1',
+                indexed_at TIMESTAMP DEFAULT NOW() NOT NULL,
+                nome_indexed VARCHAR NOT NULL,
+                codigo_indexed VARCHAR
+            )
+        """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_catalog_embeddings_produto_id ON catalog_embeddings(produto_id)"))
+    return "ok: catalog_embeddings criada"
+
+
 MIGRATIONS: List[Callable[[Connection], str]] = [
     m_001_venda_data_fechamento,
     m_002_integracao_pdv_tabelas,
@@ -559,6 +721,9 @@ MIGRATIONS: List[Callable[[Connection], str]] = [
     m_009_indices_performance,
     m_010_drop_peso_medida,
     m_011_clientes_e_vendas_cliente_id,
+    m_012_event_log,
+    m_013_agent_runs,
+    m_014_catalog_embeddings,
 ]
 
 

@@ -976,3 +976,101 @@ class DMPLMensalOut(BaseModel):
     total: DMPLLinhaOut
     fechamento_ok: bool        # total.saldo_final ≈ bp.total_patrimonio_liquido
     avisos: List[AvisoDemonstrativo] = []
+
+
+# ============================================================================
+# Sprint S0 — Fundacoes Agentic
+# ============================================================================
+
+class EventOut(BaseModel):
+    """Item do event log para listagem/replay."""
+    id: int
+    ts: datetime
+    actor: str
+    entity: str
+    entity_id: Optional[int] = None
+    action: str
+    correlation_id: Optional[str] = None
+    before: Optional[dict] = None
+    after: Optional[dict] = None
+    payload: Optional[dict] = None
+    meta: Optional[dict] = None
+
+    class Config:
+        from_attributes = True
+
+
+class EventsListResponse(BaseModel):
+    """Resposta paginada de events (cursor-based, append-only)."""
+    items: List[EventOut]
+    next_cursor: Optional[int] = None
+    has_more: bool
+
+
+class AgentRunOut(BaseModel):
+    """Item de agent_runs para inspecao."""
+    id: int
+    agent_name: str
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    status: str
+    input_summary: Optional[dict] = None
+    output_summary: Optional[dict] = None
+    tools_used: Optional[List[dict]] = None
+    cost_estimate: Optional[float] = None
+    latency_ms: Optional[int] = None
+    correlation_id: Optional[str] = None
+    error: Optional[str] = None
+    autonomy_level: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AgentRunsListResponse(BaseModel):
+    items: List[AgentRunOut]
+    next_cursor: Optional[int] = None
+    has_more: bool
+
+
+class ToolMetadataOut(BaseModel):
+    """Descritivo de uma tool no registry — discovery por agentes."""
+    name: str
+    description: str
+    domain: str
+    default_autonomy: str
+    supports_rollback: bool
+    input_schema: Optional[dict] = None
+    output_schema: Optional[dict] = None
+
+
+class ReconciliatorProposalLinha(BaseModel):
+    """1 resolucao proposta pelo agente para 1 linha do preview."""
+    idx: int
+    acao: str  # 'associar' | 'criar' | 'ignorar'
+    produto_id: Optional[int] = None
+    confidence: float
+    rationale: str
+    needs_review: bool
+    alternativas: Optional[List[dict]] = None
+
+
+class ReconciliatorStats(BaseModel):
+    linhas_ja_ok: int = 0
+    linhas_fora_periodo: int = 0
+    linhas_auto: int = 0
+    linhas_ambiguas: int = 0
+    linhas_sem_match: int = 0
+
+
+class ReconciliatorProposalResponse(BaseModel):
+    """Resposta de POST /agentes/reconciliator/preview."""
+    agent_run_id: int
+    correlation_id: str
+    preview: dict  # CSVImportPreview-shaped (compat com fluxo classico)
+    proposed_resolutions: List[ReconciliatorProposalLinha]
+    stats: ReconciliatorStats
+    confianca_media: float
+    taxa_auto: float
+    tempo_economizado_estimado_seg: int
+    thresholds: dict
