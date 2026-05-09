@@ -593,10 +593,35 @@ function ComprasPage({ onComplete }: any) {
   )
 }
 
+// Heuristica: SKU 'AUTO-*' eh assinatura de cadastro automatico (criado pelo
+// passo de produtos faltantes ou pelo flow legado de auto-import). Backend
+// nao expoe created_at/updated_at, entao usamos a marca do SKU como proxy
+// pra "produto criado pela importacao, ainda nao revisado". Funciona ate o
+// momento em que o usuario edita e troca o SKU manualmente — a partir dai
+// some da lista de "recentes", o que eh exatamente o comportamento desejado.
+function ehProdutoRecemImportado(p: Produto): boolean {
+  return !!p.sku && p.sku.startsWith('AUTO-')
+}
+
+type FiltroRapido = 'todos' | 'recentes' | 'sem_codigo' | 'sem_grupo'
+
 function ProdutosPage() {
   const [produtos, setProdutos] = useState<Produto[]>([])
   const [grupos, setGrupos] = useState<Grupo[]>([])
   const [editando, setEditando] = useState<any | null>(null)
+
+  // Filtros operacionais — busca por texto, filtro por grupo cadastrado,
+  // e atalhos rapidos (recentes/sem_codigo/sem_grupo) acessiveis tanto pelos
+  // pills de saude quanto programaticamente.
+  const [busca, setBusca] = useState('')
+  const [grupoFiltro, setGrupoFiltro] = useState<'todos' | number>('todos')
+  const [filtroRapido, setFiltroRapido] = useState<FiltroRapido>('todos')
+
+  // Selecao em lote: Set<id> persiste entre re-renders e atravessa mudancas
+  // de filtro (ids fora do filtro atual permanecem selecionados se voltarem
+  // ao escopo). Modal bulkAcao controla qual lote aplicar.
+  const [selecionados, setSelecionados] = useState<Set<number>>(new Set())
+  const [bulkAcao, setBulkAcao] = useState<'grupo' | null>(null)
 
   const carregar = () => {
     axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
@@ -607,70 +632,278 @@ function ProdutosPage() {
     axios.get(`${API_URL}/grupos`).then(res => setGrupos(res.data))
   }, [])
 
+  // Heuristica de "grupo padrao": primeiro id da lista de grupos. Funciona
+  // porque o cadastro automatico sempre cai no menor id (ALIMENTICIOS=1 no
+  // setup de homologacao). Se o backend mudar isso, basta ajustar aqui.
+  const grupoDefaultId = grupos[0]?.id
+
+  // Agregados pre-filtro — alimenta os pills de saude e nao reflete os
+  // filtros atuais (por design, o painel mostra a saude TOTAL do catalogo).
+  const recemImportados = produtos.filter(ehProdutoRecemImportado).length
+  const semCodigo = produtos.filter(p => !p.codigo).length
+  const noGrupoDefault = grupoDefaultId != null
+    ? produtos.filter(p => p.grupo_id === grupoDefaultId).length
+    : 0
+
+  // Aplica filtros — derived state, sem useMemo (lista pequena, custo zero).
+  const produtosFiltrados = produtos.filter(p => {
+    if (busca) {
+      const q = busca.toLowerCase().trim()
+      const nomeMatch = p.nome.toLowerCase().includes(q)
+      const codMatch = !!p.codigo && p.codigo.toLowerCase().includes(q)
+      if (!nomeMatch && !codMatch) return false
+    }
+    if (grupoFiltro !== 'todos' && p.grupo_id !== grupoFiltro) return false
+    if (filtroRapido === 'recentes' && !ehProdutoRecemImportado(p)) return false
+    if (filtroRapido === 'sem_codigo' && !!p.codigo) return false
+    if (filtroRapido === 'sem_grupo') {
+      if (grupoDefaultId == null || p.grupo_id !== grupoDefaultId) return false
+    }
+    return true
+  })
+
+  // Selecao "todos" opera sobre o que o usuario VE — ids fora do filtro nao
+  // sao tocados. Vacuous truth no caso vazio: guard evita "all selected"
+  // quando a lista filtrada eh zero.
+  const todosVisiveisSelecionados = produtosFiltrados.length > 0
+    && produtosFiltrados.every(p => selecionados.has(p.id))
+  const toggleTodosVisiveis = () => {
+    setSelecionados(prev => {
+      const novo = new Set(prev)
+      if (todosVisiveisSelecionados) {
+        produtosFiltrados.forEach(p => novo.delete(p.id))
+      } else {
+        produtosFiltrados.forEach(p => novo.add(p.id))
+      }
+      return novo
+    })
+  }
+  const toggleUm = (id: number) => {
+    setSelecionados(prev => {
+      const novo = new Set(prev)
+      if (novo.has(id)) novo.delete(id)
+      else novo.add(id)
+      return novo
+    })
+  }
+  const limparSelecao = () => setSelecionados(new Set())
+
+  const aplicarFiltroRapido = (f: FiltroRapido) => {
+    // Toggle: clicar 2x no mesmo pill volta para 'todos'.
+    setFiltroRapido(prev => (prev === f ? 'todos' : f))
+  }
+
   return (
     <div className="max-w-6xl mx-auto p-8">
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <h2 className="headline text-4xl tracking-editorial">Gestão de SKUs</h2>
         <p className="text-xs text-slate-500">
-          Clique em <span className="font-semibold text-blue-600">Editar</span> para definir o <span className="font-semibold">código ERP</span> usado no matching do CSV.
+          {produtosFiltrados.length === produtos.length
+            ? `${produtos.length} SKU${produtos.length === 1 ? '' : 's'}`
+            : `${produtosFiltrados.length} de ${produtos.length} SKUs`}
         </p>
       </div>
+
+      {/* Saude do catalogo — pills clicaveis aplicam filtro rapido */}
+      {produtos.length > 0 && (recemImportados > 0 || semCodigo > 0 || noGrupoDefault > 0) && (
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          {recemImportados > 0 && (
+            <button
+              onClick={() => aplicarFiltroRapido('recentes')}
+              className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${
+                filtroRapido === 'recentes'
+                  ? 'bg-amber-600 text-white'
+                  : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200'
+              }`}
+              title="Produtos cadastrados pelo passo de importação — convém revisar grupo, custo e nome"
+            >
+              {recemImportados} criado{recemImportados === 1 ? '' : 's'} pela importação
+            </button>
+          )}
+          {grupoDefaultId != null && noGrupoDefault > 0 && (
+            <button
+              onClick={() => aplicarFiltroRapido('sem_grupo')}
+              className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${
+                filtroRapido === 'sem_grupo'
+                  ? 'bg-rose-600 text-white'
+                  : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+              }`}
+              title="Produtos no grupo padrão — categorize para análises ABC/XYZ ficarem corretas"
+            >
+              {noGrupoDefault} no grupo padrão "{grupos[0]?.nome}"
+            </button>
+          )}
+          {semCodigo > 0 && (
+            <button
+              onClick={() => aplicarFiltroRapido('sem_codigo')}
+              className={`text-xs px-3 py-1.5 rounded-full font-semibold transition-colors ${
+                filtroRapido === 'sem_codigo'
+                  ? 'bg-slate-700 text-white'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-300'
+              }`}
+              title="Sem código ERP — não vão fazer match automático na próxima importação"
+            >
+              {semCodigo} sem código ERP
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Toolbar de busca + filtro por grupo */}
+      {produtos.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <input
+            type="text"
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar por nome ou código…"
+            className="flex-1 min-w-[200px] px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+          />
+          <select
+            value={grupoFiltro === 'todos' ? '' : String(grupoFiltro)}
+            onChange={(e) => setGrupoFiltro(e.target.value ? parseInt(e.target.value) : 'todos')}
+            className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+          >
+            <option value="">Todos os grupos</option>
+            {grupos.map(g => (
+              <option key={g.id} value={g.id}>{g.nome}</option>
+            ))}
+          </select>
+          {(busca || grupoFiltro !== 'todos' || filtroRapido !== 'todos') && (
+            <button
+              onClick={() => { setBusca(''); setGrupoFiltro('todos'); setFiltroRapido('todos') }}
+              className="text-xs text-slate-500 hover:text-slate-900 px-2 py-2"
+            >
+              Limpar filtros
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Barra contextual de selecao em lote */}
+      {selecionados.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 mb-4 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-xl">
+          <span className="text-sm font-bold text-blue-900">
+            {selecionados.size} selecionado{selecionados.size === 1 ? '' : 's'}
+          </span>
+          <button
+            onClick={() => setBulkAcao('grupo')}
+            className="text-xs font-bold bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Mover para grupo…
+          </button>
+          <button
+            onClick={limparSelecao}
+            className="ml-auto text-xs text-blue-700 hover:underline"
+          >
+            Limpar seleção
+          </button>
+        </div>
+      )}
+
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
+              <th className="px-4 py-4 w-10">
+                <input
+                  type="checkbox"
+                  checked={todosVisiveisSelecionados}
+                  onChange={toggleTodosVisiveis}
+                  disabled={produtosFiltrados.length === 0}
+                  className="accent-blue-600 cursor-pointer disabled:opacity-30"
+                  aria-label="Selecionar todos visíveis"
+                />
+              </th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Produto</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Código</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Grupo</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Custo Médio</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Margem</th>
-              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estoque (Vol)</th>
-              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Peso Total (Kg/L)</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estoque</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Ações</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {produtos.length > 0 ? produtos.map(p => (
-              <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                <td className="px-6 py-4 text-sm font-bold text-slate-900">
-                  <span className="flex items-center gap-1.5">
-                    {p.nome}
-                    {p.bloqueado_engine && (
-                      <span title="Excluído do Engine de Promoção (blacklist)" className="inline-flex items-center text-rose-500">
-                        <Lock size={12} />
-                      </span>
-                    )}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-xs font-mono">
-                  {p.codigo
-                    ? <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-bold tracking-wider">{p.codigo}</span>
-                    : <span className="text-slate-300 italic">—</span>}
-                </td>
-                <td className="px-6 py-4 text-sm text-slate-600 text-center">{formatCurrency(p.custo)}</td>
-                <td className="px-6 py-4 text-center">
-                  <span className={`px-2 py-1 rounded-full text-[10px] font-black ${
-                    p.margem >= 0.17 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                  }`}>{formatPercent(p.margem)}</span>
-                </td>
-                <td className="px-6 py-4 text-sm text-center font-extrabold text-slate-500">{formatNumber(p.estoque_qtd || 0, { maximumFractionDigits: 0 })} <span className="text-[10px] text-slate-400">UN</span></td>
-                <td className="px-6 py-4 text-sm text-center font-black text-blue-600">{formatNumber(p.estoque_peso || 0, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} <span className="text-[10px] text-slate-400">Kg/L</span></td>
-                <td className="px-6 py-4 text-right">
-                  <button
-                    onClick={() => setEditando(p)}
-                    className="text-xs font-bold text-blue-600 hover:text-blue-700 hover:underline"
-                  >
-                    Editar
-                  </button>
-                </td>
-              </tr>
-            )) : (
+            {produtosFiltrados.length > 0 ? produtosFiltrados.map(p => {
+              const grupoNome = grupos.find(g => g.id === p.grupo_id)?.nome
+              const recemImp = ehProdutoRecemImportado(p)
+              const noDefault = grupoDefaultId != null && p.grupo_id === grupoDefaultId
+              return (
+                <tr key={p.id} className={`hover:bg-slate-50/50 transition-colors ${
+                  selecionados.has(p.id) ? 'bg-blue-50/40' : ''
+                }`}>
+                  <td className="px-4 py-4">
+                    <input
+                      type="checkbox"
+                      checked={selecionados.has(p.id)}
+                      onChange={() => toggleUm(p.id)}
+                      className="accent-blue-600 cursor-pointer"
+                      aria-label={`Selecionar ${p.nome}`}
+                    />
+                  </td>
+                  <td className="px-6 py-4 text-sm font-bold text-slate-900">
+                    <span className="flex items-center gap-1.5 flex-wrap">
+                      {p.nome}
+                      {recemImp && (
+                        <span
+                          title="Cadastrado pela importação do CSV — convém revisar grupo e custo"
+                          className="text-[9px] font-black tracking-widest uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700"
+                        >
+                          Auto
+                        </span>
+                      )}
+                      {p.bloqueado_engine && (
+                        <span title="Excluído do Engine de Promoção (blacklist)" className="inline-flex items-center text-rose-500">
+                          <Lock size={12} />
+                        </span>
+                      )}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-xs font-mono">
+                    {p.codigo
+                      ? <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-bold tracking-wider">{p.codigo}</span>
+                      : <span className="text-slate-300 italic">—</span>}
+                  </td>
+                  <td className="px-6 py-4 text-xs">
+                    {grupoNome
+                      ? <span className={`px-2 py-0.5 rounded font-semibold ${
+                          noDefault
+                            ? 'bg-slate-100 text-slate-500 italic'
+                            : 'bg-slate-50 text-slate-700'
+                        }`}>{grupoNome}</span>
+                      : <span className="text-slate-300 italic">— sem grupo —</span>}
+                  </td>
+                  <td className="px-6 py-4 text-sm text-slate-600 text-center">{formatCurrency(p.custo)}</td>
+                  <td className="px-6 py-4 text-center">
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-black ${
+                      p.margem >= 0.17 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                    }`}>{formatPercent(p.margem)}</span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-center font-extrabold text-slate-500">
+                    {formatNumber(p.estoque_qtd || 0, { maximumFractionDigits: 0 })}
+                    <span className="text-[10px] text-slate-400 ml-1">UN</span>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    <button
+                      onClick={() => setEditando(p)}
+                      className="text-xs font-bold text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      Editar
+                    </button>
+                  </td>
+                </tr>
+              )
+            }) : (
               <tr>
-                <td colSpan={7} className="px-6 py-8">
+                <td colSpan={8} className="px-6 py-8">
                   <EmptyState
                     variant="empty"
                     compact
                     icon={<Package size={28} />}
-                    title="Nenhum item em estoque. Comece fazendo uma Entrada de Compra."
+                    title={produtos.length === 0
+                      ? 'Nenhum item em estoque. Comece fazendo uma Entrada de Compra.'
+                      : 'Nenhum SKU bate com os filtros aplicados.'}
                   />
                 </td>
               </tr>
@@ -685,6 +918,19 @@ function ProdutosPage() {
           grupos={grupos}
           onClose={() => setEditando(null)}
           onSaved={() => { setEditando(null); carregar(); }}
+        />
+      )}
+
+      {bulkAcao === 'grupo' && (
+        <BulkGrupoModal
+          produtosSelecionados={produtos.filter(p => selecionados.has(p.id))}
+          grupos={grupos}
+          onClose={() => setBulkAcao(null)}
+          onApplied={() => {
+            setBulkAcao(null)
+            limparSelecao()
+            carregar()
+          }}
         />
       )}
     </div>
@@ -859,6 +1105,175 @@ function ProdutoEditModal({ produto, grupos, onClose, onSaved }: any) {
           >
             {salvando ? 'Salvando…' : 'Salvar'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Modal de edicao em lote — focada em "mover de grupo", o caso mais comum
+// pos-importacao (todos os produtos novos caem no grupo padrao). Aplicacao
+// eh sequencial (PATCH 1 por 1) com barra de progresso; falhas individuais
+// nao abortam o lote, ficam visiveis pra revisao manual.
+function BulkGrupoModal({ produtosSelecionados, grupos, onClose, onApplied }: any) {
+  const [grupoId, setGrupoId] = useState<number | null>(null)
+  const [salvando, setSalvando] = useState(false)
+  const [progresso, setProgresso] = useState({ feitos: 0, total: 0 })
+  const [falhas, setFalhas] = useState<Array<{ id: number; nome: string; erro: string }>>([])
+  const containerRef = useRef<HTMLDivElement>(null)
+  const titleId = 'bulk-grupo-title'
+
+  // Mantem o mesmo padrao dos outros modais (ESC fecha, foco trap, restaura).
+  useEscapeKey(onClose, { disabled: salvando })
+  useModalA11y(containerRef)
+
+  const aplicar = async () => {
+    if (!grupoId) return
+    setSalvando(true)
+    setProgresso({ feitos: 0, total: produtosSelecionados.length })
+    setFalhas([])
+    for (const p of produtosSelecionados) {
+      let falha: { id: number; nome: string; erro: string } | null = null
+      try {
+        await axios.patch(`${API_URL}/produtos/${p.id}`, { grupo_id: grupoId })
+      } catch (e: any) {
+        falha = {
+          id: p.id,
+          nome: p.nome,
+          erro: e?.response?.data?.detail || 'Erro de rede',
+        }
+      }
+      setProgresso(prev => ({ ...prev, feitos: prev.feitos + 1 }))
+      if (falha) setFalhas(prev => [...prev, falha!])
+    }
+    setSalvando(false)
+    // Sucesso total: fecha modal e refresca lista. Com falhas: mantem aberto
+    // para o usuario ver os ids problematicos antes de retomar.
+    setTimeout(() => {
+      // checa state mais recente; usar setFalhas com callback nao funciona
+      // aqui porque precisamos do array final pos-loop.
+      // Em vez disso, lemos via closure: se o ultimo item nao deu falha
+      // E nenhuma falha foi acumulada, fecha.
+    }, 0)
+  }
+
+  // Fecha automaticamente quando termina sem erros — efeito reativo ao
+  // termino do loop (salvando passa a false e falhas continua vazio).
+  useEffect(() => {
+    if (!salvando && progresso.feitos > 0 && progresso.feitos === progresso.total && falhas.length === 0) {
+      onApplied()
+    }
+  }, [salvando, progresso.feitos, progresso.total, falhas.length, onApplied])
+
+  const grupoSelecionadoNome = grupos.find((g: any) => g.id === grupoId)?.nome
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-6"
+      onClick={() => !salvando && onClose()}
+    >
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="bg-white rounded-3xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="section-label">Edição em lote</p>
+            <h3 id={titleId} className="headline text-2xl tracking-editorial">Mover para grupo</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              {produtosSelecionados.length} produto{produtosSelecionados.length === 1 ? '' : 's'} ser{produtosSelecionados.length === 1 ? 'á' : 'ão'} movido{produtosSelecionados.length === 1 ? '' : 's'}.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={salvando}
+            className="text-slate-400 hover:text-slate-700 p-1 disabled:opacity-50"
+            title="Fechar (ESC)"
+            aria-label="Fechar"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {progresso.total === 0 && (
+          <div className="space-y-3">
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Grupo de destino</label>
+              <select
+                value={grupoId ?? ''}
+                onChange={(e) => setGrupoId(e.target.value ? parseInt(e.target.value) : null)}
+                className="w-full mt-1 p-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-white"
+              >
+                <option value="">— selecione —</option>
+                {grupos.map((g: any) => (
+                  <option key={g.id} value={g.id}>{g.nome}</option>
+                ))}
+              </select>
+            </div>
+            <div className="max-h-48 overflow-y-auto bg-slate-50 rounded-lg p-3 border border-slate-200">
+              <ul className="space-y-1 text-xs">
+                {produtosSelecionados.map((p: any) => (
+                  <li key={p.id} className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-700 truncate">{p.nome}</span>
+                    <span className="text-slate-400 font-mono shrink-0">{p.codigo || '—'}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {progresso.total > 0 && (
+          <div className="space-y-2">
+            <p className="text-sm text-slate-700">
+              {salvando
+                ? <>Aplicando <strong>{progresso.feitos}/{progresso.total}</strong>…</>
+                : <>Concluído: <strong>{progresso.feitos - falhas.length}/{progresso.total}</strong> aplicados{falhas.length > 0 ? <>, <span className="text-rose-700 font-bold">{falhas.length} falha{falhas.length === 1 ? '' : 's'}</span></> : ''}.</>}
+              {grupoSelecionadoNome && <> Grupo: <strong>{grupoSelecionadoNome}</strong>.</>}
+            </p>
+            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-500 transition-all"
+                style={{ width: `${progresso.total > 0 ? (progresso.feitos / progresso.total) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {!salvando && falhas.length > 0 && (
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg space-y-1">
+            <p className="text-sm font-bold text-rose-700">
+              {falhas.length} produto{falhas.length === 1 ? '' : 's'} com erro:
+            </p>
+            <ul className="text-xs text-rose-700 space-y-0.5 max-h-32 overflow-y-auto">
+              {falhas.map((f, i) => (
+                <li key={i} className="font-mono">• {f.nome} (id {f.id}): {f.erro}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            onClick={onClose}
+            disabled={salvando}
+            className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50"
+          >
+            {progresso.total > 0 && !salvando ? 'Fechar' : 'Cancelar'}
+          </button>
+          {progresso.total === 0 && (
+            <button
+              onClick={aplicar}
+              disabled={!grupoId}
+              className="bg-blue-600 text-white px-5 py-2 rounded-xl font-bold text-sm hover:bg-blue-700 disabled:opacity-50 transition-all"
+            >
+              Aplicar
+            </button>
+          )}
         </div>
       </div>
     </div>
