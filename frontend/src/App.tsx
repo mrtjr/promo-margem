@@ -2405,9 +2405,15 @@ function agruparProdutosFaltantes(linhas: any[]): GrupoProdutoFaltante[] {
     } else {
       continue // ok, fora_periodo, erro nao entram neste passo
     }
+    // O backend ja consolida pedidos do CSV em 1 linha por produto (campo
+    // l.ocorrencias = N pedidos reais). Reusamos esse N em vez de contar +1
+    // para que o card mostre "5 pedidos" em vez de "1 ocorrencia". Quando 2
+    // linhas distintas do preview compartilham a mesma chave (caso raro, ex.
+    // mesmo nome normalizado sem codigo), os valores somam corretamente.
+    const ocorrenciasLinha = Number(l.ocorrencias || 1)
     const existente = mapa.get(chave)
     if (existente) {
-      existente.ocorrencias += 1
+      existente.ocorrencias += ocorrenciasLinha
       existente.quantidade_total += Number(l.quantidade || 0)
       existente.idxs.push(l.idx)
       existente.linhas.push(l)
@@ -2421,7 +2427,7 @@ function agruparProdutosFaltantes(linhas: any[]): GrupoProdutoFaltante[] {
         nome: l.produto_nome || l.nome_csv,
         codigo: l.codigo_csv || (l.produto_codigo ?? null),
         produto_id: l.produto_id ?? null,
-        ocorrencias: 1,
+        ocorrencias: ocorrenciasLinha,
         quantidade_total: Number(l.quantidade || 0),
         preco_medio_ponderado: 0,
         idxs: [l.idx],
@@ -3426,15 +3432,23 @@ function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, reso
         </button>
       </div>
 
-      {/* Ocorrências detalhadas (lista de linhas do CSV) */}
+      {/* Ocorrências detalhadas — pedidos reais do CSV via l.linhas_brutas
+          (consolidacao do backend). Quando o backend nao expoe linhas_brutas
+          (CSV legacy), fallback para a propria linha do preview. */}
       {expandido && (
         <div className="px-4 pb-3 -mt-2">
-          <div className="bg-slate-50 rounded-lg p-3 text-[11px] space-y-1 border border-slate-200">
-            {grupo.linhas.map((l: any) => (
-              <div key={l.idx} className="font-mono flex justify-between gap-3 text-slate-600">
-                <span>linha {l.idx}</span>
-                <span className="flex-1 truncate text-slate-700">{l.nome_csv}</span>
-                <span>{formatNumber(l.quantidade, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · {formatCurrency(l.preco_unitario)}</span>
+          <div className="bg-slate-50 rounded-lg p-3 text-[11px] space-y-1 border border-slate-200 max-h-48 overflow-y-auto">
+            {grupo.linhas.flatMap((l: any) =>
+              (l.linhas_brutas && l.linhas_brutas.length > 0)
+                ? l.linhas_brutas.map((lb: any, i: number) => ({ ...lb, _key: `${l.idx}-${i}` }))
+                : [{ pedido: `linha ${l.idx}`, cliente: '—', qtd: l.quantidade, preco: l.preco_unitario, _key: `${l.idx}` }]
+            ).map((lb: any) => (
+              <div key={lb._key} className="font-mono flex justify-between gap-3 text-slate-600">
+                <span className="text-slate-500 shrink-0">{lb.pedido}</span>
+                <span className="flex-1 truncate text-slate-700">{lb.cliente}</span>
+                <span className="shrink-0">
+                  {formatNumber(lb.qtd, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} · {formatCurrency(lb.preco)}
+                </span>
               </div>
             ))}
           </div>
