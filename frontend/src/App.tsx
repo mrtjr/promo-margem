@@ -722,6 +722,8 @@ type VistaProdutos = 'tabela' | 'revisao'
 //   - quantas correcoes via card inline vs via modal completo
 //   - quantas sugestoes de grupo foram efetivamente aplicadas
 //   - tempo entre primeira edicao do card e save
+//   - ids expandidos (proxy de "cards abertos por sessao")
+//   - taxa de abandono = idsEditados sem save correspondente
 // Estimativa de cliques economizados: 3 por card inline (vs abrir modal,
 // editar, salvar, fechar). Numero conservador — modal completo gasta
 // 5-7 cliques na pratica, contra 2-3 cliques inline.
@@ -732,9 +734,16 @@ type VistaProdutos = 'tabela' | 'revisao'
 const KEY_METRICAS_PRODUTOS = 'produtos:metricas:v1'
 const CLIQUES_ECONOMIZADOS_POR_INLINE = 3
 
+// Acima desse N, a fila ativa modo compacto por padrao (cards colapsados,
+// expandidos sob demanda). Threshold conservador — 15 cards ja ocupam
+// ~3 telas em laptop tipico. Pode evoluir conforme telemetria de uso real
+// mostrar o ponto de friccao.
+const LIMITE_FILA_DENSA = 15
+
 type MetricasRevisao = {
   tabsRevisaoEntradas: number
   idsEditadosSession: number[]   // ids tocados no buffer (unique)
+  idsExpandidosSession: number[]  // ids que o usuario expandiu manualmente no modo compacto
   cardsSalvos: number
   cardsComErro: number
   saveComSugestaoAplicada: number
@@ -750,6 +759,7 @@ type MetricasRevisao = {
 const METRICAS_INICIAIS: MetricasRevisao = {
   tabsRevisaoEntradas: 0,
   idsEditadosSession: [],
+  idsExpandidosSession: [],
   cardsSalvos: 0,
   cardsComErro: 0,
   saveComSugestaoAplicada: 0,
@@ -760,6 +770,27 @@ const METRICAS_INICIAIS: MetricasRevisao = {
   somaTempoSalvarMs: 0,
   saveCountComTempo: 0,
   iniciadoEm: null,
+}
+
+// Preferencia de densidade da fila — persistida pra honrar escolha do
+// usuario entre sessoes. 'auto' decide com base no LIMITE_FILA_DENSA.
+const KEY_DENSIDADE_PREF = 'produtos:densidade:v1'
+type DensidadePref = 'auto' | 'compacto' | 'expandido'
+
+function lerDensidadePref(): DensidadePref {
+  try {
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY_DENSIDADE_PREF) : null
+    if (v === 'compacto' || v === 'expandido') return v
+    return 'auto'
+  } catch {
+    return 'auto'
+  }
+}
+
+function salvarDensidadePrefLS(p: DensidadePref): void {
+  try {
+    localStorage.setItem(KEY_DENSIDADE_PREF, p)
+  } catch {}
 }
 
 function lerMetricas(): MetricasRevisao {
@@ -814,6 +845,20 @@ function ProdutosPage() {
   // edicao" por id; nao persistidos pra evitar virar lixo cross-session).
   const [metricas, setMetricasState] = useState<MetricasRevisao>(() => lerMetricas())
   const [timersEdicao, setTimersEdicao] = useState<Record<number, number>>({})
+
+  // Densidade adaptativa da fila — preferencia explicita do usuario
+  // (persistida) + excecoes per-card (so na sessao). Combina pra dar a
+  // resposta booleana "este card esta expandido?" via ehCardExpandido.
+  const [densidadePref, setDensidadePrefState] = useState<DensidadePref>(() => lerDensidadePref())
+  const [excecoesExpandido, setExcecoesExpandido] = useState<Set<number>>(new Set())
+
+  const setDensidadePref = (p: DensidadePref) => {
+    setDensidadePrefState(p)
+    salvarDensidadePrefLS(p)
+    // Trocar a preferencia limpa as excecoes per-card — usuario quer
+    // comecar fresh com o novo modo, nao herdar overrides.
+    setExcecoesExpandido(new Set())
+  }
 
   const atualizarMetricas = (patch: (m: MetricasRevisao) => MetricasRevisao) => {
     setMetricasState(prev => {
@@ -1042,6 +1087,44 @@ function ProdutosPage() {
     && pendenciasProduto(p, grupoDefaultId).length > 0
   ).length
 
+  // Densidade efetiva: 'auto' resolve via threshold; explicita preserva escolha.
+  const densidadeEfetiva: 'compacto' | 'expandido' = densidadePref === 'auto'
+    ? (produtosRevisao.length > LIMITE_FILA_DENSA ? 'compacto' : 'expandido')
+    : densidadePref
+
+  // Hint adaptativo na tabela: se o usuario salvou bastante pelo modal mas
+  // pouco pela fila E ha autos pendentes, sugere migrar pra fila. Heuristica
+  // conservadora — so dispara quando o ratio modal/inline > 2:1 e ha base
+  // de comparacao (>= 2 modais salvos).
+  const sugerirFilaInline =
+    metricas.modaisSalvos >= 2
+    && metricas.modaisSalvos > metricas.cardsSalvos * 2
+    && autosPendentesTotal > 0
+
+  const ehCardExpandido = (id: number): boolean => {
+    const defaultExp = densidadeEfetiva === 'expandido'
+    return excecoesExpandido.has(id) ? !defaultExp : defaultExp
+  }
+
+  const toggleExpandirCard = (id: number) => {
+    const expandidoAntes = ehCardExpandido(id)
+    setExcecoesExpandido(prev => {
+      const novo = new Set(prev)
+      if (novo.has(id)) novo.delete(id)
+      else novo.add(id)
+      return novo
+    })
+    // Telemetria: marca id como "expandido" so quando vai de compacto -> expandido.
+    // Compactar de volta nao conta (eh undo, nao novo card aberto).
+    if (!expandidoAntes) {
+      atualizarMetricas(m => (
+        m.idsExpandidosSession.includes(id)
+          ? m
+          : { ...m, idsExpandidosSession: [...m.idsExpandidosSession, id] }
+      ))
+    }
+  }
+
   return (
     <div className="max-w-6xl mx-auto p-8">
       <div className="flex items-center justify-between mb-4">
@@ -1167,6 +1250,46 @@ function ProdutosPage() {
               Limpar filtros
             </button>
           )}
+          {/* Controle de densidade — so na vista revisao. 'auto' decide via
+              threshold; explicita honra escolha do usuario. */}
+          {vista === 'revisao' && produtosRevisao.length > 0 && (
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5" role="group" aria-label="Densidade da fila">
+              {(['auto', 'compacto', 'expandido'] as DensidadePref[]).map(opt => (
+                <button
+                  key={opt}
+                  onClick={() => setDensidadePref(opt)}
+                  className={`text-[10px] font-semibold px-2 py-1 rounded transition-colors ${
+                    densidadePref === opt
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                  title={
+                    opt === 'auto' ? `Auto: compacto se a fila > ${LIMITE_FILA_DENSA} cards`
+                      : opt === 'compacto' ? 'Sempre compacto'
+                      : 'Sempre expandido'
+                  }
+                >
+                  {opt === 'auto' ? 'Auto' : opt === 'compacto' ? 'Compacto' : 'Expandido'}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Hint adaptativo: se padrao de uso favorece modal mas ha autos pendentes,
+          sugere migrar pra fila. Discreto (linkable, dismissable via ir pra fila). */}
+      {vista === 'tabela' && sugerirFilaInline && (
+        <div className="flex items-center justify-between gap-3 mb-4 px-4 py-2 bg-blue-50 border border-blue-100 rounded-xl">
+          <p className="text-xs text-blue-900">
+            Você editou <strong>{metricas.modaisSalvos}</strong> produto{metricas.modaisSalvos === 1 ? '' : 's'} pelo modal. Há <strong>{autosPendentesTotal}</strong> recém-importado{autosPendentesTotal === 1 ? '' : 's'} pendente{autosPendentesTotal === 1 ? '' : 's'} — a fila assistida economiza ~{CLIQUES_ECONOMIZADOS_POR_INLINE} cliques por correção.
+          </p>
+          <button
+            onClick={() => setVista('revisao')}
+            className="text-xs font-bold text-blue-700 hover:text-blue-900 hover:underline shrink-0"
+          >
+            Abrir fila →
+          </button>
         </div>
       )}
 
@@ -1212,6 +1335,8 @@ function ProdutosPage() {
                   onSalvar={salvarEdicao}
                   salvando={salvandoId === p.id}
                   erro={errosSave[p.id]}
+                  compacto={!ehCardExpandido(p.id)}
+                  onToggleExpandir={() => toggleExpandirCard(p.id)}
                 />
               ))}
             </>
@@ -1737,6 +1862,8 @@ function RevisaoCard({
   onSalvar,
   salvando,
   erro,
+  compacto,
+  onToggleExpandir,
 }: {
   produto: Produto
   grupos: Grupo[]
@@ -1746,6 +1873,8 @@ function RevisaoCard({
   onSalvar: (id: number) => void
   salvando: boolean
   erro: string | undefined
+  compacto: boolean
+  onToggleExpandir: () => void
 }) {
   const temAlteracoes = !!edicao && Object.keys(edicao).length > 0
 
@@ -1770,6 +1899,8 @@ function RevisaoCard({
   const sugestaoGrupoId = sugerirGrupoPorNome(efetivo.nome, grupos)
   const sugestaoNome = grupos.find(g => g.id === sugestaoGrupoId)?.nome
   const grupoAtualId = efetivo.grupo_id
+  const grupoAtualNome = grupos.find(g => g.id === grupoAtualId)?.nome
+  const sugestaoUtil = sugestaoGrupoId != null && grupoAtualId !== sugestaoGrupoId
 
   const set = (campo: keyof EdicaoLocal, valor: any) => {
     onChange(produto.id, { [campo]: valor })
@@ -1783,6 +1914,86 @@ function RevisaoCard({
   const bgColor = pendencias.length === 0 ? 'bg-emerald-50/40' : 'bg-white'
   const ringColor = temAlteracoes ? 'ring-2 ring-amber-300' : ''
 
+  // ============= LAYOUT COMPACTO ===============================
+  // 1 linha — resumo + pendencias + 1 acao principal (Aplicar sugestao
+  // se util, ou Expandir caso contrario). Salvar aparece se ha buffer.
+  // Densidade pensada pra fila > 15 cards: o usuario varre, decide
+  // onde aprofundar via Expandir, e atalha grupo via Aplicar sugestao.
+  if (compacto) {
+    return (
+      <div className={`rounded-xl border p-3 transition-all ${
+        pendencias.length === 0 ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200 bg-white'
+      } ${ringColor}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h4 className="text-sm font-bold text-slate-900 truncate flex-1 min-w-[160px]">
+            {efetivo.nome}
+          </h4>
+          <span
+            title="SKU AUTO — criado pela importação do CSV"
+            className="text-[9px] font-black tracking-widest uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0"
+          >
+            Auto
+          </span>
+          {efetivo.codigo && (
+            <span className="text-[10px] font-mono text-slate-500 shrink-0">cód {efetivo.codigo}</span>
+          )}
+          {grupoAtualNome && (
+            <span className="text-[10px] font-semibold text-slate-600 px-1.5 py-0.5 rounded bg-slate-100 shrink-0">
+              {grupoAtualNome}
+            </span>
+          )}
+        </div>
+
+        {/* Pendencias na 2a linha — compacto compartilha as mesmas tags */}
+        {pendencias.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {pendencias.map(p => (
+              <span
+                key={p}
+                title={PENDENCIA_LABEL[p].tooltip}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${PENDENCIA_LABEL[p].cor}`}
+              >
+                {PENDENCIA_LABEL[p].texto}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Acoes — sempre visiveis no rodape */}
+        <div className="flex items-center justify-end gap-1.5 mt-2 pt-2 border-t border-slate-100 flex-wrap">
+          {erro && <span className="text-[10px] text-rose-600 font-semibold mr-auto">{erro}</span>}
+          {sugestaoUtil && (
+            <button
+              type="button"
+              onClick={() => set('grupo_id', sugestaoGrupoId)}
+              className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+              title="Aplicar sugestão automática de grupo (não salva — vira buffer)"
+            >
+              ✨ {sugestaoNome}
+            </button>
+          )}
+          {temAlteracoes && (
+            <button
+              disabled={salvando}
+              onClick={() => onSalvar(produto.id)}
+              className="text-[10px] font-bold bg-blue-600 text-white px-2.5 py-1 rounded-md hover:bg-blue-700 disabled:opacity-30 transition-colors"
+            >
+              {salvando ? 'Salvando…' : 'Salvar'}
+            </button>
+          )}
+          <button
+            onClick={onToggleExpandir}
+            className="text-[10px] font-semibold text-slate-500 hover:text-slate-900 px-1.5"
+            title="Abrir editor completo (custo, preço, nome, código)"
+          >
+            Expandir →
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ============= LAYOUT EXPANDIDO ==============================
   return (
     <div className={`rounded-2xl border-2 p-4 transition-all ${borderColor} ${bgColor} ${ringColor}`}>
       {/* Header: nome editavel + badge + codigo inline */}
@@ -1800,6 +2011,13 @@ function RevisaoCard({
         >
           Auto
         </span>
+        <button
+          onClick={onToggleExpandir}
+          className="text-[10px] font-semibold text-slate-400 hover:text-slate-700 px-1 mt-1.5"
+          title="Recolher card (mostra só resumo + ação principal)"
+        >
+          ↑
+        </button>
       </div>
 
       {/* Tags de pendencia — somem assim que o usuario corrige (efetivo recalculado) */}
@@ -1949,6 +2167,19 @@ function MetricasPanel({
     ? Math.round((metricas.saveComSugestaoAplicada / totalSugestoesObservadas) * 100)
     : null
 
+  // Taxa de abandono — produtos cujo buffer foi tocado mas nunca salvo.
+  // Limita ao universo de cards inline; modal nao tem buffer abandonavel.
+  const idsTocadosTotal = metricas.idsEditadosSession.length
+  const idsAbandonados = Math.max(0, idsTocadosTotal - metricas.cardsSalvos)
+  const taxaAbandono = idsTocadosTotal > 0
+    ? Math.round((idsAbandonados / idsTocadosTotal) * 100)
+    : null
+
+  // Cards "abertos" no modo compacto = idsExpandidosSession (proxy de
+  // engajamento individual). Em modo expandido por padrao, isso fica 0
+  // porque ninguem precisa expandir.
+  const cardsAbertos = metricas.idsExpandidosSession.length
+
   // Resumo compacto — adapta ao contexto: na fila, foca no inline; na
   // tabela, foca no modal. Nunca mostra os dois detalhados de uma vez.
   const resumo = vista === 'revisao'
@@ -2014,6 +2245,22 @@ function MetricasPanel({
                 <span className="text-slate-400">Tempo médio (1ª edição → save) · </span>
                 <strong className="text-slate-800">{tempoMedioSeg}s</strong>
                 {' por card'}
+              </div>
+            )}
+            {taxaAbandono != null && idsTocadosTotal > 0 && (
+              <div>
+                <span className="text-slate-400">Abandono · </span>
+                <strong className={
+                  taxaAbandono >= 50 ? 'text-rose-700' : taxaAbandono >= 25 ? 'text-amber-700' : 'text-slate-700'
+                }>{taxaAbandono}%</strong>
+                <span className="text-slate-500"> ({idsAbandonados}/{idsTocadosTotal} tocados sem save)</span>
+              </div>
+            )}
+            {cardsAbertos > 0 && (
+              <div>
+                <span className="text-slate-400">Cards abertos · </span>
+                <strong className="text-slate-800">{cardsAbertos}</strong>
+                <span className="text-slate-500"> (expandidos manualmente no modo compacto)</span>
               </div>
             )}
             {metricas.tabsRevisaoEntradas > 0 && (
