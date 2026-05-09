@@ -717,6 +717,69 @@ type EdicaoLocal = {
 type FiltroRapido = 'todos' | 'recentes' | 'sem_codigo' | 'sem_grupo'
 type VistaProdutos = 'tabela' | 'revisao'
 
+// ===== Observabilidade da fila Revisar autos =====
+// Contador local (localStorage) pra medir adocao real:
+//   - quantas correcoes via card inline vs via modal completo
+//   - quantas sugestoes de grupo foram efetivamente aplicadas
+//   - tempo entre primeira edicao do card e save
+// Estimativa de cliques economizados: 3 por card inline (vs abrir modal,
+// editar, salvar, fechar). Numero conservador — modal completo gasta
+// 5-7 cliques na pratica, contra 2-3 cliques inline.
+//
+// NAO eh telemetria de produto: tudo fica local, e o usuario controla
+// via botao "resetar". Existe pra o gestor responder "vale a pena?"
+// sem tentar adivinhar.
+const KEY_METRICAS_PRODUTOS = 'produtos:metricas:v1'
+const CLIQUES_ECONOMIZADOS_POR_INLINE = 3
+
+type MetricasRevisao = {
+  tabsRevisaoEntradas: number
+  idsEditadosSession: number[]   // ids tocados no buffer (unique)
+  cardsSalvos: number
+  cardsComErro: number
+  saveComSugestaoAplicada: number
+  saveComSugestaoTrocada: number
+  saveSemSugestao: number
+  modaisAbertos: number
+  modaisSalvos: number
+  somaTempoSalvarMs: number
+  saveCountComTempo: number
+  iniciadoEm: number | null
+}
+
+const METRICAS_INICIAIS: MetricasRevisao = {
+  tabsRevisaoEntradas: 0,
+  idsEditadosSession: [],
+  cardsSalvos: 0,
+  cardsComErro: 0,
+  saveComSugestaoAplicada: 0,
+  saveComSugestaoTrocada: 0,
+  saveSemSugestao: 0,
+  modaisAbertos: 0,
+  modaisSalvos: 0,
+  somaTempoSalvarMs: 0,
+  saveCountComTempo: 0,
+  iniciadoEm: null,
+}
+
+function lerMetricas(): MetricasRevisao {
+  try {
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY_METRICAS_PRODUTOS) : null
+    if (!v) return METRICAS_INICIAIS
+    const parsed = JSON.parse(v)
+    // Mescla defensiva: chaves novas em versoes futuras nao quebram leitura
+    return { ...METRICAS_INICIAIS, ...parsed }
+  } catch {
+    return METRICAS_INICIAIS
+  }
+}
+
+function salvarMetricasLS(m: MetricasRevisao): void {
+  try {
+    localStorage.setItem(KEY_METRICAS_PRODUTOS, JSON.stringify(m))
+  } catch {}
+}
+
 function ProdutosPage() {
   const [produtos, setProdutos] = useState<Produto[]>([])
   const [grupos, setGrupos] = useState<Grupo[]>([])
@@ -747,6 +810,24 @@ function ProdutosPage() {
   const [salvandoId, setSalvandoId] = useState<number | null>(null)
   const [errosSave, setErrosSave] = useState<Record<number, string>>({})
 
+  // Metricas de uso (localStorage) + timers em memoria (start de "primeira
+  // edicao" por id; nao persistidos pra evitar virar lixo cross-session).
+  const [metricas, setMetricasState] = useState<MetricasRevisao>(() => lerMetricas())
+  const [timersEdicao, setTimersEdicao] = useState<Record<number, number>>({})
+
+  const atualizarMetricas = (patch: (m: MetricasRevisao) => MetricasRevisao) => {
+    setMetricasState(prev => {
+      const next = patch(prev)
+      salvarMetricasLS(next)
+      return next
+    })
+  }
+  const resetarMetricas = () => {
+    setMetricasState(METRICAS_INICIAIS)
+    setTimersEdicao({})
+    salvarMetricasLS(METRICAS_INICIAIS)
+  }
+
   const carregar = () => {
     axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
   }
@@ -755,6 +836,18 @@ function ProdutosPage() {
     carregar()
     axios.get(`${API_URL}/grupos`).then(res => setGrupos(res.data))
   }, [])
+
+  // Conta cada entrada na vista 'revisao'. Usa ref-like check pra so contar
+  // transicoes para revisao (nao re-renders dentro do mesmo modo).
+  useEffect(() => {
+    if (vista !== 'revisao') return
+    atualizarMetricas(m => ({
+      ...m,
+      tabsRevisaoEntradas: m.tabsRevisaoEntradas + 1,
+      iniciadoEm: m.iniciadoEm ?? Date.now(),
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vista])
 
   // Heuristica de "grupo padrao": primeiro id da lista de grupos. Funciona
   // porque o cadastro automatico sempre cai no menor id (ALIMENTICIOS=1 no
@@ -851,6 +944,18 @@ function ProdutosPage() {
       delete novo[id]
       return novo
     })
+    // Metricas: marca id como "tocado" e arma timer de "primeira edicao".
+    // Idempotente — segunda chamada para o mesmo id nao re-arma timer.
+    setTimersEdicao(prev => (prev[id] != null ? prev : { ...prev, [id]: Date.now() }))
+    atualizarMetricas(m => (
+      m.idsEditadosSession.includes(id)
+        ? m
+        : {
+            ...m,
+            idsEditadosSession: [...m.idsEditadosSession, id],
+            iniciadoEm: m.iniciadoEm ?? Date.now(),
+          }
+    ))
   }
 
   // Salva uma edicao via PATCH parcial. Sucesso limpa edicoesLocais e
@@ -860,6 +965,21 @@ function ProdutosPage() {
     const edits = edicoesLocais[id]
     if (!edits || Object.keys(edits).length === 0) return
     setSalvandoId(id)
+    // Metricas: snapshot do estado de sugestao + tempo decorrido ANTES do
+    // PATCH async. Se save falhar, nao incrementa cardsSalvos — so o
+    // contador de erro.
+    const original = produtos.find(p => p.id === id)
+    const nomeFinal = edits.nome ?? original?.nome ?? ''
+    const sugestaoNoMomento = original ? sugerirGrupoPorNome(nomeFinal, grupos) : null
+    const grupoFinal = edits.grupo_id ?? original?.grupo_id ?? null
+    const tipoSugestao: 'aplicada' | 'trocada' | 'sem' = sugestaoNoMomento == null
+      ? 'sem'
+      : grupoFinal === sugestaoNoMomento
+        ? 'aplicada'
+        : 'trocada'
+    const inicio = timersEdicao[id]
+    const dt = inicio ? Date.now() - inicio : 0
+
     try {
       await axios.patch(`${API_URL}/produtos/${id}`, edits)
       setEdicoesLocais(prev => {
@@ -867,12 +987,27 @@ function ProdutosPage() {
         delete novo[id]
         return novo
       })
+      setTimersEdicao(prev => {
+        const novo = { ...prev }
+        delete novo[id]
+        return novo
+      })
+      atualizarMetricas(m => ({
+        ...m,
+        cardsSalvos: m.cardsSalvos + 1,
+        saveComSugestaoAplicada: m.saveComSugestaoAplicada + (tipoSugestao === 'aplicada' ? 1 : 0),
+        saveComSugestaoTrocada: m.saveComSugestaoTrocada + (tipoSugestao === 'trocada' ? 1 : 0),
+        saveSemSugestao: m.saveSemSugestao + (tipoSugestao === 'sem' ? 1 : 0),
+        somaTempoSalvarMs: m.somaTempoSalvarMs + dt,
+        saveCountComTempo: m.saveCountComTempo + (dt > 0 ? 1 : 0),
+      }))
       carregar()
     } catch (e: any) {
       setErrosSave(prev => ({
         ...prev,
         [id]: e?.response?.data?.detail || 'Erro ao salvar.',
       }))
+      atualizarMetricas(m => ({ ...m, cardsComErro: m.cardsComErro + 1 }))
     } finally {
       setSalvandoId(null)
     }
@@ -953,6 +1088,9 @@ function ProdutosPage() {
           </button>
         </div>
       )}
+
+      {/* Painel de metricas (so quando ha dados gravados nesta sessao) */}
+      <MetricasPanel metricas={metricas} vista={vista} onResetar={resetarMetricas} />
 
       {/* Saude do catalogo — pills clicaveis aplicam filtro rapido. So aparece
           em vista tabela; na vista revisao a propria fila ja eh o "painel de
@@ -1179,7 +1317,14 @@ function ProdutosPage() {
                   </td>
                   <td className="px-6 py-4 text-right">
                     <button
-                      onClick={() => setEditando(p)}
+                      onClick={() => {
+                        setEditando(p)
+                        atualizarMetricas(m => ({
+                          ...m,
+                          modaisAbertos: m.modaisAbertos + 1,
+                          iniciadoEm: m.iniciadoEm ?? Date.now(),
+                        }))
+                      }}
                       className="text-xs font-bold text-blue-600 hover:text-blue-700 hover:underline"
                     >
                       Editar
@@ -1211,7 +1356,11 @@ function ProdutosPage() {
           produto={editando}
           grupos={grupos}
           onClose={() => setEditando(null)}
-          onSaved={() => { setEditando(null); carregar(); }}
+          onSaved={() => {
+            atualizarMetricas(m => ({ ...m, modaisSalvos: m.modaisSalvos + 1 }))
+            setEditando(null)
+            carregar()
+          }}
         />
       )}
 
@@ -1758,6 +1907,133 @@ function RevisaoCard({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// Painel de metricas — observabilidade da fila Revisar autos. Compacto
+// por padrao (1 linha + botao expandir). Some quando nao ha dados na
+// sessao. Botao "resetar" zera localStorage + state.
+function MetricasPanel({
+  metricas,
+  vista,
+  onResetar,
+}: {
+  metricas: MetricasRevisao
+  vista: VistaProdutos
+  onResetar: () => void
+}) {
+  const [aberto, setAberto] = useState(false)
+
+  // Nao renderiza painel sem dado — evita ruido visual antes da 1a interacao.
+  const totalSaves = metricas.cardsSalvos + metricas.modaisSalvos
+  if (totalSaves === 0 && metricas.modaisAbertos === 0 && metricas.idsEditadosSession.length === 0) {
+    return null
+  }
+
+  // Tempo medio "primeira edicao do card -> save" — proxy de quanto leva
+  // pra resolver 1 produto pela fila. Ignora cards salvos sem timer ativo
+  // (raro: salvar sem ter editado nada localmente).
+  const tempoMedioSeg = metricas.saveCountComTempo > 0
+    ? Math.round(metricas.somaTempoSalvarMs / metricas.saveCountComTempo / 1000)
+    : 0
+
+  // Estimativa conservadora — modal completo gasta ~6 cliques (abrir +
+  // editar + salvar + fechar), card inline gasta ~3. Diferenca: 3 cliques
+  // por save inline. Sugestao aceita reduz mais 1 click (o select fica
+  // pre-resolvido com a opcao certa).
+  const cliquesEconomizados = metricas.cardsSalvos * CLIQUES_ECONOMIZADOS_POR_INLINE
+    + metricas.saveComSugestaoAplicada
+  const totalSugestoesObservadas = metricas.saveComSugestaoAplicada + metricas.saveComSugestaoTrocada
+  const taxaAceiteSugestao = totalSugestoesObservadas > 0
+    ? Math.round((metricas.saveComSugestaoAplicada / totalSugestoesObservadas) * 100)
+    : null
+
+  // Resumo compacto — adapta ao contexto: na fila, foca no inline; na
+  // tabela, foca no modal. Nunca mostra os dois detalhados de uma vez.
+  const resumo = vista === 'revisao'
+    ? `${metricas.cardsSalvos} salvo${metricas.cardsSalvos === 1 ? '' : 's'} inline`
+      + (metricas.modaisSalvos > 0 ? ` · ${metricas.modaisSalvos} via modal` : '')
+      + (cliquesEconomizados > 0 ? ` · ~${cliquesEconomizados} cliques economizados` : '')
+    : `${metricas.modaisSalvos} salvo${metricas.modaisSalvos === 1 ? '' : 's'} pelo modal`
+      + (metricas.cardsSalvos > 0 ? ` · ${metricas.cardsSalvos} pela fila inline` : '')
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-4">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          onClick={() => setAberto(v => !v)}
+          className="flex-1 text-left text-xs font-semibold text-slate-700 hover:text-slate-900 flex items-center gap-1.5"
+          aria-expanded={aberto}
+        >
+          <span className="text-slate-400">{aberto ? '▼' : '▶'}</span>
+          <span className="font-bold">Sua sessão:</span>
+          <span className="text-slate-600">{resumo}</span>
+        </button>
+        <button
+          onClick={onResetar}
+          className="text-[10px] text-slate-400 hover:text-slate-700 hover:underline shrink-0"
+          title="Zera os contadores desta sessão"
+        >
+          resetar
+        </button>
+      </div>
+
+      {aberto && (
+        <div className="mt-3 pt-3 border-t border-slate-200 space-y-1.5 text-xs text-slate-600">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+            <div>
+              <span className="text-slate-400">Fila inline · </span>
+              <strong className="text-slate-800">{metricas.cardsSalvos}</strong> salvos
+              {metricas.cardsComErro > 0 && (
+                <span> · <strong className="text-rose-700">{metricas.cardsComErro}</strong> erros</span>
+              )}
+              {metricas.idsEditadosSession.length > 0 && (
+                <span> · <strong className="text-slate-700">{metricas.idsEditadosSession.length}</strong> ids tocados</span>
+              )}
+            </div>
+            <div>
+              <span className="text-slate-400">Modal · </span>
+              <strong className="text-slate-800">{metricas.modaisAbertos}</strong> aberto{metricas.modaisAbertos === 1 ? '' : 's'}
+              {' · '}
+              <strong className="text-slate-800">{metricas.modaisSalvos}</strong> salvos
+            </div>
+            {totalSugestoesObservadas > 0 && (
+              <div>
+                <span className="text-slate-400">Sugestão de grupo · </span>
+                <strong className="text-emerald-700">{metricas.saveComSugestaoAplicada}</strong> aceita
+                {' · '}
+                <strong className="text-amber-700">{metricas.saveComSugestaoTrocada}</strong> trocada
+                {taxaAceiteSugestao != null && (
+                  <span className="text-slate-500"> ({taxaAceiteSugestao}% aceite)</span>
+                )}
+              </div>
+            )}
+            {tempoMedioSeg > 0 && (
+              <div>
+                <span className="text-slate-400">Tempo médio (1ª edição → save) · </span>
+                <strong className="text-slate-800">{tempoMedioSeg}s</strong>
+                {' por card'}
+              </div>
+            )}
+            {metricas.tabsRevisaoEntradas > 0 && (
+              <div className="text-slate-500">
+                Aberturas da fila: <strong className="text-slate-700">{metricas.tabsRevisaoEntradas}</strong>
+              </div>
+            )}
+            {metricas.iniciadoEm && (
+              <div className="text-slate-500">
+                Sessão iniciada: <strong className="text-slate-700">{
+                  new Date(metricas.iniciadoEm).toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })
+                }</strong>
+              </div>
+            )}
+          </div>
+          <p className="text-[10px] text-slate-500 italic pt-1">
+            Estimativa: ~{CLIQUES_ECONOMIZADOS_POR_INLINE} cliques economizados por card inline (vs. abrir → editar → salvar → fechar do modal). Sugestão de grupo aceita reduz mais 1 clique. Os contadores ficam locais e podem ser zerados a qualquer momento.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
