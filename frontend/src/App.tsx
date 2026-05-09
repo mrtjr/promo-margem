@@ -2377,6 +2377,9 @@ type GrupoProdutoFaltante = {
 }
 
 function normalizarChave(s: string): string {
+  // Range ̀-ͯ cobre os "combining diacritical marks" (acentos
+  // decompostos via NFD). Escape unicode explicito eh mais robusto contra
+  // editores/IDEs que possam reformatar literais invisiveis no source.
   return (s || '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
@@ -2580,11 +2583,19 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   // Aplica uma mesma resolucao a TODOS os idx de um grupo de produto faltante.
   // Esta eh a chave da reducao de retrabalho: usuario decide 1 vez por produto
   // e o sistema replica para todas as ocorrencias daquele produto no lote.
+  //
+  // Higiene: ao trocar de acao (ex.: associar -> criar), descarta campos
+  // especificos da acao anterior. Sem isso, um produto_id de 'associar'
+  // sobrevive como campo sujo dentro de uma resolucao 'criar', poluindo o
+  // payload enviado ao backend.
   const aplicarResolucaoNoGrupo = (idxs: number[], patch: any) => {
     setResolucoes((prev) => {
       const novo = { ...prev }
       for (const idx of idxs) {
-        novo[idx] = { ...(novo[idx] || { idx }), ...patch, idx }
+        const anterior = novo[idx] || { idx }
+        const trocandoAcao = patch.acao && patch.acao !== anterior.acao
+        const baseLimpa = trocandoAcao ? { idx, acao: patch.acao } : anterior
+        novo[idx] = { ...baseLimpa, ...patch, idx }
       }
       return novo
     })
@@ -2683,6 +2694,15 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
     (g: GrupoProdutoFaltante) => !grupoEstaResolvido(g, resolucoes)
   )
   const podeAvancarPF = gruposPendentes.length === 0
+
+  // Estado limite: todos os grupos faltantes resolvidos como 'ignorar'.
+  // Avancar eh permitido (decisao consciente do usuario) mas vale aviso —
+  // pode ser que ele queira voltar e revisar antes de importar so vendas
+  // de produtos ja reconhecidos.
+  const todosFaltantesIgnorados = gruposFaltantesAtuais.length > 0 &&
+    gruposFaltantesAtuais.every(
+      (g: GrupoProdutoFaltante) => resolucoes[g.idxs[0]]?.acao === 'ignorar'
+    )
 
   const tituloFase = (() => {
     switch (estado) {
@@ -2805,9 +2825,14 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
                 ⚠ {gruposPendentes.length} produto(s) ainda pendente(s)
               </span>
             )}
-            {!erro && estado === 'produtos_faltantes' && podeAvancarPF && (
+            {!erro && estado === 'produtos_faltantes' && podeAvancarPF && !todosFaltantesIgnorados && (
               <span className="text-[color:var(--claude-sage)] font-semibold text-xs">
                 ✓ Todos os produtos resolvidos — pronto para revisar
+              </span>
+            )}
+            {!erro && estado === 'produtos_faltantes' && podeAvancarPF && todosFaltantesIgnorados && (
+              <span className="text-amber-700 font-semibold text-xs">
+                ⚠ Todos os faltantes ignorados — só vendas de produtos já reconhecidos seguirão
               </span>
             )}
           </div>
