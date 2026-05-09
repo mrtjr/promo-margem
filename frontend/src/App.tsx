@@ -603,7 +603,119 @@ function ehProdutoRecemImportado(p: Produto): boolean {
   return !!p.sku && p.sku.startsWith('AUTO-')
 }
 
+// Normalizacao basica para matching textual fuzzy (acento + caso). Variante
+// local do `normalizarChave` que vive perto do ImportCSVModal — duplica em
+// vez de mover pra cima pra evitar ricochete em codigo nao-relacionado.
+function normalizarTexto(s: string): string {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
+
+// Mapa keyword -> nome canonico de grupo. As keys batem contra os nomes
+// reais cadastrados em `/grupos` (case-insensitive). Lista intencional-
+// mente curta — vale mais sugerir nada do que sugerir errado e treinar
+// o usuario a desconfiar. Quando crescer, virar config persistida.
+const PALAVRAS_CHAVE_GRUPO: Record<string, string[]> = {
+  TEMPEROS: [
+    'acafrao', 'oregano', 'pimenta', 'paprica', 'chimichurri',
+    'corante', 'tempero', 'lemon pepper', 'edu guedes', 'cominho',
+    'coentro', 'colorau', 'cravo', 'canela', 'curry',
+    'manjericao', 'noz moscada', 'gengibre', 'salsa', 'cebolinha',
+  ],
+  ALIMENTICIOS: [
+    'cebola', 'manga', 'abobora', 'tomate', 'batata',
+    'cenoura', 'beterraba', 'pera', 'maca', 'banana',
+    'mamao', 'melancia', 'melao', 'laranja', 'limao',
+    'abacaxi', 'frutas', 'legumes', 'hortifruti', 'verdura',
+  ],
+  EMBALAGENS: [
+    'saco', 'caixa', 'embalagem', 'plastico', 'papel',
+    'sacola', 'pote', 'bandeja', 'filme pvc',
+  ],
+  CEREAIS: [
+    'arroz', 'feijao', 'milho', 'farinha', 'aveia',
+    'macarrao', 'lentilha', 'soja', 'trigo', 'granola',
+  ],
+}
+
+// Sugere id de grupo baseado em keywords no nome. Retorna null se nada
+// bater — UI deve mostrar a sugestao como "leve" (botao opcional, nunca
+// auto-aplicado), conforme o spec do usuario.
+function sugerirGrupoPorNome(nome: string, grupos: Grupo[]): number | null {
+  if (!nome) return null
+  const norm = normalizarTexto(nome)
+  for (const grupo of grupos) {
+    const kws = PALAVRAS_CHAVE_GRUPO[grupo.nome.toUpperCase()] || []
+    if (kws.some(kw => norm.includes(kw))) return grupo.id
+  }
+  return null
+}
+
+type PendenciaTipo = 'grupo_padrao' | 'sem_codigo' | 'nome_curto' | 'margem_suspeita' | 'custo_zero'
+
+const PENDENCIA_LABEL: Record<PendenciaTipo, { texto: string; cor: string; tooltip: string }> = {
+  grupo_padrao: {
+    texto: 'no grupo padrão',
+    cor: 'bg-rose-50 text-rose-700 border border-rose-200',
+    tooltip: 'No grupo padrão (default da importação) — categorize para ABC/XYZ refletir bem',
+  },
+  sem_codigo: {
+    texto: 'sem código ERP',
+    cor: 'bg-slate-100 text-slate-700 border border-slate-200',
+    tooltip: 'Sem código — não fará match automático na próxima importação do CSV',
+  },
+  nome_curto: {
+    texto: 'nome curto',
+    cor: 'bg-amber-50 text-amber-700 border border-amber-200',
+    tooltip: 'Nome com menos de 4 caracteres — provavelmente abreviação ou rascunho',
+  },
+  margem_suspeita: {
+    texto: 'margem aparenta fórmula',
+    cor: 'bg-amber-50 text-amber-700 border border-amber-200',
+    tooltip: 'Margem entre 34,5% e 35,5% — sinal de custo derivado de regra fixa, não custo real',
+  },
+  custo_zero: {
+    texto: 'custo zerado',
+    cor: 'bg-rose-100 text-rose-800 border border-rose-300',
+    tooltip: 'Custo zero — vai inflar a margem para 100% e poluir todas as análises',
+  },
+}
+
+// Detecta pendencias de qualidade no produto. Cada tipo eh um sinal
+// independente; o "score" eh apenas a contagem (.length da lista).
+// Heuristicas conservadoras — preferem falso-negativo a falso-positivo.
+function pendenciasProduto(p: Produto, grupoDefaultId: number | undefined): PendenciaTipo[] {
+  const pendencias: PendenciaTipo[] = []
+  if (grupoDefaultId != null && p.grupo_id === grupoDefaultId) pendencias.push('grupo_padrao')
+  if (!p.codigo) pendencias.push('sem_codigo')
+  if (p.nome.length < 4) pendencias.push('nome_curto')
+  if (p.custo <= 0) {
+    pendencias.push('custo_zero')
+  } else if (Math.abs(p.margem - 0.35) < 0.005) {
+    // 35,0% +/- 0,5% — assinatura de custo = preco * 0.65 da simulacao.
+    // Se o usuario informou custo de fato 35%, conviver com falso positivo
+    // eh aceitavel (custa 1 clique pra dispensar abrindo a edicao).
+    pendencias.push('margem_suspeita')
+  }
+  return pendencias
+}
+
+// Edicao local em buffer — usada na vista de revisao para acumular
+// alteracoes antes do PATCH explicito.
+type EdicaoLocal = {
+  nome?: string
+  codigo?: string | null
+  grupo_id?: number | null
+  custo?: number
+  preco_venda?: number
+}
+
 type FiltroRapido = 'todos' | 'recentes' | 'sem_codigo' | 'sem_grupo'
+type VistaProdutos = 'tabela' | 'revisao'
 
 function ProdutosPage() {
   const [produtos, setProdutos] = useState<Produto[]>([])
@@ -622,6 +734,18 @@ function ProdutosPage() {
   // ao escopo). Modal bulkAcao controla qual lote aplicar.
   const [selecionados, setSelecionados] = useState<Set<number>>(new Set())
   const [bulkAcao, setBulkAcao] = useState<'grupo' | null>(null)
+
+  // Vista da pagina: tabela (visao geral) vs revisao (fila assistida pra
+  // produtos AUTO-* com cards inline editaveis). Persiste durante a sessao;
+  // nao salva em localStorage pra evitar surpresa (volta sempre em 'tabela').
+  const [vista, setVista] = useState<VistaProdutos>('tabela')
+
+  // Edicoes locais nao-comitadas no modo revisao. Map<id, partial> com so
+  // os campos que diferem do produto salvo. Salva eh per-card; campos voltam
+  // ao original sao removidos do map automaticamente (via setEdicao).
+  const [edicoesLocais, setEdicoesLocais] = useState<Record<number, EdicaoLocal>>({})
+  const [salvandoId, setSalvandoId] = useState<number | null>(null)
+  const [errosSave, setErrosSave] = useState<Record<number, string>>({})
 
   const carregar = () => {
     axios.get(`${API_URL}/produtos`).then(res => setProdutos(res.data))
@@ -693,19 +817,147 @@ function ProdutosPage() {
     setFiltroRapido(prev => (prev === f ? 'todos' : f))
   }
 
+  // Atualiza edicoes locais. Auto-limpa campos que voltaram pro valor
+  // original (evita "salvar" virar no-op se o usuario digitou e desfez).
+  const atualizarEdicao = (id: number, patch: EdicaoLocal) => {
+    setEdicoesLocais(prev => {
+      const original = produtos.find(p => p.id === id)
+      const atual = prev[id] || {}
+      const merged: EdicaoLocal = { ...atual, ...patch }
+      if (original) {
+        const efetivo: EdicaoLocal = {}
+        const campos: Array<keyof EdicaoLocal> = ['nome', 'codigo', 'grupo_id', 'custo', 'preco_venda']
+        for (const k of campos) {
+          if (merged[k] === undefined) continue
+          // Compara como string pra ignorar tipos diferentes (null vs '')
+          const novoVal = merged[k] === '' ? null : merged[k]
+          const origVal = (original as any)[k]
+          if (novoVal !== origVal) (efetivo as any)[k] = novoVal
+        }
+        const novo = { ...prev }
+        if (Object.keys(efetivo).length === 0) {
+          delete novo[id]
+        } else {
+          novo[id] = efetivo
+        }
+        return novo
+      }
+      return { ...prev, [id]: merged }
+    })
+    // Limpa erro previo do mesmo id ao retomar edicao.
+    setErrosSave(prev => {
+      if (!prev[id]) return prev
+      const novo = { ...prev }
+      delete novo[id]
+      return novo
+    })
+  }
+
+  // Salva uma edicao via PATCH parcial. Sucesso limpa edicoesLocais e
+  // refresca a lista (margem recomputa server-side). Falha mostra erro
+  // inline preservando o buffer pra o usuario corrigir/retentar.
+  const salvarEdicao = async (id: number) => {
+    const edits = edicoesLocais[id]
+    if (!edits || Object.keys(edits).length === 0) return
+    setSalvandoId(id)
+    try {
+      await axios.patch(`${API_URL}/produtos/${id}`, edits)
+      setEdicoesLocais(prev => {
+        const novo = { ...prev }
+        delete novo[id]
+        return novo
+      })
+      carregar()
+    } catch (e: any) {
+      setErrosSave(prev => ({
+        ...prev,
+        [id]: e?.response?.data?.detail || 'Erro ao salvar.',
+      }))
+    } finally {
+      setSalvandoId(null)
+    }
+  }
+
+  // Lista da vista de revisao: AUTO-* (todo o universo de "criado pela
+  // importacao"), ordenado por contagem de pendencias desc — quem tem
+  // mais sinais de problema fica no topo da fila. Filtros texto/grupo
+  // tambem se aplicam pra deixar a fila navegavel quando crescer.
+  const produtosRevisao = produtos
+    .filter(ehProdutoRecemImportado)
+    .filter(p => {
+      if (busca) {
+        const q = busca.toLowerCase().trim()
+        const nomeMatch = p.nome.toLowerCase().includes(q)
+        const codMatch = !!p.codigo && p.codigo.toLowerCase().includes(q)
+        if (!nomeMatch && !codMatch) return false
+      }
+      if (grupoFiltro !== 'todos' && p.grupo_id !== grupoFiltro) return false
+      return true
+    })
+    .sort((a, b) => {
+      const pa = pendenciasProduto(a, grupoDefaultId).length
+      const pb = pendenciasProduto(b, grupoDefaultId).length
+      return pb - pa
+    })
+
+  // Contagem do badge da tab — produtos AUTO-* COM ao menos 1 pendencia.
+  // Quando zera, a tab continua disponivel mas sem badge (fila vazia).
+  const autosPendentesTotal = produtos.filter(p =>
+    ehProdutoRecemImportado(p)
+    && pendenciasProduto(p, grupoDefaultId).length > 0
+  ).length
+
   return (
     <div className="max-w-6xl mx-auto p-8">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="headline text-4xl tracking-editorial">Gestão de SKUs</h2>
         <p className="text-xs text-slate-500">
-          {produtosFiltrados.length === produtos.length
-            ? `${produtos.length} SKU${produtos.length === 1 ? '' : 's'}`
-            : `${produtosFiltrados.length} de ${produtos.length} SKUs`}
+          {vista === 'revisao'
+            ? `${produtosRevisao.length} na fila de revisão`
+            : produtosFiltrados.length === produtos.length
+              ? `${produtos.length} SKU${produtos.length === 1 ? '' : 's'}`
+              : `${produtosFiltrados.length} de ${produtos.length} SKUs`}
         </p>
       </div>
 
-      {/* Saude do catalogo — pills clicaveis aplicam filtro rapido */}
-      {produtos.length > 0 && (recemImportados > 0 || semCodigo > 0 || noGrupoDefault > 0) && (
+      {/* Tabs: tabela completa vs fila de revisao assistida */}
+      {produtos.length > 0 && (
+        <div className="flex items-center gap-1 mb-4 border-b border-slate-200">
+          <button
+            onClick={() => setVista('tabela')}
+            className={`px-4 py-2 text-sm font-semibold transition-colors border-b-2 -mb-px ${
+              vista === 'tabela'
+                ? 'text-blue-600 border-blue-600'
+                : 'text-slate-500 hover:text-slate-700 border-transparent'
+            }`}
+          >
+            Tabela completa
+          </button>
+          <button
+            onClick={() => setVista('revisao')}
+            className={`px-4 py-2 text-sm font-semibold transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              vista === 'revisao'
+                ? 'text-blue-600 border-blue-600'
+                : 'text-slate-500 hover:text-slate-700 border-transparent'
+            }`}
+            title="Fila assistida para revisar SKUs criados pela importação — edição inline com sugestão de grupo e detecção de pendências"
+          >
+            <span>Revisar autos</span>
+            {autosPendentesTotal > 0 && (
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${
+                vista === 'revisao' ? 'bg-blue-600 text-white' : 'bg-amber-500 text-white'
+              }`}>
+                {autosPendentesTotal}
+              </span>
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* Saude do catalogo — pills clicaveis aplicam filtro rapido. So aparece
+          em vista tabela; na vista revisao a propria fila ja eh o "painel de
+          pendencias" com mais detalhe. */}
+      {vista === 'tabela' && produtos.length > 0 && (recemImportados > 0 || semCodigo > 0 || noGrupoDefault > 0) && (
         <div className="flex flex-wrap items-center gap-2 mb-4">
           {recemImportados > 0 && (
             <button
@@ -780,8 +1032,8 @@ function ProdutosPage() {
         </div>
       )}
 
-      {/* Barra contextual de selecao em lote */}
-      {selecionados.size > 0 && (
+      {/* Barra contextual de selecao em lote — so vale na vista tabela */}
+      {vista === 'tabela' && selecionados.size > 0 && (
         <div className="flex flex-wrap items-center gap-3 mb-4 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-xl">
           <span className="text-sm font-bold text-blue-900">
             {selecionados.size} selecionado{selecionados.size === 1 ? '' : 's'}
@@ -801,6 +1053,47 @@ function ProdutosPage() {
         </div>
       )}
 
+      {/* VISTA REVISAO: stack vertical de cards inline-editaveis */}
+      {vista === 'revisao' && (
+        <div className="space-y-3">
+          {produtosRevisao.length > 0 ? (
+            <>
+              {autosPendentesTotal === 0 && (
+                <div className="px-4 py-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-800">
+                  <strong>Fila zerada.</strong> Nenhum SKU recém-importado tem pendência detectável. Os cards abaixo continuam visíveis para edição rápida.
+                </div>
+              )}
+              {produtosRevisao.map(p => (
+                <RevisaoCard
+                  key={p.id}
+                  produto={p}
+                  grupos={grupos}
+                  grupoDefaultId={grupoDefaultId}
+                  edicao={edicoesLocais[p.id]}
+                  onChange={atualizarEdicao}
+                  onSalvar={salvarEdicao}
+                  salvando={salvandoId === p.id}
+                  erro={errosSave[p.id]}
+                />
+              ))}
+            </>
+          ) : (
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-8">
+              <EmptyState
+                variant="empty"
+                compact
+                icon={<Package size={28} />}
+                title={produtos.filter(ehProdutoRecemImportado).length === 0
+                  ? 'Nenhum SKU recém-importado. Cadastros novos aparecem aqui após o commit do CSV.'
+                  : 'Nenhum SKU bate com os filtros aplicados.'}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* VISTA TABELA: tabela completa (default) */}
+      {vista === 'tabela' && (
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -911,6 +1204,7 @@ function ProdutosPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       {editando && (
         <ProdutoEditModal
@@ -1274,6 +1568,194 @@ function BulkGrupoModal({ produtosSelecionados, grupos, onClose, onApplied }: an
               Aplicar
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Card inline-editavel da fila de revisao. Um card por produto AUTO-*,
+// com 4 campos prioritarios + sugestao de grupo + tags de pendencia.
+// Salvar dispara PATCH parcial e some quando o produto deixa de ter
+// pendencia visivel (ainda persiste na fila se o usuario quiser revisar
+// outras coisas, mas o card vira verde e desce no ranking).
+function RevisaoCard({
+  produto,
+  grupos,
+  grupoDefaultId,
+  edicao,
+  onChange,
+  onSalvar,
+  salvando,
+  erro,
+}: {
+  produto: Produto
+  grupos: Grupo[]
+  grupoDefaultId: number | undefined
+  edicao: EdicaoLocal | undefined
+  onChange: (id: number, patch: EdicaoLocal) => void
+  onSalvar: (id: number) => void
+  salvando: boolean
+  erro: string | undefined
+}) {
+  const temAlteracoes = !!edicao && Object.keys(edicao).length > 0
+
+  // "Estado efetivo" para detecao de pendencias e calculo de margem:
+  // mistura produto salvo com edicoes pendentes — assim as tags de
+  // pendencia desaparecem em tempo real conforme o usuario corrige.
+  const efetivo: Produto = {
+    ...produto,
+    ...(edicao?.nome != null ? { nome: edicao.nome } : {}),
+    ...(edicao?.codigo !== undefined ? { codigo: edicao.codigo } : {}),
+    ...(edicao?.grupo_id !== undefined ? { grupo_id: edicao.grupo_id ?? produto.grupo_id } : {}),
+    ...(edicao?.custo != null ? { custo: edicao.custo } : {}),
+    ...(edicao?.preco_venda != null ? { preco_venda: edicao.preco_venda } : {}),
+  }
+  // Recalcula margem com valores em buffer
+  const margemEfetiva = efetivo.preco_venda > 0
+    ? (efetivo.preco_venda - efetivo.custo) / efetivo.preco_venda
+    : 0
+  const efetivoComMargem = { ...efetivo, margem: margemEfetiva }
+
+  const pendencias = pendenciasProduto(efetivoComMargem, grupoDefaultId)
+  const sugestaoGrupoId = sugerirGrupoPorNome(efetivo.nome, grupos)
+  const sugestaoNome = grupos.find(g => g.id === sugestaoGrupoId)?.nome
+  const grupoAtualId = efetivo.grupo_id
+
+  const set = (campo: keyof EdicaoLocal, valor: any) => {
+    onChange(produto.id, { [campo]: valor })
+  }
+
+  // Cor de borda revela estado: verde se sem pendencias, amber se ha
+  // alteracoes em buffer, slate se ainda esta intacto com pendencia.
+  const borderColor = pendencias.length === 0
+    ? 'border-emerald-200'
+    : 'border-slate-200'
+  const bgColor = pendencias.length === 0 ? 'bg-emerald-50/40' : 'bg-white'
+  const ringColor = temAlteracoes ? 'ring-2 ring-amber-300' : ''
+
+  return (
+    <div className={`rounded-2xl border-2 p-4 transition-all ${borderColor} ${bgColor} ${ringColor}`}>
+      {/* Header: nome editavel + badge + codigo inline */}
+      <div className="flex items-start gap-2 mb-2">
+        <input
+          type="text"
+          value={edicao?.nome ?? produto.nome}
+          onChange={(e) => set('nome', e.target.value)}
+          placeholder="Nome do produto"
+          className="flex-1 text-base font-bold text-slate-900 border-b border-transparent hover:border-slate-200 focus:border-blue-500 outline-none bg-transparent px-1 py-0.5 transition-colors"
+        />
+        <span
+          title="SKU AUTO — criado pela importação do CSV"
+          className="text-[9px] font-black tracking-widest uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0 mt-1"
+        >
+          Auto
+        </span>
+      </div>
+
+      {/* Tags de pendencia — somem assim que o usuario corrige (efetivo recalculado) */}
+      {pendencias.length > 0 ? (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {pendencias.map(p => (
+            <span
+              key={p}
+              title={PENDENCIA_LABEL[p].tooltip}
+              className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${PENDENCIA_LABEL[p].cor}`}
+            >
+              {PENDENCIA_LABEL[p].texto}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="mb-3">
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+            ✓ sem pendências detectadas
+          </span>
+        </div>
+      )}
+
+      {/* Grid de campos — grupo, codigo, custo, preco */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div>
+          <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Grupo</label>
+          <select
+            value={grupoAtualId ?? ''}
+            onChange={(e) => set('grupo_id', e.target.value ? parseInt(e.target.value) : null)}
+            className={`w-full mt-1 p-2 rounded border text-xs bg-white focus:ring-2 focus:ring-blue-500 outline-none ${
+              grupoAtualId === grupoDefaultId
+                ? 'border-rose-300'
+                : 'border-slate-200'
+            }`}
+          >
+            <option value="">— sem grupo —</option>
+            {grupos.map(g => (
+              <option key={g.id} value={g.id}>
+                {g.nome}{g.id === sugestaoGrupoId ? ' ✨' : ''}
+              </option>
+            ))}
+          </select>
+          {sugestaoGrupoId != null && grupoAtualId !== sugestaoGrupoId && (
+            <button
+              type="button"
+              onClick={() => set('grupo_id', sugestaoGrupoId)}
+              className="mt-1 text-[10px] text-blue-600 hover:underline font-semibold"
+              title="Sugestão automática baseada em palavras-chave do nome — clique para aplicar"
+            >
+              ✨ Sugerir: {sugestaoNome}
+            </button>
+          )}
+        </div>
+        <div>
+          <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Código ERP</label>
+          <input
+            type="text"
+            value={edicao?.codigo ?? produto.codigo ?? ''}
+            onChange={(e) => set('codigo', e.target.value || null)}
+            placeholder="(opcional)"
+            className="w-full mt-1 p-2 rounded border border-slate-200 text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+        </div>
+        <div>
+          <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Custo (R$)</label>
+          <input
+            type="number" step="0.01" min="0"
+            value={edicao?.custo ?? produto.custo}
+            onChange={(e) => set('custo', parseFloat(e.target.value) || 0)}
+            className={`w-full mt-1 p-2 rounded border text-xs focus:ring-2 focus:ring-blue-500 outline-none ${
+              efetivo.custo <= 0 ? 'border-rose-300 bg-rose-50/50' : 'border-slate-200'
+            }`}
+          />
+        </div>
+        <div>
+          <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Preço Venda (R$)</label>
+          <input
+            type="number" step="0.01"
+            value={edicao?.preco_venda ?? produto.preco_venda}
+            onChange={(e) => set('preco_venda', parseFloat(e.target.value) || 0)}
+            className="w-full mt-1 p-2 rounded border border-slate-200 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+        </div>
+      </div>
+
+      {/* Margem calculada + Salvar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-slate-100">
+        <div className="text-xs text-slate-500">
+          Margem: <strong className={
+            margemEfetiva >= 0.17 ? 'text-emerald-700' : 'text-amber-700'
+          }>{formatPercent(margemEfetiva)}</strong>
+          {temAlteracoes && (
+            <span className="ml-2 text-[10px] text-amber-600 font-semibold">· alterações pendentes</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {erro && <span className="text-[10px] text-rose-600 font-semibold">{erro}</span>}
+          <button
+            disabled={!temAlteracoes || salvando}
+            onClick={() => onSalvar(produto.id)}
+            className="text-xs font-bold bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            {salvando ? 'Salvando…' : 'Salvar alterações'}
+          </button>
         </div>
       </div>
     </div>
