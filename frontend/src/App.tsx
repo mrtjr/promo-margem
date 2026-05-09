@@ -2388,6 +2388,48 @@ function normalizarChave(s: string): string {
     .replace(/\s+/g, ' ')
 }
 
+/**
+ * Sugere o produto cadastrado mais provavel para um grupo faltante.
+ * NAO auto-confirma: retorna apenas o id da sugestao para pre-selecionar
+ * no select de "Associar". O usuario sempre tem que confirmar/trocar.
+ *
+ * Ranking (do mais forte para o mais fraco):
+ *   1. Codigo ERP exato         — match canonico, raramente falso-positivo
+ *   2. Nome normalizado exato   — typo improvavel
+ *   3. Substring (qualquer dir) — fallback fraco mas util pra "AÇAFRAO" -> "AÇAFRAO PIATA"
+ *
+ * Retorna null se nenhum dos rankings encontrar match — usuario abre o
+ * select normalmente e escolhe manualmente.
+ */
+function sugerirProdutoExistente(
+  grupo: GrupoProdutoFaltante,
+  produtos: any[],
+): number | null {
+  if (!produtos || produtos.length === 0) return null
+  const nomeAlvo = normalizarChave(grupo.nome)
+  const codAlvo = grupo.codigo ? normalizarChave(grupo.codigo) : null
+
+  // 1) codigo ERP exato (canonical)
+  if (codAlvo) {
+    const m = produtos.find((p: any) => p.codigo && normalizarChave(p.codigo) === codAlvo)
+    if (m) return m.id
+  }
+  // 2) nome normalizado exato
+  if (nomeAlvo) {
+    const m = produtos.find((p: any) => normalizarChave(p.nome) === nomeAlvo)
+    if (m) return m.id
+  }
+  // 3) substring em qualquer direcao (mais fraco — usuario revisa)
+  if (nomeAlvo && nomeAlvo.length >= 4) {
+    const m = produtos.find((p: any) => {
+      const pn = normalizarChave(p.nome)
+      return pn.length >= 4 && (pn.includes(nomeAlvo) || nomeAlvo.includes(pn))
+    })
+    if (m) return m.id
+  }
+  return null
+}
+
 function agruparProdutosFaltantes(linhas: any[]): GrupoProdutoFaltante[] {
   const mapa = new Map<string, GrupoProdutoFaltante>()
   for (const l of linhas) {
@@ -2470,6 +2512,17 @@ function grupoEstaResolvido(grupo: GrupoProdutoFaltante, resolucoes: Record<numb
   return false
 }
 
+// Persistencia local do progresso do passo de produtos faltantes — chave
+// estavel por arquivo (nome+tamanho+ultima modificacao). Evita perda
+// acidental se o usuario fechar o modal antes do commit.
+const STORAGE_PREFIX = 'csvimport:'
+const STORAGE_TTL_MS = 7 * 24 * 3600 * 1000 // 7 dias
+
+function chaveStorageDoArquivo(f: File | null): string | null {
+  if (!f) return null
+  return `${STORAGE_PREFIX}${f.name}:${f.size}:${f.lastModified}`
+}
+
 function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: any) {
   const hoje = new Date().toISOString().slice(0, 10)
   const [estado, setEstado] = useState<'upload' | 'auditoria' | 'produtos_faltantes' | 'preview' | 'sucesso_multi'>('upload')
@@ -2482,9 +2535,48 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   const [resolucoes, setResolucoes] = useState<Record<number, any>>({})
   const [submitting, setSubmitting] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+  // Sinaliza que o progresso foi restaurado de localStorage neste mount —
+  // banner some apos primeira interacao do usuario.
+  const [progressoRestaurado, setProgressoRestaurado] = useState<{ count: number } | null>(null)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const titleId = 'importcsv-title'
+
+  // Limpeza one-shot: descarta entries antigas (>7 dias) ao montar o modal.
+  // Mantem localStorage enxuto sem job dedicado.
+  useEffect(() => {
+    try {
+      const now = Date.now()
+      const stale: string[] = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (!k || !k.startsWith(STORAGE_PREFIX)) continue
+        try {
+          const v = JSON.parse(localStorage.getItem(k) || '{}')
+          if (!v.ts || (now - v.ts) > STORAGE_TTL_MS) stale.push(k)
+        } catch {
+          stale.push(k)
+        }
+      }
+      stale.forEach((k) => localStorage.removeItem(k))
+    } catch {}
+  }, [])
+
+  // Persiste resolucoes + dataAlvo enquanto o modal esta em uso. Salva a
+  // cada mudanca — chamadas a localStorage.setItem sao baratas e o volume
+  // por lote eh modesto (~kbs). O save so vale quando ha arquivo + preview.
+  useEffect(() => {
+    if (!arquivo || !preview) return
+    if (Object.keys(resolucoes).length === 0) return
+    try {
+      const key = chaveStorageDoArquivo(arquivo)
+      if (!key) return
+      localStorage.setItem(
+        key,
+        JSON.stringify({ resolucoes, dataAlvo, ts: Date.now() }),
+      )
+    } catch {}
+  }, [resolucoes, dataAlvo, arquivo, preview])
 
   // ESC fecha o modal — mas nunca durante uma operacao em andamento (upload,
   // commit, multi-data) e nunca na tela de sucesso (a saida certa eh "Ver
@@ -2561,7 +2653,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setPreview(res.data)
-      const iniciais: Record<number, any> = {}
+      let iniciais: Record<number, any> = {}
       for (const l of res.data.linhas) {
         if (l.status === 'erro') {
           iniciais[l.idx] = { idx: l.idx, acao: 'ignorar' }
@@ -2569,7 +2661,39 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
           iniciais[l.idx] = { idx: l.idx, acao: 'ignorar' }
         }
       }
+      // Restaura progresso anterior do mesmo arquivo (se existir e nao
+      // expirou). Mescla por cima dos defaults — sem sobrescrever entries
+      // de erro/ok-only que nao existem no salvo.
+      let restoredCount = 0
+      try {
+        const key = chaveStorageDoArquivo(arquivo)
+        if (key) {
+          const saved = localStorage.getItem(key)
+          if (saved) {
+            const parsed = JSON.parse(saved)
+            if (parsed?.resolucoes && parsed?.ts &&
+                (Date.now() - parsed.ts) < STORAGE_TTL_MS) {
+              for (const [idxStr, r] of Object.entries(parsed.resolucoes as Record<string, any>)) {
+                const idx = Number(idxStr)
+                const inicial = iniciais[idx]
+                // Conta como "restaurada" toda resolucao que difere do
+                // default 'ignorar' OU que foi explicitamente decidida
+                // antes (mesmo 'ignorar' pode ter sido decisao consciente).
+                if (!inicial || r.acao !== inicial.acao
+                    || r.produto_id || r.novo_nome || r.novo_custo) {
+                  restoredCount++
+                }
+              }
+              iniciais = { ...iniciais, ...parsed.resolucoes }
+              if (parsed.dataAlvo && parsed.dataAlvo !== dataAlvo) {
+                setDataAlvo(parsed.dataAlvo)
+              }
+            }
+          }
+        }
+      } catch {}
       setResolucoes(iniciais)
+      if (restoredCount > 0) setProgressoRestaurado({ count: restoredCount })
       // Se ha pendencias agrupaveis (sem_match / conflito / sem_custo), ofere
       // ce o passo de cadastro/validacao agrupada. Senao, segue direto pro
       // preview tradicional (linha-a-linha).
@@ -2679,6 +2803,12 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
         resolucoes: resolucoesArr,
       }
       await axios.post(`${API_URL}/fechamento/importar-csv/commit`, payload)
+      // Limpa o storage do arquivo apos commit bem-sucedido. Nova importacao
+      // do mesmo arquivo (raro mas possivel) parte de zero.
+      try {
+        const key = chaveStorageDoArquivo(arquivo)
+        if (key) localStorage.removeItem(key)
+      } catch {}
       onCommitted(dataAlvo)
     } catch (e: any) {
       setErro(e?.response?.data?.detail || 'Erro ao finalizar a importação.')
@@ -2803,6 +2933,8 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
               onAplicarGrupo={aplicarResolucaoNoGrupo}
               produtosExistentes={produtosExistentes}
               grupos={grupos}
+              progressoRestaurado={progressoRestaurado}
+              onDispensarBanner={() => setProgressoRestaurado(null)}
             />
           )}
           {estado === 'preview' && preview && (
@@ -3327,7 +3459,8 @@ function SucessoMultiFase({ resultado }: any) {
 // diferenca eh que, ao decidir, aplicamos a TODAS as ocorrencias do produto
 // no lote (mesmo grupo) — reduzindo retrabalho sem mudar persistencia.
 // ============================================================================
-function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosExistentes, grupos }: any) {
+function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosExistentes, grupos, progressoRestaurado, onDispensarBanner }: any) {
+  const [apenasPendentes, setApenasPendentes] = useState(false)
   const gruposFaltantes = agruparProdutosFaltantes(preview.linhas)
   const totalGrupos = gruposFaltantes.length
   const resolvidos = gruposFaltantes.filter((g: GrupoProdutoFaltante) => grupoEstaResolvido(g, resolucoes)).length
@@ -3337,8 +3470,31 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
     .filter((g: GrupoProdutoFaltante) => grupoEstaResolvido(g, resolucoes))
     .reduce((s: number, g: GrupoProdutoFaltante) => s + g.ocorrencias, 0)
 
+  // Filtro de exibicao — quando todos resolvidos, nao oferece o toggle
+  // (nada pra esconder); quando ha pendentes, default eh mostrar todos.
+  const gruposExibir = apenasPendentes
+    ? gruposFaltantes.filter((g: GrupoProdutoFaltante) => !grupoEstaResolvido(g, resolucoes))
+    : gruposFaltantes
+
   return (
     <div className="space-y-5">
+      {/* Banner de progresso restaurado — discreto, dispensavel */}
+      {progressoRestaurado && (
+        <div className="px-3 py-2 bg-[color:var(--claude-sage)]/10 border border-[color:var(--claude-sage)]/30 rounded-lg flex items-center justify-between gap-3">
+          <p className="text-[12px] text-[color:var(--claude-sage)]">
+            ✓ Progresso restaurado deste arquivo — <strong>{progressoRestaurado.count}</strong>{' '}
+            decisão(ões) recuperada(s).
+          </p>
+          <button
+            onClick={onDispensarBanner}
+            className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--claude-sage)] hover:opacity-70"
+            aria-label="Dispensar aviso"
+          >
+            Dispensar
+          </button>
+        </div>
+      )}
+
       {/* Banner de contexto — tom informativo, nao de erro */}
       <div className="p-4 bg-[color:var(--claude-cream-deep)]/40 border border-[color:var(--border)] rounded-xl">
         <p className="text-sm text-[color:var(--claude-ink)]">
@@ -3358,9 +3514,35 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
         <MiniStat label="Linhas totais" valor={preview.total_linhas} cor="slate" />
       </div>
 
-      {/* Cards de cada grupo */}
+      {/* Toolbar: filtro + contagem do que esta sendo exibido */}
+      {totalGrupos > 0 && pendentes > 0 && resolvidos > 0 && (
+        <div className="flex items-center justify-between gap-3 px-1">
+          <span className="text-xs text-[color:var(--claude-stone)]">
+            Exibindo <strong className="text-[color:var(--claude-ink)]">{gruposExibir.length}</strong> de {totalGrupos} produto(s)
+          </span>
+          <button
+            onClick={() => setApenasPendentes(v => !v)}
+            className={`text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded transition-colors border ${
+              apenasPendentes
+                ? 'bg-[color:var(--claude-coral)] text-white border-[color:var(--claude-coral)]'
+                : 'bg-white text-[color:var(--claude-stone)] border-[color:var(--border)] hover:bg-slate-50'
+            }`}
+            aria-pressed={apenasPendentes}
+          >
+            {apenasPendentes ? '✓ Apenas pendentes' : 'Apenas pendentes'}
+          </button>
+        </div>
+      )}
+
+      {/* Cards de cada grupo (filtrados se apenasPendentes) */}
       <div className="space-y-3">
-        {gruposFaltantes.map((g: GrupoProdutoFaltante) => (
+        {gruposExibir.length === 0 ? (
+          <div className="text-center py-8 text-sm italic text-[color:var(--claude-stone)]">
+            {apenasPendentes
+              ? 'Nenhum pendente — todos os produtos foram resolvidos.'
+              : 'Nenhum produto faltante neste lote.'}
+          </div>
+        ) : gruposExibir.map((g: GrupoProdutoFaltante) => (
           <GrupoFaltanteCard
             key={g.chave}
             grupo={g}
@@ -3503,7 +3685,14 @@ function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, reso
             <div className="flex gap-1.5 flex-wrap">
               <BotaoAcao
                 ativo={acaoAtual === 'associar'}
-                onClick={() => onAplicar({ acao: 'associar' })}
+                onClick={() => {
+                  // Pre-seleciona produto sugerido (se houver) ao entrar em
+                  // 'Associar'. Nao auto-confirma — usuario revisa/troca no
+                  // select. Se nao ha sugestao, abre vazio (comportamento
+                  // anterior).
+                  const sugerido = sugerirProdutoExistente(grupo, produtos)
+                  onAplicar({ acao: 'associar', produto_id: sugerido })
+                }}
                 label="Associar a produto existente"
               />
               <BotaoAcao
@@ -3518,27 +3707,41 @@ function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, reso
               />
             </div>
 
-            {acaoAtual === 'associar' && (
-              <div className="p-3 bg-white rounded-lg border border-[color:var(--border)] space-y-2">
-                <p className="text-[11px] text-[color:var(--claude-stone)]">
-                  Selecione um produto já cadastrado. A associação será aplicada às {grupo.ocorrencias} ocorrência(s).
-                </p>
-                <select
-                  value={resolucao?.produto_id || ''}
-                  onChange={(e) => onAplicar({ acao: 'associar', produto_id: e.target.value ? parseInt(e.target.value) : null })}
-                  className={`w-full p-2 rounded border text-sm bg-white ${
-                    !resolucao?.produto_id ? 'border-rose-300 bg-rose-50/50' : 'border-slate-300'
-                  }`}
-                >
-                  <option value="">— selecione um produto —</option>
-                  {produtos.map((p: any) => (
-                    <option key={p.id} value={p.id}>
-                      {p.nome} {p.codigo ? `[${p.codigo}]` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+            {acaoAtual === 'associar' && (() => {
+              // Detecta se o produto_id atual veio da sugestao automatica
+              // (mesmo id que sugerirProdutoExistente retorna agora) — usado
+              // pra mostrar a flag "sugerido pelo sistema".
+              const sugeridoAgora = sugerirProdutoExistente(grupo, produtos)
+              const eSugestao = resolucao?.produto_id != null
+                && resolucao.produto_id === sugeridoAgora
+              return (
+                <div className="p-3 bg-white rounded-lg border border-[color:var(--border)] space-y-2">
+                  <p className="text-[11px] text-[color:var(--claude-stone)]">
+                    Selecione um produto já cadastrado. A associação será aplicada às {grupo.ocorrencias} ocorrência(s).
+                  </p>
+                  <select
+                    value={resolucao?.produto_id || ''}
+                    onChange={(e) => onAplicar({ acao: 'associar', produto_id: e.target.value ? parseInt(e.target.value) : null })}
+                    className={`w-full p-2 rounded border text-sm bg-white ${
+                      !resolucao?.produto_id ? 'border-rose-300 bg-rose-50/50' : 'border-slate-300'
+                    }`}
+                  >
+                    <option value="">— selecione um produto —</option>
+                    {produtos.map((p: any) => (
+                      <option key={p.id} value={p.id}>
+                        {p.nome} {p.codigo ? `[${p.codigo}]` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {eSugestao && (
+                    <p className="text-[10px] text-[color:var(--claude-sage)] flex items-center gap-1">
+                      <span>✓</span>
+                      <span>Sugestão automática — confirme ou troque acima</span>
+                    </p>
+                  )}
+                </div>
+              )
+            })()}
 
             {acaoAtual === 'criar' && (
               <div className="p-3 bg-white rounded-lg border border-[color:var(--border)] space-y-2">
