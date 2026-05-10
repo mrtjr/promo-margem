@@ -36,6 +36,7 @@ from .services import (
     dfc_service,
     dmpl_service,
     cliente_service,
+    metrics_service,
 )
 
 # 1. Create tables that don't exist yet (create_all nunca altera colunas)
@@ -1890,3 +1891,43 @@ async def briefing_diario(
         raise HTTPException(status_code=500, detail=f'Erro no Briefing: {e}')
 
     return result
+
+
+# ============================================================================
+# Sprint S1.5 — Metricas de adocao (server-side, le events + agent_runs)
+# ============================================================================
+
+@app.get('/metricas/adocao', response_model=schemas.MetricsAdocaoResponse)
+async def metricas_adocao(
+    dias: int = 7,
+    db: Session = Depends(get_db),
+):
+    """
+    Telemetria agregada de adocao agentic. Le event log + agent_runs,
+    nao cria tabelas novas. Janela default 7 dias.
+    """
+    if dias < 1 or dias > 90:
+        raise HTTPException(status_code=400, detail='dias deve estar entre 1 e 90')
+    return metrics_service.resumo_adocao(db, dias=dias)
+
+
+@app.get('/metricas/agentes', response_model=List[schemas.MetricsAgenteResumo])
+async def metricas_por_agente(
+    dias: int = 7,
+    db: Session = Depends(get_db),
+):
+    """Resumo por agent_name na janela."""
+    if dias < 1 or dias > 90:
+        raise HTTPException(status_code=400, detail='dias deve estar entre 1 e 90')
+    return metrics_service.resumo_por_agente(db, dias=dias)
+
+
+@app.get('/metricas/serie-diaria', response_model=List[schemas.MetricsSerieDiaria])
+async def metricas_serie_diaria(
+    dias: int = 14,
+    db: Session = Depends(get_db),
+):
+    """Timeseries diaria de execucoes agenticas para grafico."""
+    if dias < 1 or dias > 90:
+        raise HTTPException(status_code=400, detail='dias deve estar entre 1 e 90')
+    return metrics_service.serie_diaria(db, dias=dias)

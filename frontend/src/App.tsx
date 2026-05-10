@@ -6506,10 +6506,24 @@ function BriefingPage() {
   const [briefingAgente, setBriefingAgente] = useState<any>(null)
   const [briefingAgenteErro, setBriefingAgenteErro] = useState<string | null>(null)
 
+  // Sprint S1.5: telemetria de adocao agentic (server-side)
+  const [metricasAdocao, setMetricasAdocao] = useState<any>(null)
+
   useEffect(() => {
     carregar(data)
     carregarBriefingAgente(data)
+    carregarMetricasAdocao()
   }, [data])
+
+  const carregarMetricasAdocao = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/metricas/adocao?dias=7`, { timeout: 5000 })
+      setMetricasAdocao(res.data)
+    } catch (e) {
+      // Falha silenciosa — widget de metricas eh opcional
+      setMetricasAdocao(null)
+    }
+  }
 
   const carregar = async (alvo: string) => {
     setLoading(true)
@@ -6678,6 +6692,67 @@ function BriefingPage() {
         {!briefingAgente && briefingAgenteErro && (
           <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800">
             BriefingAgent V0 indisponível ({briefingAgenteErro}) — usando narrativa clássica abaixo.
+          </div>
+        )}
+
+        {/* Sprint S1.5: telemetria de adocao agentic — server-side, le events
+            + agent_runs. Janela 7 dias. Falha silenciosa. */}
+        {metricasAdocao && (
+          <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+            <div className="flex items-baseline justify-between">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
+                Adoção agentic · janela {metricasAdocao.janela_dias}d (server-side)
+              </p>
+              <p className="text-[10px] text-slate-400 font-mono">{metricasAdocao.desde}</p>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <div className="space-y-0.5">
+                <p className="text-slate-500">Reconciliator</p>
+                <p className="text-2xl font-bold text-blue-700 mono">
+                  {metricasAdocao.reconciliator.runs}
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  {metricasAdocao.reconciliator.success}/{metricasAdocao.reconciliator.runs} success
+                  {metricasAdocao.reconciliator.latency_p95_ms > 0 && (
+                    <span> · p95 {metricasAdocao.reconciliator.latency_p95_ms}ms</span>
+                  )}
+                </p>
+              </div>
+              <div className="space-y-0.5">
+                <p className="text-slate-500">Imports via agente</p>
+                <p className="text-2xl font-bold text-emerald-700 mono">
+                  {metricasAdocao.imports.taxa_reconciliator_pct}%
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  {metricasAdocao.imports.via_reconciliator} de {metricasAdocao.imports.total} imports
+                </p>
+              </div>
+              <div className="space-y-0.5">
+                <p className="text-slate-500">AuditQA findings</p>
+                <p className="text-2xl font-bold text-amber-700 mono">
+                  {metricasAdocao.auditqa.total_findings}
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  {metricasAdocao.auditqa.runs} runs · {metricasAdocao.auditqa.blocker_findings} blockers
+                </p>
+              </div>
+              <div className="space-y-0.5">
+                <p className="text-slate-500">LLM-judge custo</p>
+                <p className="text-2xl font-bold text-slate-800 mono">
+                  ${metricasAdocao.reconciliator.llm_cost_usd_total.toFixed(4)}
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  {metricasAdocao.reconciliator.llm_used_runs > 0
+                    ? `${metricasAdocao.reconciliator.llm_used_runs} runs com LLM`
+                    : 'LLM-judge não usado'}
+                </p>
+              </div>
+            </div>
+            {metricasAdocao.imports.total === 0 && (
+              <p className="text-[11px] italic text-slate-500">
+                Nenhum import na janela. Use o Modo Agente em Fechamento para popular dados.
+              </p>
+            )}
           </div>
         )}
 

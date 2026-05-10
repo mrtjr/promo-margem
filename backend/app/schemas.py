@@ -1141,3 +1141,59 @@ class BriefingResponse(BaseModel):
     sinais: BriefingSinais
     agent_run_id: int
     correlation_id: str
+
+
+# === Sprint S1.5 — Telemetria de adocao ===
+
+class MetricsReconciliator(BaseModel):
+    runs: int = 0
+    success: int = 0
+    errors: int = 0
+    latency_p50_ms: int = 0
+    latency_p95_ms: int = 0
+    llm_cost_usd_total: float = 0
+    llm_used_runs: int = 0
+
+
+class MetricsBriefing(BaseModel):
+    runs: int = 0
+    success: int = 0
+
+
+class MetricsAuditQA(BaseModel):
+    runs: int = 0
+    total_findings: int = 0
+    blocker_findings: int = 0
+
+
+class MetricsImports(BaseModel):
+    total: int = 0
+    via_reconciliator: int = 0
+    via_wizard_classico: int = 0
+    taxa_reconciliator_pct: float = 0.0
+
+
+class MetricsAdocaoResponse(BaseModel):
+    janela_dias: int
+    desde: str
+    reconciliator: MetricsReconciliator
+    briefing: MetricsBriefing
+    auditqa: MetricsAuditQA
+    imports: MetricsImports
+
+
+class MetricsAgenteResumo(BaseModel):
+    agent_name: str
+    runs: int
+    success: int
+    taxa_success_pct: float
+    avg_latency_ms: int
+    cost_usd_total: float
+
+
+class MetricsSerieDiaria(BaseModel):
+    data: str
+    reconciliator: int = 0
+    briefing: int = 0
+    auditqa: int = 0
+    total: int = 0
