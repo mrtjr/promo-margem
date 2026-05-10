@@ -329,6 +329,38 @@ class ReconciliatorAgent:
                 cost_estimate=llm_cost_acumulado if llm_used else None,
             )
 
+            # Sprint S1.4: AuditQA preliminar — roda DEPOIS do Reconciliator,
+            # ANTES da resposta ao caller. Falha no audit nao mata a proposta;
+            # caller vera findings e decide.
+            from .auditqa import AuditQAAgent
+            audit_findings: list[dict] = []
+            audit_summary: Optional[dict] = None
+            audit_run_id: Optional[int] = None
+            audit_bloqueia: bool = False
+            try:
+                audit_agent = AuditQAAgent()
+                audit_result = audit_agent.auditar(
+                    db,
+                    proposed_resolutions=proposed,
+                    preview_linhas=preview.get("linhas"),
+                    correlation_id=runner.correlation_id,
+                )
+                audit_findings = audit_result["findings"]
+                audit_summary = audit_result["resumo"]
+                audit_run_id = audit_result["agent_run_id"]
+                audit_bloqueia = audit_result["bloqueia_commit"]
+            except Exception as e:
+                # Audit falhou — propaga findings vazios mas mantem proposta viva.
+                # A mensagem fica como warning meta no event log.
+                publish_event(
+                    db,
+                    actor="system",
+                    entity="audit_qa",
+                    action="failed",
+                    correlation_id=runner.correlation_id,
+                    payload={"error": str(e)},
+                )
+
             return {
                 "agent_run_id": runner.run_id,
                 "correlation_id": runner.correlation_id,
@@ -339,6 +371,12 @@ class ReconciliatorAgent:
                 "taxa_auto": output["taxa_auto"],
                 "tempo_economizado_estimado_seg": tempo_economizado_seg,
                 "thresholds": output["thresholds"],
+                "audit_qa": {
+                    "agent_run_id": audit_run_id,
+                    "findings": audit_findings,
+                    "resumo": audit_summary,
+                    "bloqueia_commit": audit_bloqueia,
+                },
             }
 
         except Exception as e:

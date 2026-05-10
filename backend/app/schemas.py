@@ -1063,6 +1063,31 @@ class ReconciliatorStats(BaseModel):
     linhas_sem_match: int = 0
 
 
+class AuditQAFinding(BaseModel):
+    idx: Any  # idx pode ser int, lista ou outros dependendo do contexto
+    severidade: str  # blocker | high | medium | low | info
+    codigo: str
+    mensagem: str
+    ref: Optional[str] = None
+
+
+class AuditQAResumo(BaseModel):
+    n_blocker: int = 0
+    n_high: int = 0
+    n_medium: int = 0
+    n_low: int = 0
+    n_info: int = 0
+    total: int = 0
+
+
+class AuditQABlock(BaseModel):
+    """Embed dentro da resposta do Reconciliator (S1.4)."""
+    agent_run_id: Optional[int] = None
+    findings: List[AuditQAFinding] = []
+    resumo: Optional[AuditQAResumo] = None
+    bloqueia_commit: bool = False
+
+
 class ReconciliatorProposalResponse(BaseModel):
     """Resposta de POST /agentes/reconciliator/preview."""
     agent_run_id: int
@@ -1074,6 +1099,7 @@ class ReconciliatorProposalResponse(BaseModel):
     taxa_auto: float
     tempo_economizado_estimado_seg: int
     thresholds: dict
+    audit_qa: Optional[AuditQABlock] = None  # Sprint S1.4
 
 
 # === Sprint S1.2 — BriefingAgent ===

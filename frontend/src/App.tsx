@@ -4000,6 +4000,29 @@ type PropostaAgenteLinha = {
   alternativas?: any[]
 }
 
+// Sprint S1.4 — findings do AuditQA
+type AuditFinding = {
+  idx: number | string
+  severidade: 'blocker' | 'high' | 'medium' | 'low' | 'info'
+  codigo: string
+  mensagem: string
+  ref?: string
+}
+
+type AuditBlock = {
+  agent_run_id?: number | null
+  findings: AuditFinding[]
+  resumo?: {
+    n_blocker?: number
+    n_high?: number
+    n_medium?: number
+    n_low?: number
+    n_info?: number
+    total?: number
+  } | null
+  bloqueia_commit: boolean
+}
+
 type PropostaAgente = {
   agentRunId: number
   correlationId: string
@@ -4016,6 +4039,8 @@ type PropostaAgente = {
   thresholds: { auto: number; ambiguous: number }
   // Mapa idx -> proposta (acessado pelo card)
   byIdx: Record<number, PropostaAgenteLinha>
+  // Sprint S1.4
+  auditQa?: AuditBlock | null
 }
 
 function lerPrefReconciliator(): boolean {
@@ -4280,6 +4305,7 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
           ambiguous: RECONCILIATOR_THRESHOLD_AMBIG,
         },
         byIdx,
+        auditQa: data.audit_qa || null,
       }
       setPropostaAgente(proposta)
       setPreview(preview)
@@ -5430,6 +5456,72 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Sprint S1.4: AuditQA findings — banner agrupado por severidade */}
+      {propostaAgente?.auditQa && (propostaAgente.auditQa.resumo?.total ?? 0) > 0 && (
+        <div className={`rounded-xl border p-3 ${
+          propostaAgente.auditQa.bloqueia_commit
+            ? 'border-rose-300 bg-rose-50'
+            : 'border-amber-300 bg-amber-50'
+        }`}>
+          <p className={`text-xs font-bold mb-2 ${
+            propostaAgente.auditQa.bloqueia_commit ? 'text-rose-900' : 'text-amber-900'
+          }`}>
+            {propostaAgente.auditQa.bloqueia_commit ? '⛔' : '⚠️'} AuditQA · run #{propostaAgente.auditQa.agent_run_id} · {propostaAgente.auditQa.resumo?.total} verificação(ões)
+            {(propostaAgente.auditQa.resumo?.n_blocker ?? 0) > 0 && (
+              <span className="ml-2 px-1.5 py-0.5 bg-rose-600 text-white rounded text-[10px]">
+                {propostaAgente.auditQa.resumo?.n_blocker} BLOCKER
+              </span>
+            )}
+            {(propostaAgente.auditQa.resumo?.n_high ?? 0) > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 bg-amber-600 text-white rounded text-[10px]">
+                {propostaAgente.auditQa.resumo?.n_high} HIGH
+              </span>
+            )}
+            {(propostaAgente.auditQa.resumo?.n_medium ?? 0) > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 bg-yellow-500 text-white rounded text-[10px]">
+                {propostaAgente.auditQa.resumo?.n_medium} MED
+              </span>
+            )}
+            {(propostaAgente.auditQa.resumo?.n_low ?? 0) > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 bg-slate-500 text-white rounded text-[10px]">
+                {propostaAgente.auditQa.resumo?.n_low} LOW
+              </span>
+            )}
+          </p>
+          {propostaAgente.auditQa.bloqueia_commit && (
+            <p className="text-[11px] text-rose-800 mb-2 italic">
+              Há findings <strong>bloqueantes</strong>. Resolva antes de avançar para o commit.
+            </p>
+          )}
+          <details className="text-[11px]">
+            <summary className="cursor-pointer font-semibold hover:underline">
+              Ver {propostaAgente.auditQa.findings.length} finding(s)
+            </summary>
+            <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+              {propostaAgente.auditQa.findings.map((f, i) => {
+                const sevColor =
+                  f.severidade === 'blocker' ? 'bg-rose-200 text-rose-900' :
+                  f.severidade === 'high'    ? 'bg-amber-200 text-amber-900' :
+                  f.severidade === 'medium'  ? 'bg-yellow-100 text-yellow-900' :
+                  f.severidade === 'low'     ? 'bg-slate-200 text-slate-700' :
+                                               'bg-blue-100 text-blue-700'
+                return (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className={`shrink-0 px-1.5 py-0.5 rounded font-mono text-[9px] ${sevColor}`}>
+                      {f.severidade}
+                    </span>
+                    <span className="flex-1 font-mono text-[10px]">
+                      <span className="text-slate-500">idx={String(f.idx)}·{f.codigo}</span>{' — '}
+                      <span className="text-slate-800">{f.mensagem}</span>
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          </details>
         </div>
       )}
 
