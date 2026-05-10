@@ -3963,16 +3963,24 @@ const STORAGE_TTL_MS = 7 * 24 * 3600 * 1000 // 7 dias
 //
 // O Reconciliator (backend Sprint S0) ja existe e funciona. Esta camada de
 // UI consome a proposta do agente de forma 100% reversivel:
-//   - flag default ON, mas usuario pode desligar via toggle "Modo classico"
+//   - flag default OFF (modo classico) por seguranca operacional
+//   - usuario opta pelo Modo Agente via toggle no header (persistido)
 //   - erro/timeout cai automaticamente pro fluxo wizard, sem prender o usuario
 //   - nenhuma mudanca no backend; consumimos endpoint existente
 //
+// Por que default OFF e nao ON:
+//   Smoke S1.1 com catalogo real (18 produtos) gerou 0 auto-resolvidos
+//   em 54 grupos faltantes — confianca media 63% ficou abaixo do threshold
+//   AUTO (85%). Nao comprovou "mais seguro e mais claro que o classico"
+//   no cenario testado. Default OFF respeita rollout conservador; modo
+//   agentic continua disponivel com 1 click. Quando S1.3 (LLM-judge)
+//   melhorar a taxa de auto-resolucao, reavaliar para flip default.
+//
 // Toggle persistido em localStorage para nao re-perguntar a cada modal.
-// Feature flag global (RECONCILIATOR_DEFAULT_ENABLED) permite kill-switch
-// rapido se algo der errado em producao — basta mudar pra false.
+// Kill-switch rapido se algo der errado em producao — basta mudar default.
 // ============================================================================
 
-const RECONCILIATOR_DEFAULT_ENABLED = true
+const RECONCILIATOR_DEFAULT_ENABLED = false
 const KEY_RECONCILIATOR_PREF = 'csvimport:use_reconciliator:v1'
 const KEY_METRICAS_IMPORT = 'csvimport:metricas:v1'
 
