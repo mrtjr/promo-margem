@@ -3958,6 +3958,127 @@ function grupoEstaResolvido(grupo: GrupoProdutoFaltante, resolucoes: Record<numb
 const STORAGE_PREFIX = 'csvimport:'
 const STORAGE_TTL_MS = 7 * 24 * 3600 * 1000 // 7 dias
 
+// ============================================================================
+// Sprint S1.1 — Feature flag + UI do Reconciliator V0
+//
+// O Reconciliator (backend Sprint S0) ja existe e funciona. Esta camada de
+// UI consome a proposta do agente de forma 100% reversivel:
+//   - flag default ON, mas usuario pode desligar via toggle "Modo classico"
+//   - erro/timeout cai automaticamente pro fluxo wizard, sem prender o usuario
+//   - nenhuma mudanca no backend; consumimos endpoint existente
+//
+// Toggle persistido em localStorage para nao re-perguntar a cada modal.
+// Feature flag global (RECONCILIATOR_DEFAULT_ENABLED) permite kill-switch
+// rapido se algo der errado em producao — basta mudar pra false.
+// ============================================================================
+
+const RECONCILIATOR_DEFAULT_ENABLED = true
+const KEY_RECONCILIATOR_PREF = 'csvimport:use_reconciliator:v1'
+const KEY_METRICAS_IMPORT = 'csvimport:metricas:v1'
+
+// Thresholds espelham os do backend (embedding_index.py). Nao sao a fonte
+// da verdade — backend que decide. Aqui sao so para colorir UI quando
+// o response nao vier com `thresholds` (defensive).
+const RECONCILIATOR_THRESHOLD_AUTO = 0.85
+const RECONCILIATOR_THRESHOLD_AMBIG = 0.55
+
+type PropostaAgenteLinha = {
+  idx: number
+  acao: 'associar' | 'criar' | 'ignorar' | string
+  produto_id?: number | null
+  confidence: number
+  rationale: string
+  needs_review: boolean
+  alternativas?: any[]
+}
+
+type PropostaAgente = {
+  agentRunId: number
+  correlationId: string
+  stats: {
+    linhas_ja_ok?: number
+    linhas_fora_periodo?: number
+    linhas_auto?: number
+    linhas_ambiguas?: number
+    linhas_sem_match?: number
+  }
+  confianca_media: number
+  taxa_auto: number
+  tempo_economizado_estimado_seg: number
+  thresholds: { auto: number; ambiguous: number }
+  // Mapa idx -> proposta (acessado pelo card)
+  byIdx: Record<number, PropostaAgenteLinha>
+}
+
+function lerPrefReconciliator(): boolean {
+  try {
+    const v = typeof localStorage !== 'undefined'
+      ? localStorage.getItem(KEY_RECONCILIATOR_PREF)
+      : null
+    if (v === '0' || v === 'false') return false
+    if (v === '1' || v === 'true') return true
+    return RECONCILIATOR_DEFAULT_ENABLED
+  } catch {
+    return RECONCILIATOR_DEFAULT_ENABLED
+  }
+}
+
+function salvarPrefReconciliator(enabled: boolean): void {
+  try {
+    localStorage.setItem(KEY_RECONCILIATOR_PREF, enabled ? '1' : '0')
+  } catch {}
+}
+
+// Faixa de cor para confianca. Espelha thresholds do backend.
+function corDeConfianca(score: number, thresholds?: { auto: number; ambiguous: number }) {
+  const auto = thresholds?.auto ?? RECONCILIATOR_THRESHOLD_AUTO
+  const ambig = thresholds?.ambiguous ?? RECONCILIATOR_THRESHOLD_AMBIG
+  if (score >= auto) return { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-300', label: 'alta' }
+  if (score >= ambig) return { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-300', label: 'media' }
+  return { bg: 'bg-rose-100', text: 'text-rose-700', border: 'border-rose-300', label: 'baixa' }
+}
+
+// Metricas locais de adocao — distinguem reconciliator vs wizard para
+// medir uso real. Estrutura simples; expandir conforme necessario em S1.5.
+type MetricasImportacao = {
+  via_reconciliator: { count: number; ultima_em: number | null }
+  via_wizard_classico: { count: number; ultima_em: number | null }
+  // Quantas vezes o usuario alternou pro modo classico (sinal de friccao)
+  fallbacks_para_classico: number
+  // Quantas vezes a chamada do agente falhou + caimos automaticamente
+  fallbacks_automaticos_por_erro: number
+  // Sessoes onde "Aprovar tudo" foi usado
+  bulk_approves_aceitos: number
+}
+
+const METRICAS_IMPORT_INICIAIS: MetricasImportacao = {
+  via_reconciliator: { count: 0, ultima_em: null },
+  via_wizard_classico: { count: 0, ultima_em: null },
+  fallbacks_para_classico: 0,
+  fallbacks_automaticos_por_erro: 0,
+  bulk_approves_aceitos: 0,
+}
+
+function lerMetricasImport(): MetricasImportacao {
+  try {
+    const v = typeof localStorage !== 'undefined'
+      ? localStorage.getItem(KEY_METRICAS_IMPORT)
+      : null
+    if (!v) return METRICAS_IMPORT_INICIAIS
+    return { ...METRICAS_IMPORT_INICIAIS, ...JSON.parse(v) }
+  } catch {
+    return METRICAS_IMPORT_INICIAIS
+  }
+}
+
+function atualizarMetricasImport(patch: (m: MetricasImportacao) => MetricasImportacao): void {
+  try {
+    const atual = lerMetricasImport()
+    const novo = patch(atual)
+    localStorage.setItem(KEY_METRICAS_IMPORT, JSON.stringify(novo))
+  } catch {}
+}
+
 function chaveStorageDoArquivo(f: File | null): string | null {
   if (!f) return null
   return `${STORAGE_PREFIX}${f.name}:${f.size}:${f.lastModified}`
@@ -3978,6 +4099,27 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   // Sinaliza que o progresso foi restaurado de localStorage neste mount —
   // banner some apos primeira interacao do usuario.
   const [progressoRestaurado, setProgressoRestaurado] = useState<{ count: number } | null>(null)
+
+  // ----- Sprint S1.1: integracao com Reconciliator -----
+  // Toggle persistido. Default = ON (configuravel via RECONCILIATOR_DEFAULT_ENABLED).
+  // Trocar pra "Modo classico" e voltar nao perde nada — fallback nao destrutivo.
+  const [usarReconciliator, setUsarReconciliator] = useState<boolean>(() => lerPrefReconciliator())
+  const [propostaAgente, setPropostaAgente] = useState<PropostaAgente | null>(null)
+  // Erro especifico do agente (separado de `erro` geral) para mostrar UI
+  // de retry sem deslocar o erro global.
+  const [erroAgente, setErroAgente] = useState<string | null>(null)
+
+  const trocarUsarReconciliator = (v: boolean) => {
+    setUsarReconciliator(v)
+    salvarPrefReconciliator(v)
+    // Se desligou, registra fallback manual nas metricas (sinal de friccao)
+    if (!v) {
+      atualizarMetricasImport(m => ({
+        ...m,
+        fallbacks_para_classico: m.fallbacks_para_classico + 1,
+      }))
+    }
+  }
 
   const containerRef = useRef<HTMLDivElement>(null)
   const titleId = 'importcsv-title'
@@ -4080,6 +4222,162 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
   // FASE 2B: Auditoria → (produtos_faltantes |) Preview
   // Baixa o preview e roteia para o passo de produtos faltantes se houver
   // pendencias agrupaveis. Sem pendencias, vai direto para o preview classico.
+  // Sprint S1.1: caminho via Reconciliator. Tenta o agente; em qualquer
+  // erro/timeout/payload invalido, cai automaticamente pro fluxo classico
+  // (irParaPreview). Fallback automatico eh registrado em metricas locais
+  // pra entender taxa real de uso.
+  //
+  // Estrategia de timeout: axios default eh sem timeout; aqui forcamos
+  // 30s pra evitar usuario preso. Se passar disso, fallback automatico.
+  const irParaPreviewAgentic = async () => {
+    if (!arquivo) { setErro('Selecione um arquivo CSV.'); return }
+    if (!dataAlvo) { setErro('Selecione a data do fechamento.'); return }
+    setErro(null)
+    setErroAgente(null)
+    setSubmitting(true)
+    try {
+      const form = new FormData()
+      form.append('arquivo', arquivo)
+      form.append('data', dataAlvo)
+      const res = await axios.post(
+        `${API_URL}/agentes/reconciliator/preview`,
+        form,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 30000,
+        },
+      )
+      const data = res.data || {}
+      const preview = data.preview
+      const proposed: any[] = data.proposed_resolutions || []
+      if (!preview || !preview.linhas) {
+        throw new Error('payload_invalido_do_agente')
+      }
+
+      // Indexa proposta por idx pra consumo no card
+      const byIdx: Record<number, PropostaAgenteLinha> = {}
+      for (const p of proposed) {
+        if (typeof p?.idx === 'number') byIdx[p.idx] = p as PropostaAgenteLinha
+      }
+
+      const proposta: PropostaAgente = {
+        agentRunId: data.agent_run_id,
+        correlationId: data.correlation_id,
+        stats: data.stats || {},
+        confianca_media: data.confianca_media ?? 0,
+        taxa_auto: data.taxa_auto ?? 0,
+        tempo_economizado_estimado_seg: data.tempo_economizado_estimado_seg ?? 0,
+        thresholds: data.thresholds || {
+          auto: RECONCILIATOR_THRESHOLD_AUTO,
+          ambiguous: RECONCILIATOR_THRESHOLD_AMBIG,
+        },
+        byIdx,
+      }
+      setPropostaAgente(proposta)
+      setPreview(preview)
+
+      // Resolucoes iniciais: pre-aplica acoes do agente quando confianca
+      // for ALTA (>= auto threshold) e nao precisar review. Caso contrario
+      // mantem default 'ignorar' — humano decide. Esta logica eh CONSERVADORA
+      // por design: agente sugere, humano confirma.
+      let iniciais: Record<number, any> = {}
+      for (const l of preview.linhas) {
+        if (l.status === 'erro' || l.status !== 'ok') {
+          iniciais[l.idx] = { idx: l.idx, acao: 'ignorar' }
+        }
+      }
+      let preAplicadas = 0
+      for (const p of proposed) {
+        if (typeof p?.idx !== 'number') continue
+        // Pre-aplica APENAS quando: (a) acao=='associar' com produto_id valido
+        // (b) confidence >= threshold auto (c) NAO precisa review
+        // Para 'criar' e 'ignorar', humano sempre decide explicitamente.
+        if (
+          p.acao === 'associar'
+          && p.produto_id
+          && p.confidence >= proposta.thresholds.auto
+          && !p.needs_review
+        ) {
+          iniciais[p.idx] = {
+            idx: p.idx,
+            acao: 'associar',
+            produto_id: p.produto_id,
+            _via_agente: true, // marca interna, nao enviada ao backend
+          }
+          preAplicadas++
+        }
+      }
+
+      // Persistencia local + restauracao (mesmo padrao do classic)
+      try {
+        const key = chaveStorageDoArquivo(arquivo)
+        if (key) {
+          const saved = localStorage.getItem(key)
+          if (saved) {
+            const parsed = JSON.parse(saved)
+            if (parsed?.resolucoes && parsed?.ts &&
+                (Date.now() - parsed.ts) < STORAGE_TTL_MS) {
+              // Mescla decisoes manuais por cima das sugestoes do agente.
+              // Sempre que o usuario tiver decidido manualmente, prevalece.
+              iniciais = { ...iniciais, ...parsed.resolucoes }
+              if (parsed.dataAlvo && parsed.dataAlvo !== dataAlvo) {
+                setDataAlvo(parsed.dataAlvo)
+              }
+            }
+          }
+        }
+      } catch {}
+
+      // Persiste agent_run_id no storage do arquivo pra correlacao
+      try {
+        const key = chaveStorageDoArquivo(arquivo)
+        if (key && proposta.agentRunId) {
+          const existing = localStorage.getItem(key)
+          const parsed = existing ? JSON.parse(existing) : {}
+          parsed.agent_run_id = proposta.agentRunId
+          parsed.correlation_id = proposta.correlationId
+          parsed.via_reconciliator = true
+          parsed.ts = Date.now()
+          localStorage.setItem(key, JSON.stringify(parsed))
+        }
+      } catch {}
+
+      // Metricas locais
+      atualizarMetricasImport(m => ({
+        ...m,
+        via_reconciliator: { count: m.via_reconciliator.count + 1, ultima_em: Date.now() },
+      }))
+
+      setResolucoes(iniciais)
+      if (preAplicadas > 0) {
+        setProgressoRestaurado({ count: preAplicadas })
+      }
+      const grupos = agruparProdutosFaltantes(preview.linhas)
+      setEstado(grupos.length > 0 ? 'produtos_faltantes' : 'preview')
+    } catch (e: any) {
+      // Fallback automatico para fluxo classico — nao deixa o usuario preso.
+      // Registra erro para retry manual + metrica.
+      const detail = e?.response?.data?.detail
+      const msg = (typeof detail === 'string' ? detail : null)
+        || (e?.code === 'ECONNABORTED' ? 'tempo limite' : null)
+        || e?.message
+        || 'erro desconhecido'
+      console.warn('[reconciliator] fallback automatico para wizard:', msg)
+      setErroAgente(msg)
+      atualizarMetricasImport(m => ({
+        ...m,
+        fallbacks_automaticos_por_erro: m.fallbacks_automaticos_por_erro + 1,
+      }))
+      // Cai automatico pro classic. Aqui invocamos o irParaPreview (nao
+      // recursivo — usa endpoint diferente). setSubmitting eh resetado dentro.
+      setSubmitting(false)
+      await irParaPreview()
+      return
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const irParaPreview = async () => {
     if (!arquivo) { setErro('Selecione um arquivo CSV.'); return }
     if (!dataAlvo) { setErro('Selecione a data do fechamento.'); return }
@@ -4093,6 +4391,13 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setPreview(res.data)
+      // Wizard classico — sem proposta de agente
+      setPropostaAgente(null)
+      // Metricas locais
+      atualizarMetricasImport(m => ({
+        ...m,
+        via_wizard_classico: { count: m.via_wizard_classico.count + 1, ultima_em: Date.now() },
+      }))
       let iniciais: Record<number, any> = {}
       for (const l of res.data.linhas) {
         if (l.status === 'erro') {
@@ -4326,22 +4631,82 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header — segue padrao Fraunces editorial usado em todos os modulos */}
-        <div className="p-6 border-b border-[color:var(--border)] flex items-center justify-between">
-          <div>
+        <div className="p-6 border-b border-[color:var(--border)] flex items-center justify-between gap-4">
+          <div className="flex-1 min-w-0">
             <p className="section-label mb-1">{passoFase}</p>
             <h3 id={titleId} className="headline text-2xl tracking-editorial">{tituloFase}</h3>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1">{subtituloFase}</p>
           </div>
+          {/* Sprint S1.1: toggle Reconciliator vs Modo classico — sempre visivel,
+              exceto na tela de sucesso. Persistido em localStorage. */}
+          {estado !== 'sucesso_multi' && (
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">Modo</span>
+              <div className="flex items-center bg-slate-100 rounded-lg p-0.5" role="group" aria-label="Modo de importação">
+                <button
+                  onClick={() => trocarUsarReconciliator(true)}
+                  disabled={submitting}
+                  className={`text-[10px] font-bold px-2.5 py-1 rounded transition-colors ${
+                    usarReconciliator
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  } disabled:opacity-50`}
+                  title="Reconciliator: agente prepara proposta antes da revisão"
+                >
+                  ✨ Agente
+                </button>
+                <button
+                  onClick={() => trocarUsarReconciliator(false)}
+                  disabled={submitting}
+                  className={`text-[10px] font-bold px-2.5 py-1 rounded transition-colors ${
+                    !usarReconciliator
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  } disabled:opacity-50`}
+                  title="Modo clássico: revisão linha por linha sem agente"
+                >
+                  Clássico
+                </button>
+              </div>
+            </div>
+          )}
           <button
             onClick={onClose}
             disabled={submitting}
-            className="text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] p-1 disabled:opacity-50"
+            className="text-[color:var(--claude-stone)] hover:text-[color:var(--claude-ink)] p-1 disabled:opacity-50 shrink-0"
             title="Fechar sem importar"
             aria-label="Fechar"
           >
             <X size={22} />
           </button>
         </div>
+
+        {/* Sprint S1.1: banner de erro do agente com retry. NAO bloqueia
+            o usuario — proximo Avancar tenta novamente OU o usuario pode
+            usar o modo classico via toggle. */}
+        {erroAgente && estado === 'auditoria' && (
+          <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3">
+            <p className="text-xs text-amber-800">
+              <strong>O agente não pôde processar o arquivo</strong> ({erroAgente}).
+              Caímos automaticamente para o modo clássico ou você pode tentar de novo.
+            </p>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => { setErroAgente(null); irParaPreviewAgentic() }}
+                disabled={submitting}
+                className="text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                Tentar agente de novo
+              </button>
+              <button
+                onClick={() => setErroAgente(null)}
+                className="text-[10px] uppercase tracking-wider text-amber-700 hover:text-amber-900"
+              >
+                Dispensar
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6">
@@ -4362,7 +4727,8 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
               onIrParaPreviewDoDia={(d: string) => {
                 setDataAlvo(d)
                 setBloqueiosMulti(null)
-                irParaPreview()
+                if (usarReconciliator) irParaPreviewAgentic()
+                else irParaPreview()
               }}
             />
           )}
@@ -4375,6 +4741,51 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
               grupos={grupos}
               progressoRestaurado={progressoRestaurado}
               onDispensarBanner={() => setProgressoRestaurado(null)}
+              propostaAgente={propostaAgente}
+              onAprovarTudoAuto={() => {
+                // Aprovar em massa apenas o que o agente marcou como auto-resolvido
+                // E que ainda nao foi tocado pelo usuario. Nao mexe em needs_review.
+                if (!propostaAgente) return
+                let aplicados = 0
+                const novos: Record<number, any> = { ...resolucoes }
+                for (const idx in propostaAgente.byIdx) {
+                  const p = propostaAgente.byIdx[idx]
+                  if (
+                    p.acao === 'associar'
+                    && p.produto_id
+                    && p.confidence >= propostaAgente.thresholds.auto
+                    && !p.needs_review
+                  ) {
+                    novos[Number(idx)] = {
+                      idx: Number(idx),
+                      acao: 'associar',
+                      produto_id: p.produto_id,
+                      _via_agente: true,
+                    }
+                    aplicados++
+                  }
+                }
+                if (aplicados > 0) {
+                  // Replica nos idxs do mesmo grupo (mesma logica do aplicarResolucaoNoGrupo)
+                  // — agruparProdutosFaltantes ja consolida; precisamos propagar resolucao
+                  // por grupo, nao por linha. Reusamos a logica via aplicarResolucaoNoGrupo.
+                  const gruposFaltantes = agruparProdutosFaltantes(preview.linhas)
+                  for (const g of gruposFaltantes) {
+                    const primeiroIdx = g.idxs[0]
+                    if (novos[primeiroIdx]?._via_agente) {
+                      const r = novos[primeiroIdx]
+                      for (const idx of g.idxs) {
+                        novos[idx] = { ...r, idx }
+                      }
+                    }
+                  }
+                  setResolucoes(novos)
+                  atualizarMetricasImport(m => ({
+                    ...m,
+                    bulk_approves_aceitos: m.bulk_approves_aceitos + 1,
+                  }))
+                }
+              }}
             />
           )}
           {estado === 'preview' && preview && (
@@ -4466,12 +4877,23 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
             {estado === 'auditoria' && auditoria && (
               <>
                 <button
-                  onClick={irParaPreview}
+                  onClick={() => {
+                    if (usarReconciliator) irParaPreviewAgentic()
+                    else irParaPreview()
+                  }}
                   disabled={submitting}
                   className="bg-white text-blue-600 border border-blue-200 px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-50 disabled:opacity-50 transition-all"
-                  title={`Vai pra revisão linha por linha apenas das vendas do dia ${dataAlvo}.`}
+                  title={
+                    usarReconciliator
+                      ? `Reconciliator: agente prepara proposta da revisão de ${dataAlvo}, depois você aprova.`
+                      : `Modo clássico — revisão linha por linha das vendas de ${dataAlvo}.`
+                  }
                 >
-                  {submitting ? 'Carregando…' : `Revisar apenas ${dataAlvo}`}
+                  {submitting
+                    ? 'Carregando…'
+                    : usarReconciliator
+                      ? `✨ Revisar ${dataAlvo} com agente`
+                      : `Revisar apenas ${dataAlvo}`}
                 </button>
                 {auditoria.total_datas > 1 && (
                   <button
@@ -4899,7 +5321,7 @@ function SucessoMultiFase({ resultado }: any) {
 // diferenca eh que, ao decidir, aplicamos a TODAS as ocorrencias do produto
 // no lote (mesmo grupo) — reduzindo retrabalho sem mudar persistencia.
 // ============================================================================
-function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosExistentes, grupos, progressoRestaurado, onDispensarBanner }: any) {
+function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosExistentes, grupos, progressoRestaurado, onDispensarBanner, propostaAgente, onAprovarTudoAuto }: any) {
   const [apenasPendentes, setApenasPendentes] = useState(false)
   const gruposFaltantes = agruparProdutosFaltantes(preview.linhas)
   const totalGrupos = gruposFaltantes.length
@@ -4909,6 +5331,27 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
   const ocorrenciasResolvidas = gruposFaltantes
     .filter((g: GrupoProdutoFaltante) => grupoEstaResolvido(g, resolucoes))
     .reduce((s: number, g: GrupoProdutoFaltante) => s + g.ocorrencias, 0)
+
+  // Sprint S1.1: contagem de auto-resolvidos pendentes (mostra botao bulk)
+  const autoResolvidosPendentes = (() => {
+    if (!propostaAgente) return 0
+    let n = 0
+    for (const g of gruposFaltantes) {
+      const primeiroIdx = g.idxs[0]
+      if (grupoEstaResolvido(g, resolucoes)) continue
+      const p = propostaAgente.byIdx[primeiroIdx]
+      if (
+        p
+        && p.acao === 'associar'
+        && p.produto_id
+        && p.confidence >= propostaAgente.thresholds.auto
+        && !p.needs_review
+      ) {
+        n++
+      }
+    }
+    return n
+  })()
 
   // Filtro de exibicao — quando todos resolvidos, nao oferece o toggle
   // (nada pra esconder); quando ha pendentes, default eh mostrar todos.
@@ -4945,6 +5388,42 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
           Quantidade e preço médio são apenas referência do arquivo. <strong>O custo deve ser informado manualmente</strong> em toda importação CSV.
         </p>
       </div>
+
+      {/* Sprint S1.1: Banner do Reconciliator — so aparece se ha proposta */}
+      {propostaAgente && (
+        <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="flex-1 min-w-[260px]">
+              <p className="text-sm font-semibold text-blue-900 flex items-center gap-1.5">
+                <span>✨</span>
+                <span>Proposta do Reconciliator</span>
+                <span className="text-[10px] font-mono text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">
+                  run #{propostaAgente.agentRunId}
+                </span>
+              </p>
+              <p className="text-xs text-blue-800 mt-1.5 leading-relaxed">
+                <strong>{propostaAgente.stats.linhas_auto || 0}</strong> auto-resolvidos ·{' '}
+                <strong>{propostaAgente.stats.linhas_ambiguas || 0}</strong> ambíguos (precisam revisão) ·{' '}
+                <strong>{propostaAgente.stats.linhas_sem_match || 0}</strong> sem match (sugestão: cadastrar)
+              </p>
+              <p className="text-[11px] text-blue-700/80 mt-1">
+                Confiança média <strong>{Math.round(propostaAgente.confianca_media * 100)}%</strong>
+                {' · '}
+                ~<strong>{propostaAgente.tempo_economizado_estimado_seg}s</strong> economizados em decisões manuais
+              </p>
+            </div>
+            {autoResolvidosPendentes > 0 && (
+              <button
+                onClick={onAprovarTudoAuto}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-blue-700 transition-all shrink-0"
+                title="Aceita rapidamente apenas os produtos com sugestão de alta confiança. Os ambíguos continuam exigindo decisão sua."
+              >
+                Aprovar tudo ({autoResolvidosPendentes} auto-resolvidos)
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Resumo do progresso */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -4991,6 +5470,8 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
             produtos={produtosExistentes}
             grupos={grupos}
             resolvido={grupoEstaResolvido(g, resolucoes)}
+            propostaAgente={propostaAgente?.byIdx?.[g.idxs[0]]}
+            thresholdsAgente={propostaAgente?.thresholds}
           />
         ))}
       </div>
@@ -4998,7 +5479,7 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
   )
 }
 
-function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, resolvido }: any) {
+function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, resolvido, propostaAgente, thresholdsAgente }: any) {
   const [expandido, setExpandido] = useState(false)
   const acaoAtual = resolucao?.acao || (grupo.tipo === 'sem_custo' ? 'corrigir_custo' : null)
 
@@ -5017,22 +5498,37 @@ function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, reso
 
   const tipoLabel = grupo.tipo === 'sem_custo' ? 'Custo pendente' : 'Sem cadastro'
 
+  // Sprint S1.1: cor de borda extra quando ha proposta do agente. Sinal
+  // visual sem alterar o layout — usuario distingue cards "tocados pelo agente".
+  const cor = propostaAgente ? corDeConfianca(propostaAgente.confidence, thresholdsAgente) : null
+  const borderClass = resolvido
+    ? 'border-[color:var(--claude-sage)]/40 bg-[color:var(--claude-sage)]/5'
+    : (cor ? cor.border : 'border-[color:var(--border)]')
+
   return (
-    <div className={`bg-white rounded-2xl border-2 overflow-hidden transition-all ${
-      resolvido
-        ? 'border-[color:var(--claude-sage)]/40 bg-[color:var(--claude-sage)]/5'
-        : 'border-[color:var(--border)]'
-    }`}>
+    <div className={`bg-white rounded-2xl border-2 overflow-hidden transition-all ${borderClass}`}>
       {/* Header do grupo */}
       <div className="p-4 flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className={`pill ${resolvido ? 'pill-ok' : 'pill-warn'}`}>
               {resolvido ? '✓ resolvido' : tipoLabel}
             </span>
             {grupo.codigo && (
               <span className="text-[10px] font-mono text-[color:var(--claude-stone)]">
                 cód {grupo.codigo}
+              </span>
+            )}
+            {/* Badge da sugestao do agente */}
+            {propostaAgente && cor && (
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${cor.bg} ${cor.text} border ${cor.border}`}
+                title={propostaAgente.rationale}
+              >
+                ✨ Agente: {propostaAgente.acao}
+                {' · '}
+                <span className="font-mono">{Math.round(propostaAgente.confidence * 100)}%</span>
+                {propostaAgente.needs_review && ' · revisar'}
               </span>
             )}
           </div>
@@ -5048,6 +5544,11 @@ function GrupoFaltanteCard({ grupo, resolucao, onAplicar, produtos, grupos, reso
             {' · '}
             preço médio {formatCurrency(grupo.preco_medio_ponderado)}
           </p>
+          {propostaAgente?.rationale && (
+            <p className="text-[11px] text-[color:var(--claude-stone)] mt-1 italic line-clamp-2">
+              ✨ {propostaAgente.rationale}
+            </p>
+          )}
         </div>
         <button
           onClick={() => setExpandido(v => !v)}
