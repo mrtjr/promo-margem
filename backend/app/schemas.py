@@ -1074,3 +1074,44 @@ class ReconciliatorProposalResponse(BaseModel):
     taxa_auto: float
     tempo_economizado_estimado_seg: int
     thresholds: dict
+
+
+# === Sprint S1.2 — BriefingAgent ===
+
+class BriefingAcao(BaseModel):
+    titulo: str
+    severidade: str  # 'alta' | 'media' | 'baixa' | 'info'
+    rationale: str
+    ref: Optional[str] = None
+
+
+class BriefingResumoEvento(BaseModel):
+    entity: str
+    action: str
+    count: int
+
+
+class BriefingResumoAgentes(BaseModel):
+    execucoes: int
+    taxa_success: float
+    latency_p95_ms: int
+
+
+class BriefingSinais(BaseModel):
+    margem_dia: Optional[float] = None
+    margem_semana: Optional[float] = None
+    total_skus: int = 0
+    rupturas: int = 0
+
+
+class BriefingResponse(BaseModel):
+    """GET /agentes/briefing/today — briefing estruturado deterministico."""
+    data_ref: str
+    janela_horas: int
+    narrativa: List[str]
+    acoes_priorizadas: List[BriefingAcao]
+    resumo_eventos: List[BriefingResumoEvento]
+    resumo_agentes: BriefingResumoAgentes
+    sinais: BriefingSinais
+    agent_run_id: int
+    correlation_id: str

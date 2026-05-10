@@ -6408,8 +6408,15 @@ function BriefingPage() {
   const [simLoading, setSimLoading] = useState(false)
   const [copied, setCopied] = useState(false)
 
+  // Sprint S1.2: Briefing Agentic V0 — carga paralela ao briefing classico.
+  // Renderizado como banner adicional NO TOPO do briefing, nao substitui nada.
+  // Falha silenciosa (briefing classico continua funcional).
+  const [briefingAgente, setBriefingAgente] = useState<any>(null)
+  const [briefingAgenteErro, setBriefingAgenteErro] = useState<string | null>(null)
+
   useEffect(() => {
     carregar(data)
+    carregarBriefingAgente(data)
   }, [data])
 
   const carregar = async (alvo: string) => {
@@ -6422,6 +6429,21 @@ function BriefingPage() {
       console.error(e)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const carregarBriefingAgente = async (alvo: string) => {
+    setBriefingAgenteErro(null)
+    try {
+      const res = await axios.get(
+        `${API_URL}/agentes/briefing/today?data=${alvo}&janela_horas=24`,
+        { timeout: 10000 },
+      )
+      setBriefingAgente(res.data)
+    } catch (e: any) {
+      setBriefingAgente(null)
+      setBriefingAgenteErro(e?.response?.data?.detail || e?.message || 'erro desconhecido')
+      console.warn('[briefing-agente] fallback silencioso:', e)
     }
   }
 
@@ -6495,13 +6517,77 @@ function BriefingPage() {
               className="px-3 py-2 text-sm border border-[color:var(--border)] rounded-lg bg-white mono"
             />
             <button
-              onClick={() => carregar(data)}
+              onClick={() => { carregar(data); carregarBriefingAgente(data) }}
               className="px-4 py-2 bg-[color:var(--claude-ink)] text-[color:var(--claude-cream)] text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
             >
               Atualizar
             </button>
           </div>
         </div>
+
+        {/* Sprint S1.2 — Briefing Agentic V0. Banner aditivo, falha silenciosa
+            quando endpoint indisponivel. Convive com a Narrativa abaixo. */}
+        {briefingAgente && (
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 space-y-3">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="flex-1 min-w-[280px]">
+                <p className="text-[10px] uppercase tracking-widest text-blue-700 mb-1 flex items-center gap-1.5">
+                  <Sparkles size={12} />
+                  <span>BriefingAgent V0 · run #{briefingAgente.agent_run_id}</span>
+                  <span className="font-mono text-blue-500/70">·</span>
+                  <span>janela {briefingAgente.janela_horas}h</span>
+                </p>
+                <ul className="space-y-1 text-sm text-blue-900">
+                  {(briefingAgente.narrativa || []).map((frase: string, i: number) => (
+                    <li key={i}>{frase}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            {briefingAgente.acoes_priorizadas?.length > 0 && (
+              <div className="space-y-1.5 pt-2 border-t border-blue-200/60">
+                <p className="text-[10px] uppercase tracking-widest text-blue-700 font-bold">
+                  Ações priorizadas ({briefingAgente.acoes_priorizadas.length})
+                </p>
+                <ul className="space-y-1.5">
+                  {briefingAgente.acoes_priorizadas.map((a: any, i: number) => {
+                    const sevColor = (
+                      a.severidade === 'alta' ? 'bg-rose-100 text-rose-800 border-rose-200'
+                      : a.severidade === 'media' ? 'bg-amber-100 text-amber-800 border-amber-200'
+                      : a.severidade === 'baixa' ? 'bg-slate-100 text-slate-800 border-slate-200'
+                      : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                    )
+                    return (
+                      <li key={i} className="flex items-start gap-2 text-xs">
+                        <span className={`shrink-0 px-2 py-0.5 rounded font-bold uppercase tracking-wider text-[9px] border ${sevColor}`}>
+                          {a.severidade}
+                        </span>
+                        <span className="flex-1">
+                          <strong className="text-blue-900">{a.titulo}.</strong>{' '}
+                          <span className="text-blue-800/80 italic">{a.rationale}</span>
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )}
+            <details className="text-[11px] text-blue-700/80">
+              <summary className="cursor-pointer hover:text-blue-900 font-semibold">Sinais e resumo bruto (debug)</summary>
+              <div className="mt-2 space-y-1 font-mono">
+                <div>sinais: {JSON.stringify(briefingAgente.sinais)}</div>
+                <div>resumo_eventos: {briefingAgente.resumo_eventos.length} categorias</div>
+                <div>resumo_agentes: {JSON.stringify(briefingAgente.resumo_agentes)}</div>
+                <div>correlation_id: {briefingAgente.correlation_id}</div>
+              </div>
+            </details>
+          </div>
+        )}
+        {!briefingAgente && briefingAgenteErro && (
+          <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800">
+            BriefingAgent V0 indisponível ({briefingAgenteErro}) — usando narrativa clássica abaixo.
+          </div>
+        )}
 
         {/* Narrativa card */}
         <div

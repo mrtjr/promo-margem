@@ -14,7 +14,7 @@ from .database import engine, get_db
 # Sprint S0 — Fundacoes Agentic
 from . import eventbus, embedding_index
 from . import tools as tools_pkg  # registra tools no import (side-effect)
-from .agents import ReconciliatorAgent
+from .agents import ReconciliatorAgent, BriefingAgent
 from .services import (
     margin_engine,
     sugestao_service,
@@ -1853,3 +1853,40 @@ async def reconciliator_preview(
 
     return result
 
+
+
+# ============================================================================
+# Sprint S1.2 — Briefing Diario V0
+# ============================================================================
+
+@app.get('/agentes/briefing/today', response_model=schemas.BriefingResponse)
+async def briefing_diario(
+    data: Optional[str] = None,
+    janela_horas: int = 24,
+    db: Session = Depends(get_db),
+):
+    """
+    Briefing diario gerado por BriefingAgent V0.
+    Deterministico — sem LLM. Le events + agent_runs do periodo + stats atuais
+    e produz: narrativa curta + acoes priorizadas + sinais.
+
+    Convive com /fechamento/narrativa (que usa LLM) — caminho alternativo
+    mais conservador, baseado em fatos do event log.
+    """
+    if janela_horas < 1 or janela_horas > 168:
+        raise HTTPException(status_code=400, detail='janela_horas deve estar entre 1 e 168 (7 dias)')
+
+    try:
+        data_ref = date_type.fromisoformat(data) if data else hoje_brt()
+    except ValueError:
+        raise HTTPException(status_code=400, detail='data deve estar no formato YYYY-MM-DD')
+
+    agent = BriefingAgent()
+    try:
+        result = agent.gerar(db, data_referencia=data_ref, janela_horas=janela_horas)
+        db.commit()
+    except Exception as e:
+        db.commit()
+        raise HTTPException(status_code=500, detail=f'Erro no Briefing: {e}')
+
+    return result

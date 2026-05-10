@@ -9,9 +9,11 @@ PricingStrategist, MemoryCurator, AuditQA, Orchestrator.
 """
 from .runner import AgentRunner, run_agent
 from .reconciliator import ReconciliatorAgent
+from .briefing import BriefingAgent
 
 __all__ = [
     "AgentRunner",
     "run_agent",
     "ReconciliatorAgent",
+    "BriefingAgent",
 ]
