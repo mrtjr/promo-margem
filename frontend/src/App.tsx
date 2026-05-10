@@ -4671,33 +4671,42 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
             <h3 id={titleId} className="headline text-2xl tracking-editorial">{tituloFase}</h3>
             <p className="text-xs text-[color:var(--claude-stone)] mt-1">{subtituloFase}</p>
           </div>
-          {/* Sprint S1.1: toggle Reconciliator vs Modo classico — sempre visivel,
-              exceto na tela de sucesso. Persistido em localStorage. */}
+          {/* Sprint S1.1 + S1.6 polish: toggle Modo Agente/Classico — sempre
+              visivel exceto na tela de sucesso. Persistido em localStorage.
+              Tooltip humanizado explica o comportamento de cada modo. */}
           {estado !== 'sucesso_multi' && (
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-[10px] uppercase tracking-widest text-[color:var(--claude-stone)]">Modo</span>
-              <div className="flex items-center bg-slate-100 rounded-lg p-0.5" role="group" aria-label="Modo de importação">
+              <div
+                className="flex items-center bg-slate-100 rounded-lg p-0.5"
+                role="radiogroup"
+                aria-label="Modo de revisão dos produtos faltantes"
+              >
                 <button
                   onClick={() => trocarUsarReconciliator(true)}
                   disabled={submitting}
+                  role="radio"
+                  aria-checked={usarReconciliator}
                   className={`text-[10px] font-bold px-2.5 py-1 rounded transition-colors ${
                     usarReconciliator
                       ? 'bg-blue-600 text-white shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
                   } disabled:opacity-50`}
-                  title="Reconciliator: agente prepara proposta antes da revisão"
+                  title="Modo Agente: o sistema sugere associações e cadastros — você confirma. Volta para Clássico se algo der errado."
                 >
-                  ✨ Agente
+                  <span aria-hidden="true">✨ </span>Agente
                 </button>
                 <button
                   onClick={() => trocarUsarReconciliator(false)}
                   disabled={submitting}
+                  role="radio"
+                  aria-checked={!usarReconciliator}
                   className={`text-[10px] font-bold px-2.5 py-1 rounded transition-colors ${
                     !usarReconciliator
                       ? 'bg-white text-slate-900 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
                   } disabled:opacity-50`}
-                  title="Modo clássico: revisão linha por linha sem agente"
+                  title="Modo Clássico: revisão linha por linha sem assistência. Comportamento conhecido, sem surpresas."
                 >
                   Clássico
                 </button>
@@ -4719,22 +4728,28 @@ function ImportCSVModal({ grupos, produtosExistentes, onClose, onCommitted }: an
             o usuario — proximo Avancar tenta novamente OU o usuario pode
             usar o modo classico via toggle. */}
         {erroAgente && estado === 'auditoria' && (
-          <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3">
+          <div
+            className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3"
+            role="alert"
+          >
             <p className="text-xs text-amber-800">
-              <strong>O agente não pôde processar o arquivo</strong> ({erroAgente}).
-              Caímos automaticamente para o modo clássico ou você pode tentar de novo.
+              <strong>Não consegui carregar as sugestões do agente.</strong>{' '}
+              Você pode tentar de novo ou seguir no modo clássico — sua importação não foi afetada.
+              <span className="ml-2 text-amber-600 font-mono text-[10px]">({erroAgente})</span>
             </p>
             <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={() => { setErroAgente(null); irParaPreviewAgentic() }}
                 disabled={submitting}
                 className="text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+                aria-label="Tentar carregar as sugestões do agente novamente"
               >
-                Tentar agente de novo
+                Tentar de novo
               </button>
               <button
                 onClick={() => setErroAgente(null)}
                 className="text-[10px] uppercase tracking-wider text-amber-700 hover:text-amber-900"
+                aria-label="Dispensar este aviso"
               >
                 Dispensar
               </button>
@@ -5393,6 +5408,75 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
     ? gruposFaltantes.filter((g: GrupoProdutoFaltante) => !grupoEstaResolvido(g, resolucoes))
     : gruposFaltantes
 
+  // S1.6 polish: agrupamento visual em buckets quando ha proposta do agente.
+  // Os buckets espelham a taxonomia explicita do prompt: auto-resolvido /
+  // precisa revisao / criar novo / associar existente. Sem proposta, lista
+  // unica como antes (fallback identico ao comportamento V0).
+  type Bucket = {
+    chave: 'auto' | 'revisao' | 'criar' | 'outros'
+    label: string
+    descricao: string
+    grupos: GrupoProdutoFaltante[]
+    headerClass: string
+  }
+  const bucketsAgente: Bucket[] = (() => {
+    if (!propostaAgente) return []
+    const auto: GrupoProdutoFaltante[] = []
+    const revisao: GrupoProdutoFaltante[] = []
+    const criar: GrupoProdutoFaltante[] = []
+    const outros: GrupoProdutoFaltante[] = []
+    for (const g of gruposExibir) {
+      const p = propostaAgente.byIdx[g.idxs[0]]
+      if (!p) {
+        outros.push(g)
+        continue
+      }
+      if (p.acao === 'criar') {
+        criar.push(g)
+      } else if (
+        p.acao === 'associar'
+        && p.confidence >= propostaAgente.thresholds.auto
+        && !p.needs_review
+      ) {
+        auto.push(g)
+      } else if (p.needs_review || p.confidence < propostaAgente.thresholds.auto) {
+        revisao.push(g)
+      } else {
+        outros.push(g)
+      }
+    }
+    return [
+      {
+        chave: 'auto',
+        label: 'Prontos para aprovar',
+        descricao: 'Sugestão de alta confiança — revise se quiser, ou aprove rapidamente.',
+        grupos: auto,
+        headerClass: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+      },
+      {
+        chave: 'revisao',
+        label: 'Precisam da sua revisão',
+        descricao: 'Confiança média — confirme manualmente antes de avançar.',
+        grupos: revisao,
+        headerClass: 'bg-amber-50 border-amber-200 text-amber-900',
+      },
+      {
+        chave: 'criar',
+        label: 'Sem match — sugestão: cadastrar',
+        descricao: 'O agente não achou correspondência. Cadastrar como novo produto exige decisão sua.',
+        grupos: criar,
+        headerClass: 'bg-rose-50 border-rose-200 text-rose-900',
+      },
+      {
+        chave: 'outros',
+        label: 'Outros pendentes',
+        descricao: 'Itens fora do escopo do agente.',
+        grupos: outros,
+        headerClass: 'bg-slate-50 border-slate-200 text-slate-800',
+      },
+    ].filter(b => b.grupos.length > 0)
+  })()
+
   return (
     <div className="space-y-5">
       {/* Banner de progresso restaurado — discreto, dispensavel */}
@@ -5423,36 +5507,49 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
         </p>
       </div>
 
-      {/* Sprint S1.1: Banner do Reconciliator — so aparece se ha proposta */}
+      {/* S1.6 polish: Banner do Reconciliator com linguagem mastigada.
+          Comunica "agente sugeriu, voce decide" antes de qualquer numero tecnico. */}
       {propostaAgente && (
-        <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+        <div
+          className="p-4 bg-blue-50 border border-blue-200 rounded-xl"
+          role="region"
+          aria-label="Sugestões do agente para produtos faltantes"
+        >
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div className="flex-1 min-w-[260px]">
               <p className="text-sm font-semibold text-blue-900 flex items-center gap-1.5">
-                <span>✨</span>
-                <span>Proposta do Reconciliator</span>
-                <span className="text-[10px] font-mono text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">
-                  run #{propostaAgente.agentRunId}
-                </span>
+                <span aria-hidden="true">✨</span>
+                <span>Encontramos sugestões para ajudar a resolver os produtos faltantes</span>
               </p>
               <p className="text-xs text-blue-800 mt-1.5 leading-relaxed">
-                <strong>{propostaAgente.stats.linhas_auto || 0}</strong> auto-resolvidos ·{' '}
-                <strong>{propostaAgente.stats.linhas_ambiguas || 0}</strong> ambíguos (precisam revisão) ·{' '}
-                <strong>{propostaAgente.stats.linhas_sem_match || 0}</strong> sem match (sugestão: cadastrar)
+                Revise o que estiver pendente antes de importar as vendas. Você pode aceitar
+                as sugestões, ajustar manualmente ou voltar ao modo clássico.
               </p>
-              <p className="text-[11px] text-blue-700/80 mt-1">
-                Confiança média <strong>{Math.round(propostaAgente.confianca_media * 100)}%</strong>
-                {' · '}
-                ~<strong>{propostaAgente.tempo_economizado_estimado_seg}s</strong> economizados em decisões manuais
+              <p className="text-[11px] text-blue-700/90 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span>
+                  <strong className="text-emerald-700">{propostaAgente.stats.linhas_auto || 0}</strong> prontos
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  <strong className="text-amber-700">{propostaAgente.stats.linhas_ambiguas || 0}</strong> precisam revisão
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  <strong className="text-rose-700">{propostaAgente.stats.linhas_sem_match || 0}</strong> sem match (sugestão: cadastrar)
+                </span>
+              </p>
+              <p className="text-[10px] text-blue-700/60 mt-1.5 font-mono" aria-hidden="true">
+                run #{propostaAgente.agentRunId} · confiança média {Math.round(propostaAgente.confianca_media * 100)}%
               </p>
             </div>
             {autoResolvidosPendentes > 0 && (
               <button
                 onClick={onAprovarTudoAuto}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-blue-700 transition-all shrink-0"
-                title="Aceita rapidamente apenas os produtos com sugestão de alta confiança. Os ambíguos continuam exigindo decisão sua."
+                title="Aceita rapidamente apenas os produtos com sugestão de alta confiança. Os que precisam de revisão continuam aguardando sua decisão."
+                aria-label={`Aprovar ${autoResolvidosPendentes} produtos auto-resolvidos pelo agente`}
               >
-                Aprovar tudo ({autoResolvidosPendentes} auto-resolvidos)
+                Aprovar tudo ({autoResolvidosPendentes} prontos)
               </button>
             )}
           </div>
@@ -5553,27 +5650,74 @@ function ProdutosFaltantesFase({ preview, resolucoes, onAplicarGrupo, produtosEx
         </div>
       )}
 
-      {/* Cards de cada grupo (filtrados se apenasPendentes) */}
-      <div className="space-y-3">
+      {/* Cards de cada grupo. S1.6 polish: buckets visuais quando ha proposta
+          do agente; lista unica caso contrario (fallback identico ao classico). */}
+      <div className="space-y-4">
         {gruposExibir.length === 0 ? (
           <div className="text-center py-8 text-sm italic text-[color:var(--claude-stone)]">
             {apenasPendentes
               ? 'Nenhum pendente — todos os produtos foram resolvidos.'
               : 'Nenhum produto faltante neste lote.'}
           </div>
-        ) : gruposExibir.map((g: GrupoProdutoFaltante) => (
-          <GrupoFaltanteCard
-            key={g.chave}
-            grupo={g}
-            resolucao={resolucoes[g.idxs[0]]}
-            onAplicar={(patch: any) => onAplicarGrupo(g.idxs, patch)}
-            produtos={produtosExistentes}
-            grupos={grupos}
-            resolvido={grupoEstaResolvido(g, resolucoes)}
-            propostaAgente={propostaAgente?.byIdx?.[g.idxs[0]]}
-            thresholdsAgente={propostaAgente?.thresholds}
-          />
-        ))}
+        ) : bucketsAgente.length > 0 ? (
+          // Modo agentic — agrupa por bucket
+          bucketsAgente.map(bucket => (
+            <section
+              key={bucket.chave}
+              aria-labelledby={`bucket-${bucket.chave}-heading`}
+              className="space-y-2"
+            >
+              <header
+                className={`px-3 py-2 rounded-lg border flex items-center justify-between gap-3 ${bucket.headerClass}`}
+              >
+                <div>
+                  <h3
+                    id={`bucket-${bucket.chave}-heading`}
+                    className="text-xs font-bold uppercase tracking-wider"
+                  >
+                    {bucket.label}
+                    <span className="ml-2 text-[10px] font-mono opacity-70">
+                      ({bucket.grupos.length})
+                    </span>
+                  </h3>
+                  <p className="text-[11px] mt-0.5 opacity-80 italic">{bucket.descricao}</p>
+                </div>
+              </header>
+              <div className="space-y-3 pl-1">
+                {bucket.grupos.map(g => (
+                  <GrupoFaltanteCard
+                    key={g.chave}
+                    grupo={g}
+                    resolucao={resolucoes[g.idxs[0]]}
+                    onAplicar={(patch: any) => onAplicarGrupo(g.idxs, patch)}
+                    produtos={produtosExistentes}
+                    grupos={grupos}
+                    resolvido={grupoEstaResolvido(g, resolucoes)}
+                    propostaAgente={propostaAgente?.byIdx?.[g.idxs[0]]}
+                    thresholdsAgente={propostaAgente?.thresholds}
+                  />
+                ))}
+              </div>
+            </section>
+          ))
+        ) : (
+          // Modo classico — lista unica como antes
+          <div className="space-y-3">
+            {gruposExibir.map((g: GrupoProdutoFaltante) => (
+              <GrupoFaltanteCard
+                key={g.chave}
+                grupo={g}
+                resolucao={resolucoes[g.idxs[0]]}
+                onAplicar={(patch: any) => onAplicarGrupo(g.idxs, patch)}
+                produtos={produtosExistentes}
+                grupos={grupos}
+                resolvido={grupoEstaResolvido(g, resolucoes)}
+                propostaAgente={propostaAgente?.byIdx?.[g.idxs[0]]}
+                thresholdsAgente={propostaAgente?.thresholds}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
