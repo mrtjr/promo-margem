@@ -37,6 +37,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from .. import models
+from .. import llm_judge
 from ..services import fechamento_csv_service
 from ..embedding_index import top_k, judge, AUTO_THRESHOLD, AMBIG_THRESHOLD
 from ..eventbus import publish_event
@@ -46,6 +47,12 @@ from .runner import AgentRunner, run_agent
 # Estimativa: cada linha que o agente resolve sozinho economiza ~10s
 # do gestor (decisao + clique). Calibravel via metricas do frontend.
 TEMPO_ECONOMIZADO_POR_LINHA_AUTO_SEG = 10
+
+# Sprint S1.3: confidence adicional aplicada quando LLM-judge converge
+# com top-1 do embedding. Conservador — nao cruza o threshold AUTO sozinho,
+# mas eleva grupos ambiguous para que UI mostre alta confianca quando o
+# LLM corroborou a decisao.
+LLM_JUDGE_CONFIDENCE_BOOST = 0.20  # cap em 0.99 dentro da logica
 
 
 class ReconciliatorAgent:
@@ -110,6 +117,10 @@ class ReconciliatorAgent:
             proposed: list[dict[str, Any]] = []
             confidence_sum = 0.0
             confidence_count = 0
+            # S1.3: acumuladores de uso do LLM-judge (custo + tokens)
+            llm_cost_acumulado = 0.0
+            llm_tokens_in_acumulado = 0
+            llm_tokens_out_acumulado = 0
 
             for linha in linhas:
                 idx = linha.get("idx")
@@ -171,22 +182,93 @@ class ReconciliatorAgent:
                     confidence_count += 1
                 elif verdict == "ambiguous":
                     top1 = results[0]
-                    proposed.append({
-                        "idx": idx,
-                        "acao": "associar",  # default proposto
-                        "produto_id": top1["produto_id"],
-                        "confidence": top1["score"],
-                        "rationale": (
-                            f"match ambiguo: top1 '{top1['nome']}' "
-                            f"({top1['rationale']}, score={top1['score']:.2f}) "
-                            f"— precisa confirmacao humana"
-                        ),
-                        "needs_review": True,
-                        "alternativas": results[1:3],
-                    })
-                    stats["linhas_ambiguas"] += 1
-                    confidence_sum += top1["score"]
-                    confidence_count += 1
+                    # Sprint S1.3: LLM-judge corrobora ou rejeita o top-1
+                    # SOMENTE para casos ambiguous. Se sem chave/erro, mantem
+                    # comportamento V0 (top-1 + needs_review).
+                    judge_result = llm_judge.disambiguate(
+                        nome_csv=nome_csv,
+                        codigo_csv=codigo_csv,
+                        candidatos=results,
+                    )
+                    runner.tool_used("llm_judge")
+                    llm_cost_acumulado += judge_result.cost_usd
+                    llm_tokens_in_acumulado += judge_result.tokens_in
+                    llm_tokens_out_acumulado += judge_result.tokens_out
+
+                    if judge_result.status == "aceitar_top1":
+                        # LLM concorda com top-1 -> sobe confianca, dispensa review
+                        boost_confidence = min(0.99, top1["score"] + LLM_JUDGE_CONFIDENCE_BOOST)
+                        proposed.append({
+                            "idx": idx,
+                            "acao": "associar",
+                            "produto_id": top1["produto_id"],
+                            "confidence": boost_confidence,
+                            "rationale": (
+                                f"LLM judge: aceitou top1 '{top1['nome']}' "
+                                f"({judge_result.rationale or 'corroborado'})"
+                            ),
+                            "needs_review": False,
+                            "alternativas": results[1:3],
+                            "judge": "llm:aceitar_top1",
+                        })
+                        stats["linhas_auto"] += 1  # promovido para auto
+                        confidence_sum += boost_confidence
+                        confidence_count += 1
+                    elif judge_result.status == "sugerir_topN" and judge_result.top_n_idx is not None:
+                        # LLM preferiu outro candidato — usa esse, ainda needs_review
+                        # (acao mais segura quando LLM e embedding discordam)
+                        chosen = results[judge_result.top_n_idx]
+                        boost = judge_result.confidence_after or chosen["score"]
+                        proposed.append({
+                            "idx": idx,
+                            "acao": "associar",
+                            "produto_id": chosen["produto_id"],
+                            "confidence": boost,
+                            "rationale": (
+                                f"LLM judge: preferiu candidato {judge_result.top_n_idx} "
+                                f"'{chosen['nome']}' ({judge_result.rationale or 'sem detalhe'})"
+                            ),
+                            "needs_review": True,
+                            "alternativas": [r for i, r in enumerate(results[:3]) if i != judge_result.top_n_idx],
+                            "judge": "llm:sugerir_topN",
+                        })
+                        stats["linhas_ambiguas"] += 1
+                        confidence_sum += boost
+                        confidence_count += 1
+                    elif judge_result.status == "criar":
+                        # LLM julga que nenhum candidato eh o mesmo produto
+                        proposed.append({
+                            "idx": idx,
+                            "acao": "criar",
+                            "produto_id": None,
+                            "confidence": judge_result.confidence_after or 0.6,
+                            "rationale": (
+                                f"LLM judge: nenhum candidato bate "
+                                f"({judge_result.rationale or 'sugere cadastrar'})"
+                            ),
+                            "needs_review": True,
+                            "judge": "llm:criar",
+                        })
+                        stats["linhas_sem_match"] += 1
+                    else:
+                        # judge_indisponivel | ignorar | qualquer outro -> fallback V0
+                        proposed.append({
+                            "idx": idx,
+                            "acao": "associar",
+                            "produto_id": top1["produto_id"],
+                            "confidence": top1["score"],
+                            "rationale": (
+                                f"match ambiguo: top1 '{top1['nome']}' "
+                                f"({top1['rationale']}, score={top1['score']:.2f}) "
+                                f"— precisa confirmacao humana"
+                            ),
+                            "needs_review": True,
+                            "alternativas": results[1:3],
+                            "judge": f"fallback:{judge_result.status}",
+                        })
+                        stats["linhas_ambiguas"] += 1
+                        confidence_sum += top1["score"]
+                        confidence_count += 1
                 else:  # no_match
                     proposed.append({
                         "idx": idx,
@@ -205,6 +287,7 @@ class ReconciliatorAgent:
                 stats["linhas_auto"] / max(1, stats["linhas_auto"] + stats["linhas_ambiguas"] + stats["linhas_sem_match"])
             )
 
+            llm_used = llm_judge.is_available() and llm_tokens_in_acumulado > 0
             output = {
                 "data_alvo": str(data_alvo),
                 "stats": stats,
@@ -215,6 +298,13 @@ class ReconciliatorAgent:
                 "thresholds": {
                     "auto": AUTO_THRESHOLD,
                     "ambiguous": AMBIG_THRESHOLD,
+                },
+                "llm_judge": {
+                    "available": llm_judge.is_available(),
+                    "used": llm_used,
+                    "tokens_in": llm_tokens_in_acumulado,
+                    "tokens_out": llm_tokens_out_acumulado,
+                    "cost_usd_estimate": round(llm_cost_acumulado, 6),
                 },
             }
 
@@ -227,10 +317,17 @@ class ReconciliatorAgent:
                 action="proposed",
                 correlation_id=runner.correlation_id,
                 payload=output,
-                meta={"agent_version": self.version, "agent_run_id": runner.run_id},
+                meta={
+                    "agent_version": self.version,
+                    "agent_run_id": runner.run_id,
+                    "llm_used": llm_used,
+                },
             )
 
-            runner.success(output=output)
+            runner.success(
+                output=output,
+                cost_estimate=llm_cost_acumulado if llm_used else None,
+            )
 
             return {
                 "agent_run_id": runner.run_id,
